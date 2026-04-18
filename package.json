@@ -1,11 +1,62 @@
 {
   "name": "noise-reduction",
-  "version": "0.0.0",
-  "description": "Noise reduction — spectral subtraction, gating, dehum, declick",
-  "main": "index.js",
+  "version": "0.1.0",
   "type": "module",
-  "license": "MIT",
+  "description": "Noise reduction — gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, deesser, dereverb",
+  "sideEffects": false,
+  "exports": {
+    ".": "./index.js",
+    "./gate": "./gate.js",
+    "./specsub": "./specsub.js",
+    "./wiener": "./wiener.js",
+    "./omlsa": "./omlsa.js",
+    "./dehum": "./dehum.js",
+    "./declick": "./declick.js",
+    "./decrackle": "./decrackle.js",
+    "./declip": "./declip.js",
+    "./dewind": "./dewind.js",
+    "./deplosive": "./deplosive.js",
+    "./deesser": "./deesser.js",
+    "./debreath": "./debreath.js",
+    "./dereverb": "./dereverb.js",
+    "./denoise": "./denoise.js",
+    "./quality": "./quality.js",
+    "./util": "./util.js",
+    "./stft": "./stft.js",
+    "./ar": "./ar.js",
+    "./noise": "./noise.js",
+    "./vad": "./vad.js"
+  },
+  "files": [
+    "index.js",
+    "gate.js", "specsub.js", "wiener.js", "omlsa.js", "dehum.js",
+    "declick.js", "decrackle.js", "declip.js",
+    "dewind.js", "deplosive.js", "deesser.js", "debreath.js", "dereverb.js",
+    "denoise.js",
+    "stft.js", "util.js", "ar.js", "noise.js", "vad.js", "quality.js"
+  ],
+  "scripts": {
+    "test": "node test.js",
+    "test:browser": "node test/browser.js",
+    "test:all": "npm test && npm run test:browser",
+    "measure": "node scripts/measure.js",
+    "compare": "node scripts/compare.js"
+  },
   "repository": "audiojs/noise-reduction",
-  "keywords": ["audio", "audiojs", "dsp", "sound"],
-  "author": "Dmitry Iv. <df.creative@gmail.com>"
+  "keywords": [
+    "noise-reduction", "denoise", "dehum", "declick", "decrackle", "declip",
+    "deesser", "dereverb", "spectral-subtraction", "wiener", "om-lsa", "imcra",
+    "audio", "audiojs", "dsp", "speech-enhancement", "signal-processing"
+  ],
+  "author": "Dmitry Iv. <df.creative@gmail.com>",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "fourier-transform": "^2.0.0"
+  },
+  "devDependencies": {
+    "audio-lena": "^3.0.0",
+    "playwright": "^1.59.1",
+    "tst": "^9.4.0"
+  }
 }

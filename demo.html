@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>noise-reduction</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600&family=Chivo+Mono:wght@400;500&display=swap');
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#e9ebe7;--paper:#f6f7f3;--fg:#1f221f;--muted:#6e756d;
+  --line:#c4c9bf;--line-soft:#d8ddd4;--accent:#ca6b63;--ok:#6f8c6a;
+  --dim:#9aa196;--bad:#bf655d;--sans:'Archivo',system-ui,sans-serif;--mono:'Chivo Mono',monospace;
+}
+body{font:400 14px/1.45 var(--sans);color:var(--fg);background:linear-gradient(180deg,var(--paper),var(--bg));min-height:100vh;padding:44px 44px 60px}
+h1{font:500 clamp(20px,2.5vw,26px)/1 var(--sans);letter-spacing:0.16em;text-transform:uppercase;margin-bottom:8px}
+.subtitle{font:400 11px/1.4 var(--mono);color:var(--muted);margin-bottom:30px;letter-spacing:0.03em}
+
+.bar{display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap}
+.bar label{font:600 10px/1 var(--sans);color:var(--muted);text-transform:uppercase;letter-spacing:0.18em}
+.btn{font:400 12px/1 var(--sans);padding:7px 14px;border:1px solid var(--line);background:var(--paper);color:var(--fg);cursor:pointer;letter-spacing:0.02em}
+.btn:hover{border-color:var(--fg)}
+.btn.active{border-color:var(--fg);background:var(--fg);color:var(--paper)}
+.btn:disabled{opacity:.3;cursor:default}
+input[type=file]{font:400 11px/1 var(--mono);color:var(--muted)}
+#status{font:400 11px/1 var(--mono);color:var(--muted);margin-left:auto;white-space:nowrap}
+#status.busy{color:var(--ok)}
+
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:22px}
+.panel{border:1px solid var(--fg);background:var(--paper);padding:16px}
+.panel h2{font:600 10px/1 var(--sans);text-transform:uppercase;letter-spacing:0.18em;color:var(--muted);margin-bottom:14px}
+canvas{width:100%;height:120px;background:#fcfdf9;border:1px solid var(--line-soft);display:block}
+.row{display:flex;align-items:center;gap:10px;margin-top:10px}
+.row audio{flex:1;height:32px}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px}
+.metric{border:1px solid var(--line);padding:8px 10px;background:color-mix(in oklch,var(--paper) 95%,var(--bg) 5%)}
+.metric label{display:block;font:600 9px/1 var(--sans);text-transform:uppercase;letter-spacing:0.16em;color:var(--muted);margin-bottom:6px}
+.metric strong{font:500 14px/1 var(--mono);color:var(--fg)}
+.metric span{font:400 10px/1 var(--mono);color:var(--dim);margin-left:3px}
+
+.scores{margin-top:14px;font:400 11px/1.6 var(--mono);color:var(--muted);background:#fcfdf9;border:1px solid var(--line-soft);padding:10px 12px}
+.scores b{color:var(--fg);font-weight:500}
+.plan{display:inline-block;font:500 11px/1 var(--mono);color:var(--accent);padding:3px 8px;border:1px solid var(--accent);border-radius:999px;margin-left:8px}
+</style>
+</head>
+<body>
+
+<h1>noise-reduction</h1>
+<p class="subtitle">single-pass denoise · 14 methods · auto-classifier · streaming</p>
+
+<div class="bar">
+  <label>source</label>
+  <button class="btn active" data-src="lena">lena (speech)</button>
+  <button class="btn" data-src="hum60">+ 60 Hz hum</button>
+  <button class="btn" data-src="white">+ white noise</button>
+  <button class="btn" data-src="clicks">+ clicks</button>
+  <button class="btn" data-src="rumble">+ rumble</button>
+  <button class="btn" data-src="sib">+ sibilance</button>
+  <input type="file" id="file" accept="audio/*">
+  <span id="status">ready</span>
+</div>
+
+<div class="bar">
+  <label>method</label>
+  <button class="btn active" data-m="auto">auto</button>
+  <button class="btn" data-m="dehum">dehum</button>
+  <button class="btn" data-m="wiener">wiener</button>
+  <button class="btn" data-m="omlsa">omlsa</button>
+  <button class="btn" data-m="specsub">specsub</button>
+  <button class="btn" data-m="declick">declick</button>
+  <button class="btn" data-m="dewind">dewind</button>
+  <button class="btn" data-m="deesser">deesser</button>
+  <button class="btn" data-m="deplosive">deplosive</button>
+  <button class="btn" data-m="debreath">debreath</button>
+  <button class="btn" data-m="dereverb">dereverb</button>
+  <button class="btn" data-m="declip">declip</button>
+  <button class="btn" data-m="decrackle">decrackle</button>
+  <button class="btn" data-m="gate">gate</button>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>input</h2>
+    <canvas id="canIn"></canvas>
+    <div class="row"><audio id="audIn" controls></audio></div>
+  </div>
+  <div class="panel">
+    <h2>output<span class="plan" id="plan" style="display:none"></span></h2>
+    <canvas id="canOut"></canvas>
+    <div class="row"><audio id="audOut" controls></audio></div>
+  </div>
+</div>
+
+<div class="metrics">
+  <div class="metric"><label>SNR-out</label><strong id="mSnr">—</strong><span>dB</span></div>
+  <div class="metric"><label>segSNR</label><strong id="mSeg">—</strong><span>dB</span></div>
+  <div class="metric"><label>NRR</label><strong id="mNrr">—</strong><span>dB</span></div>
+  <div class="metric"><label>process</label><strong id="mMs">—</strong><span>ms</span></div>
+</div>
+
+<div class="scores" id="scores">classifier scores will appear here after processing</div>
+
+<script type="module">
+import lena from './node_modules/audio-lena/raw.js'
+import {
+  gate, dehum, specsub, wiener, omlsa, declick, decrackle, declip,
+  dewind, deplosive, deesser, debreath, dereverb, denoise, classify
+} from './index.js'
+import { snr, segSnr, nrr } from './quality.js'
+
+let fs = 44100
+let speech = new Float32Array(lena)
+let methods = { gate, dehum, specsub, wiener, omlsa, declick, decrackle, declip, dewind, deplosive, deesser, debreath, dereverb }
+let state = { src: 'lena', method: 'auto', clean: speech, dirty: speech }
+
+// --- generators ---
+function sine(f, n, a) { let d = new Float32Array(n); for (let i = 0; i < n; i++) d[i] = a*Math.sin(2*Math.PI*f*i/fs); return d }
+function white(n, a) { let d = new Float32Array(n); for (let i = 0; i < n; i++) d[i] = a*(Math.random()*2-1); return d }
+function add(...as) { let n = Math.max(...as.map(a=>a.length)); let d = new Float32Array(n); for (let a of as) for (let i = 0; i < a.length; i++) d[i] += a[i]; return d }
+function rumble(n, fc) { let d = white(n, 1), y = 0, a = Math.exp(-2*Math.PI*fc/fs); for (let i = 0; i < n; i++) { y = a*y + (1-a)*d[i]; d[i] = y*4 } return d }
+function clicks(n, count) { let d = new Float32Array(n); for (let k = 0; k < count; k++) d[(k+1)*Math.floor(n/(count+1))] = (k&1?-1:1)*0.85; return d }
+
+let sources = {
+  lena:   () => ({ clean: speech, dirty: speech }),
+  hum60:  () => ({ clean: speech, dirty: add(speech, sine(60, speech.length, 0.3), sine(120, speech.length, 0.15), sine(180, speech.length, 0.075)) }),
+  white:  () => ({ clean: speech, dirty: add(speech, white(speech.length, 0.05)) }),
+  clicks: () => ({ clean: speech, dirty: add(speech, clicks(speech.length, 60)) }),
+  rumble: () => ({ clean: speech, dirty: add(speech, rumble(speech.length, 80)) }),
+  sib:    () => ({ clean: speech, dirty: add(speech, sine(7000, speech.length, 0.15)) }),
+}
+
+// --- waveform draw ---
+function draw(canvas, data) {
+  let ctx = canvas.getContext('2d')
+  let w = canvas.width = canvas.clientWidth * devicePixelRatio
+  let h = canvas.height = canvas.clientHeight * devicePixelRatio
+  ctx.fillStyle = '#fcfdf9'; ctx.fillRect(0, 0, w, h)
+  ctx.strokeStyle = '#d8ddd4'; ctx.beginPath(); ctx.moveTo(0, h/2); ctx.lineTo(w, h/2); ctx.stroke()
+  let step = Math.max(1, Math.floor(data.length / w))
+  ctx.strokeStyle = '#1f221f'; ctx.lineWidth = 1; ctx.beginPath()
+  for (let x = 0; x < w; x++) {
+    let lo = 1, hi = -1
+    let i0 = x * step, i1 = Math.min(data.length, i0 + step)
+    for (let i = i0; i < i1; i++) { if (data[i] < lo) lo = data[i]; if (data[i] > hi) hi = data[i] }
+    ctx.moveTo(x, (1 - hi) * h / 2); ctx.lineTo(x, (1 - lo) * h / 2)
+  }
+  ctx.stroke()
+}
+
+// --- WAV encoder for <audio> playback ---
+function toWav(d, sr = fs) {
+  let n = d.length, buf = new ArrayBuffer(44 + n*2), v = new DataView(buf)
+  let s = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o+i, t.charCodeAt(i)) }
+  s(0, 'RIFF'); v.setUint32(4, 36+n*2, true); s(8, 'WAVE'); s(12, 'fmt ')
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true)
+  v.setUint32(24, sr, true); v.setUint32(28, sr*2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true)
+  s(36, 'data'); v.setUint32(40, n*2, true)
+  for (let i = 0; i < n; i++) v.setInt16(44 + i*2, Math.max(-1, Math.min(1, d[i])) * 0x7fff, true)
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }))
+}
+
+// --- process current pair ---
+function process() {
+  let { dirty, clean } = state
+  let opts = { fs }
+  let plan = null, t0 = performance.now(), out
+  if (state.method === 'auto') {
+    let r = denoise(new Float32Array(dirty), { fs, returnPlan: true })
+    out = r.out; plan = r.plan
+  } else {
+    out = methods[state.method](new Float32Array(dirty), opts)
+  }
+  let ms = performance.now() - t0
+  let n = Math.min(out.length, clean.length)
+  let outC = out.subarray(0, n), refC = clean.subarray(0, n), dirC = dirty.subarray(0, n)
+
+  document.getElementById('mSnr').textContent = snr(refC, outC).toFixed(1)
+  document.getElementById('mSeg').textContent = segSnr(refC, outC).toFixed(1)
+  document.getElementById('mNrr').textContent = nrr(dirC, outC).toFixed(1)
+  document.getElementById('mMs').textContent  = ms.toFixed(0)
+
+  let pl = document.getElementById('plan')
+  if (plan) { pl.style.display = 'inline-block'; pl.textContent = plan.method }
+  else pl.style.display = 'none'
+
+  // Always show classifier scores for the dirty signal (informational)
+  let cls = classify(dirty, fs)
+  let s = cls.scores
+  document.getElementById('scores').innerHTML =
+    `<b>classifier:</b> would route to <b>${cls.method}</b> · ` +
+    `hum=${s.hum}@${s.humFreq}Hz · ` +
+    `click=${s.click.toFixed(1)} · ` +
+    `lf/mf=${s.lf.toFixed(1)} · ` +
+    `hi/mf=${s.hi.toFixed(1)} · ` +
+    `nonstationary=${s.nonstationarity.toFixed(2)}`
+
+  draw(document.getElementById('canIn'), dirty)
+  draw(document.getElementById('canOut'), out)
+  document.getElementById('audIn').src = toWav(dirty)
+  document.getElementById('audOut').src = toWav(out)
+}
+
+function pickSource(key) {
+  let { clean, dirty } = sources[key]()
+  state.src = key; state.clean = clean; state.dirty = dirty
+  document.querySelectorAll('[data-src]').forEach(b => b.classList.toggle('active', b.dataset.src === key))
+  process()
+}
+function pickMethod(m) {
+  state.method = m
+  document.querySelectorAll('[data-m]').forEach(b => b.classList.toggle('active', b.dataset.m === m))
+  process()
+}
+
+document.querySelectorAll('[data-src]').forEach(b => b.onclick = () => pickSource(b.dataset.src))
+document.querySelectorAll('[data-m]').forEach(b => b.onclick = () => pickMethod(b.dataset.m))
+
+document.getElementById('file').onchange = async (e) => {
+  let f = e.target.files[0]; if (!f) return
+  let ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: fs })
+  let buf = await ac.decodeAudioData(await f.arrayBuffer())
+  let d = buf.getChannelData(0)
+  state.src = 'file'; state.clean = new Float32Array(d); state.dirty = new Float32Array(d)
+  document.querySelectorAll('[data-src]').forEach(b => b.classList.remove('active'))
+  process()
+}
+
+pickSource('hum60')
+</script>
+</body>
+</html>
