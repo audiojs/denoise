@@ -1,0 +1,11 @@
+{
+  "name": "noise-reduction",
+  "version": "0.0.0",
+  "description": "Noise reduction — spectral subtraction, gating, dehum, declick",
+  "main": "index.js",
+  "type": "module",
+  "license": "MIT",
+  "repository": "audiojs/noise-reduction",
+  "keywords": ["audio", "audiojs", "dsp", "sound"],
+  "author": "Dmitry Iv. <df.creative@gmail.com>"
+}
