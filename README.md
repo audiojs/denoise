@@ -1,4 +1,4 @@
-# noise-reduction [![npm](https://img.shields.io/npm/v/noise-reduction)](https://www.npmjs.com/package/noise-reduction) [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+# @audio/denoise [![npm](https://img.shields.io/npm/v/@audio/denoise)](https://www.npmjs.com/package/@audio/denoise) [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Single-pass noise reduction. 13 specialised methods + an auto-classifier.
 
@@ -25,11 +25,11 @@ For broader DSP needs use [time-stretch](https://github.com/audiojs/time-stretch
 ## Usage
 
 ```sh
-npm install noise-reduction
+npm install @audio/denoise
 ```
 
 ```js
-import { denoise, dehum, wiener, declick } from 'noise-reduction'
+import { denoise, dehum, wiener, declick } from '@audio/denoise'
 
 let cleaned   = denoise(samples)                              // auto-classify + dispatch
 let unhummed  = dehum(samples, { freq: 60 })                  // explicit method
@@ -298,7 +298,7 @@ debreath(data, { reduction: 0.3 })                             // -10 dB on non-
 ## Quality measurement
 
 ```js
-import { snr, segSnr, lsd, nrr, speechAttenuation } from 'noise-reduction'
+import { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/denoise'
 
 snr(reference, processed)                                       // global SNR (dB)
 segSnr(reference, processed)                                    // segmental SNR (dB)
@@ -319,9 +319,9 @@ speechAttenuation(reference, processed)                         // dB lost on sp
 ## Lower-level building blocks
 
 ```js
-import { stftBatch, stftStream, stftAnalyse } from 'noise-reduction'
-import { vad, spp, ddSnr } from 'noise-reduction'
-import { noiseProfile, minStats, imcra } from 'noise-reduction'
+import { stftBatch, stftStream, stftAnalyse } from '@audio/denoise'
+import { vad, spp, ddSnr } from '@audio/denoise'
+import { noiseProfile, minStats, imcra } from '@audio/denoise'
 ```
 
 - **`stft*`** — analysis-modification-synthesis with Hann + ∑win² OLA reconstruction. Visit `(mag, phase, state, ctx) => { mag, phase }`.
