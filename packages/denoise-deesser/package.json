@@ -1,0 +1,42 @@
+{
+  "name": "@audio/denoise-deesser",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "deesser.js"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@audio/denoise-core": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "De-esser — dynamic peaking EQ centred on the sibilance band",
+  "keywords": [
+    "audio",
+    "dsp",
+    "denoise",
+    "deesser"
+  ],
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/noise-reduction.git",
+    "directory": "packages/denoise-deesser"
+  },
+  "bugs": {
+    "url": "https://github.com/audiojs/noise-reduction/issues"
+  },
+  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-deesser"
+}

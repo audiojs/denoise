@@ -1,0 +1,49 @@
+{
+  "name": "@audio/denoise-detect",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "denoise.js"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@audio/denoise-core": "^0.1.0",
+    "@audio/denoise-wiener": "^0.1.0",
+    "@audio/denoise-omlsa": "^0.1.0",
+    "@audio/denoise-dehum": "^0.1.0",
+    "@audio/denoise-declick": "^0.1.0",
+    "@audio/denoise-dewind": "^0.1.0",
+    "@audio/denoise-deesser": "^0.1.0",
+    "@audio/denoise-dereverb": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "denoise — content-aware auto-selector that classifies the dominant noise type",
+  "keywords": [
+    "audio",
+    "dsp",
+    "denoise",
+    "detect"
+  ],
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/noise-reduction.git",
+    "directory": "packages/denoise-detect"
+  },
+  "bugs": {
+    "url": "https://github.com/audiojs/noise-reduction/issues"
+  },
+  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-detect"
+}

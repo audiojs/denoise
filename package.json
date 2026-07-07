@@ -1,5 +1,5 @@
 {
-  "name": "noise-reduction",
+  "name": "@audio/denoise",
   "version": "0.1.0",
   "type": "module",
   "description": "Noise reduction — gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, deesser, dereverb",
@@ -29,11 +29,26 @@
   },
   "files": [
     "index.js",
-    "gate.js", "specsub.js", "wiener.js", "omlsa.js", "dehum.js",
-    "declick.js", "decrackle.js", "declip.js",
-    "dewind.js", "deplosive.js", "deesser.js", "debreath.js", "dereverb.js",
+    "gate.js",
+    "specsub.js",
+    "wiener.js",
+    "omlsa.js",
+    "dehum.js",
+    "declick.js",
+    "decrackle.js",
+    "declip.js",
+    "dewind.js",
+    "deplosive.js",
+    "deesser.js",
+    "debreath.js",
+    "dereverb.js",
     "denoise.js",
-    "stft.js", "util.js", "ar.js", "noise.js", "vad.js", "quality.js"
+    "stft.js",
+    "util.js",
+    "ar.js",
+    "noise.js",
+    "vad.js",
+    "quality.js"
   ],
   "scripts": {
     "test": "node test.js",
@@ -42,15 +57,34 @@
     "measure": "node scripts/measure.js",
     "compare": "node scripts/compare.js"
   },
-  "repository": "audiojs/noise-reduction",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/noise-reduction.git"
+  },
   "keywords": [
-    "noise-reduction", "denoise", "dehum", "declick", "decrackle", "declip",
-    "deesser", "dereverb", "spectral-subtraction", "wiener", "om-lsa", "imcra",
-    "audio", "audiojs", "dsp", "speech-enhancement", "signal-processing"
+    "noise-reduction",
+    "denoise",
+    "dehum",
+    "declick",
+    "decrackle",
+    "declip",
+    "deesser",
+    "dereverb",
+    "spectral-subtraction",
+    "wiener",
+    "om-lsa",
+    "imcra",
+    "audio",
+    "audiojs",
+    "dsp",
+    "speech-enhancement",
+    "signal-processing"
   ],
-  "author": "Dmitry Iv. <df.creative@gmail.com>",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
   "license": "MIT",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "fourier-transform": "^2.0.0"
   },
@@ -58,5 +92,15 @@
     "audio-lena": "^3.0.0",
     "playwright": "^1.59.1",
     "tst": "^9.4.0"
-  }
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "bugs": {
+    "url": "https://github.com/audiojs/noise-reduction/issues"
+  },
+  "homepage": "https://github.com/audiojs/noise-reduction#readme"
 }

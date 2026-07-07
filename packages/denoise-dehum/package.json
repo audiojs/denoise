@@ -1,0 +1,42 @@
+{
+  "name": "@audio/denoise-dehum",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "dehum.js"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@audio/denoise-core": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Mains hum / tonal noise removal via cascaded high-Q biquad notches",
+  "keywords": [
+    "audio",
+    "dsp",
+    "denoise",
+    "dehum"
+  ],
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/noise-reduction.git",
+    "directory": "packages/denoise-dehum"
+  },
+  "bugs": {
+    "url": "https://github.com/audiojs/noise-reduction/issues"
+  },
+  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-dehum"
+}

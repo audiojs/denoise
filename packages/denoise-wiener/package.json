@@ -1,0 +1,42 @@
+{
+  "name": "@audio/denoise-wiener",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "wiener.js"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@audio/denoise-core": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Wiener filter / MMSE-LSA denoise with decision-directed a-priori SNR",
+  "keywords": [
+    "audio",
+    "dsp",
+    "denoise",
+    "wiener"
+  ],
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/noise-reduction.git",
+    "directory": "packages/denoise-wiener"
+  },
+  "bugs": {
+    "url": "https://github.com/audiojs/noise-reduction/issues"
+  },
+  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-wiener"
+}

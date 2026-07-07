@@ -1,0 +1,42 @@
+{
+  "name": "@audio/denoise-core",
+  "version": "0.1.0",
+  "type": "module",
+  "sideEffects": false,
+  "description": "Shared utilities for @audio/denoise-* atoms: STFT, AR, noise estimation, VAD, quality metrics",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "*.js"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "fourier-transform": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "audio",
+    "dsp",
+    "denoise",
+    "core"
+  ],
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/noise-reduction.git",
+    "directory": "packages/denoise-core"
+  },
+  "bugs": {
+    "url": "https://github.com/audiojs/noise-reduction/issues"
+  },
+  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-core"
+}
