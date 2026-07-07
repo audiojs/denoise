@@ -1,61 +1,22 @@
 {
   "name": "@audio/denoise",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Noise reduction — gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, deesser, dereverb",
   "sideEffects": false,
   "exports": {
     ".": "./index.js",
-    "./gate": "./gate.js",
-    "./specsub": "./specsub.js",
-    "./wiener": "./wiener.js",
-    "./omlsa": "./omlsa.js",
-    "./dehum": "./dehum.js",
-    "./declick": "./declick.js",
-    "./decrackle": "./decrackle.js",
-    "./declip": "./declip.js",
-    "./dewind": "./dewind.js",
-    "./deplosive": "./deplosive.js",
-    "./deesser": "./deesser.js",
-    "./debreath": "./debreath.js",
-    "./dereverb": "./dereverb.js",
-    "./denoise": "./denoise.js",
-    "./quality": "./quality.js",
-    "./util": "./util.js",
-    "./stft": "./stft.js",
-    "./ar": "./ar.js",
-    "./noise": "./noise.js",
-    "./vad": "./vad.js"
+    "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
-    "gate.js",
-    "specsub.js",
-    "wiener.js",
-    "omlsa.js",
-    "dehum.js",
-    "declick.js",
-    "decrackle.js",
-    "declip.js",
-    "dewind.js",
-    "deplosive.js",
-    "deesser.js",
-    "debreath.js",
-    "dereverb.js",
-    "denoise.js",
-    "stft.js",
-    "util.js",
-    "ar.js",
-    "noise.js",
-    "vad.js",
-    "quality.js"
+    "index.js"
   ],
   "scripts": {
     "test": "node test.js",
-    "test:browser": "node test/browser.js",
-    "test:all": "npm test && npm run test:browser",
+    "test:all": "npm test --workspaces --if-present && npm test",
     "measure": "node scripts/measure.js",
-    "compare": "node scripts/compare.js"
+    "compare": "node scripts/compare.js",
+    "publish:all": "npm publish --workspaces && npm publish"
   },
   "repository": {
     "type": "git",
@@ -86,7 +47,21 @@
     "node": ">=18"
   },
   "dependencies": {
-    "fourier-transform": "^2.0.0"
+    "@audio/denoise-core": "^0.1.0",
+    "@audio/denoise-spectral": "^0.1.0",
+    "@audio/denoise-wiener": "^0.1.0",
+    "@audio/denoise-omlsa": "^0.1.0",
+    "@audio/denoise-dehum": "^0.1.0",
+    "@audio/denoise-declick": "^0.1.0",
+    "@audio/denoise-decrackle": "^0.1.0",
+    "@audio/denoise-declip": "^0.1.0",
+    "@audio/denoise-dewind": "^0.1.0",
+    "@audio/denoise-deplosive": "^0.1.0",
+    "@audio/denoise-deesser": "^0.1.0",
+    "@audio/denoise-debreath": "^0.1.0",
+    "@audio/denoise-dereverb": "^0.1.0",
+    "@audio/denoise-gate": "^0.1.0",
+    "@audio/denoise-detect": "^0.1.0"
   },
   "devDependencies": {
     "audio-lena": "^3.0.0",
@@ -102,5 +77,6 @@
   "bugs": {
     "url": "https://github.com/audiojs/noise-reduction/issues"
   },
-  "homepage": "https://github.com/audiojs/noise-reduction#readme"
+  "homepage": "https://github.com/audiojs/noise-reduction#readme",
+  "main": "index.js"
 }

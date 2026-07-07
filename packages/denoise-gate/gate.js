@@ -7,9 +7,7 @@
 // Returns the same buffer modified in-place. Pass the same params object on every
 // call to persist envelope state across blocks.
 
-import { db2lin, lin2db } from '@audio/denoise-core'
-
-let { abs, exp, max } = Math
+import { db2lin } from '@audio/denoise-core'
 
 export default function gate(data, params = {}) {
   let openTh = db2lin(params.threshold ?? -40)
@@ -21,8 +19,8 @@ export default function gate(data, params = {}) {
   let lookahead = params.lookahead ?? 0.005        // s — detection leads audio
   let fs = params.fs || 44100
 
-  let aA = exp(-1 / (attack * fs))
-  let aR = exp(-1 / (release * fs))
+  let aA = Math.exp(-1 / (attack * fs))
+  let aR = Math.exp(-1 / (release * fs))
   let holdSamples = Math.round(hold * fs)
   let laSamples = Math.round(lookahead * fs)
 
@@ -39,7 +37,7 @@ export default function gate(data, params = {}) {
   let n = data.length
   for (let i = 0; i < n; i++) {
     // Detection runs on incoming sample (the "future" relative to delayed audio).
-    let xDet = data[i], xa = abs(xDet)
+    let xDet = data[i], xa = Math.abs(xDet)
     if (xa > env) env = aA * env + (1 - aA) * xa
     else env = aR * env + (1 - aR) * xa
 

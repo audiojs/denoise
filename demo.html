@@ -99,13 +99,36 @@ canvas{width:100%;height:120px;background:#fcfdf9;border:1px solid var(--line-so
 
 <div class="scores" id="scores">classifier scores will appear here after processing</div>
 
+<script type="importmap">
+{
+  "imports": {
+    "@audio/denoise": "./index.js",
+    "@audio/denoise-core": "./packages/denoise-core/index.js",
+    "@audio/denoise-spectral": "./packages/denoise-spectral/specsub.js",
+    "@audio/denoise-wiener": "./packages/denoise-wiener/wiener.js",
+    "@audio/denoise-omlsa": "./packages/denoise-omlsa/omlsa.js",
+    "@audio/denoise-dehum": "./packages/denoise-dehum/dehum.js",
+    "@audio/denoise-declick": "./packages/denoise-declick/declick.js",
+    "@audio/denoise-decrackle": "./packages/denoise-decrackle/decrackle.js",
+    "@audio/denoise-declip": "./packages/denoise-declip/declip.js",
+    "@audio/denoise-dewind": "./packages/denoise-dewind/dewind.js",
+    "@audio/denoise-deplosive": "./packages/denoise-deplosive/deplosive.js",
+    "@audio/denoise-deesser": "./packages/denoise-deesser/deesser.js",
+    "@audio/denoise-debreath": "./packages/denoise-debreath/debreath.js",
+    "@audio/denoise-dereverb": "./packages/denoise-dereverb/dereverb.js",
+    "@audio/denoise-gate": "./packages/denoise-gate/gate.js",
+    "@audio/denoise-detect": "./packages/denoise-detect/denoise.js",
+    "fourier-transform": "./node_modules/fourier-transform/index.js"
+  }
+}
+</script>
 <script type="module">
 import lena from './node_modules/audio-lena/raw.js'
 import {
   gate, dehum, specsub, wiener, omlsa, declick, decrackle, declip,
   dewind, deplosive, deesser, debreath, dereverb, denoise, classify
 } from './index.js'
-import { snr, segSnr, nrr } from './quality.js'
+import { snr, segSnr, nrr } from '@audio/denoise-core'
 
 let fs = 44100
 let speech = new Float32Array(lena)

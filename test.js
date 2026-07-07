@@ -7,10 +7,10 @@ import {
   gate, dehum, specsub, wiener, omlsa, declick, decrackle, declip,
   dewind, deplosive, deesser, debreath, dereverb, denoise, classify
 } from './index.js'
-import { vad, spp, ddSnr } from './vad.js'
-import { noiseProfile, minStats, imcra } from './noise.js'
-import { snr, segSnr, lsd, nrr, speechAttenuation } from './quality.js'
-import { stftBatch, stftStream, stftAnalyse } from './stft.js'
+import { vad, spp, ddSnr } from '@audio/denoise-core'
+import { noiseProfile, minStats, imcra } from '@audio/denoise-core'
+import { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/denoise-core'
+import { stftBatch, stftStream, stftAnalyse } from '@audio/denoise-core'
 
 let fs = 44100
 let lena = new Float32Array(raw)                          // 12.27s mono speech

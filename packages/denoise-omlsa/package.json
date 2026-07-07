@@ -1,42 +1,42 @@
 {
   "name": "@audio/denoise-omlsa",
   "version": "0.1.0",
+  "description": "OM-LSA — Optimally Modified Log-Spectral Amplitude (Cohen 2002), with IMCRA noise",
   "type": "module",
   "sideEffects": false,
-  "main": "index.js",
+  "main": "omlsa.js",
   "exports": {
-    ".": "./index.js",
+    ".": "./omlsa.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
     "omlsa.js"
   ],
-  "license": "MIT",
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"
   },
-  "engines": {
-    "node": ">=18"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "description": "OM-LSA — Optimally Modified Log-Spectral Amplitude (Cohen 2002), with IMCRA noise",
   "keywords": [
     "audio",
     "dsp",
     "denoise",
+    "restoration",
     "omlsa"
   ],
+  "license": "MIT",
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/audiojs/noise-reduction.git",
     "directory": "packages/denoise-omlsa"
   },
+  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-omlsa",
   "bugs": {
     "url": "https://github.com/audiojs/noise-reduction/issues"
   },
-  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-omlsa"
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

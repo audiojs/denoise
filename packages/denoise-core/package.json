@@ -1,42 +1,55 @@
 {
   "name": "@audio/denoise-core",
   "version": "0.1.0",
+  "description": "Shared restoration primitives — STFT (batch/stream/analyse), noise estimation (min-stats, IMCRA), VAD, AR modeling, quality metrics",
   "type": "module",
   "sideEffects": false,
-  "description": "Shared utilities for @audio/denoise-* atoms: STFT, AR, noise estimation, VAD, quality metrics",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./stft": "./stft.js",
+    "./util": "./util.js",
+    "./noise": "./noise.js",
+    "./vad": "./vad.js",
+    "./ar": "./ar.js",
+    "./quality": "./quality.js"
   },
   "files": [
     "index.js",
-    "*.js"
+    "stft.js",
+    "util.js",
+    "noise.js",
+    "vad.js",
+    "ar.js",
+    "quality.js"
   ],
-  "license": "MIT",
   "dependencies": {
     "fourier-transform": "^2.0.0"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "publishConfig": {
-    "access": "public"
   },
   "keywords": [
     "audio",
     "dsp",
     "denoise",
-    "core"
+    "stft",
+    "vad",
+    "noise-estimation"
   ],
+  "license": "MIT",
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/audiojs/noise-reduction.git",
     "directory": "packages/denoise-core"
   },
+  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-core",
   "bugs": {
     "url": "https://github.com/audiojs/noise-reduction/issues"
   },
-  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-core"
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

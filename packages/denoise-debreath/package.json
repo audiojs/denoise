@@ -1,42 +1,42 @@
 {
   "name": "@audio/denoise-debreath",
   "version": "0.1.0",
+  "description": "De-breath — VAD-driven downward attenuation during non-speech regions",
   "type": "module",
   "sideEffects": false,
-  "main": "index.js",
+  "main": "debreath.js",
   "exports": {
-    ".": "./index.js",
+    ".": "./debreath.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
     "debreath.js"
   ],
-  "license": "MIT",
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"
   },
-  "engines": {
-    "node": ">=18"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "description": "De-breath — VAD-driven downward attenuation during non-speech regions",
   "keywords": [
     "audio",
     "dsp",
     "denoise",
+    "restoration",
     "debreath"
   ],
+  "license": "MIT",
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/audiojs/noise-reduction.git",
     "directory": "packages/denoise-debreath"
   },
+  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-debreath",
   "bugs": {
     "url": "https://github.com/audiojs/noise-reduction/issues"
   },
-  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-debreath"
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }
