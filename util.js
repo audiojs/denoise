@@ -113,58 +113,54 @@ export function peakingCoefs(fc, Q, gainDb, fs) {
   }
 }
 
-// Streaming buffer: input ring (grow-on-demand), output OLA buffer + norm buffer.
-// Same shape as time-stretch/util.js — kept compatible so we can lift its STFT.
+// Streaming buffer state: input ring (grow-on-demand), output OLA buffer + norm buffer.
+// Plain data + free functions — no accessors/closures, stays in the jz subset.
 export function makeStreamBufs(N, nf = 0) {
-  let ib = new Float32Array(N * 4), il = 0
-  let ob = new Float32Array(N * 8), nb = new Float32Array(N * 8)
-  let pos = 0, oread = 0
-
-  function appendIn(chunk) {
-    let need = il + chunk.length
-    if (need > ib.length) {
-      let b = new Float32Array(Math.max(need * 2, ib.length * 2))
-      b.set(ib.subarray(0, il)); ib = b
-    }
-    ib.set(chunk, il); il += chunk.length
-  }
-
-  function growOut(need) {
-    if (need <= ob.length) return
-    let len = Math.max(need * 2, ob.length * 2)
-    let o = new Float32Array(len), n = new Float32Array(len)
-    o.set(ob); n.set(nb); ob = o; nb = n
-  }
-
-  function compactIn(trim) {
-    if (trim <= 0) return
-    ib.copyWithin(0, trim, il); il -= trim
-  }
-
-  function take(upTo) {
-    upTo = Math.min(upTo, pos)
-    if (upTo <= oread) return new Float32Array(0)
-    let len = Math.floor(upTo - oread)
-    let out = new Float32Array(len)
-    for (let i = 0; i < len; i++) {
-      let j = oread + i, n = nf > 0 ? Math.max(nb[j], nf) : nb[j]
-      out[i] = n > 1e-8 ? ob[j] / n : 0
-    }
-    oread += len
-    if (oread > N * 8) {
-      ob.copyWithin(0, oread); nb.copyWithin(0, oread)
-      pos -= oread; oread = 0
-      ob.fill(0, pos); nb.fill(0, pos)
-    }
-    return out
-  }
-
   return {
-    get ib() { return ib }, get il() { return il },
-    get ob() { return ob }, get nb() { return nb },
-    get pos() { return pos }, set pos(v) { pos = v },
-    appendIn, growOut, compactIn, take
+    N, nf,
+    ib: new Float32Array(N * 4), il: 0,
+    ob: new Float32Array(N * 8), nb: new Float32Array(N * 8),
+    pos: 0, oread: 0
   }
+}
+
+export function appendIn(st, chunk) {
+  let need = st.il + chunk.length
+  if (need > st.ib.length) {
+    let b = new Float32Array(Math.max(need * 2, st.ib.length * 2))
+    b.set(st.ib.subarray(0, st.il)); st.ib = b
+  }
+  st.ib.set(chunk, st.il); st.il += chunk.length
+}
+
+export function growOut(st, need) {
+  if (need <= st.ob.length) return
+  let len = Math.max(need * 2, st.ob.length * 2)
+  let o = new Float32Array(len), n = new Float32Array(len)
+  o.set(st.ob); n.set(st.nb); st.ob = o; st.nb = n
+}
+
+export function compactIn(st, trim) {
+  if (trim <= 0) return
+  st.ib.copyWithin(0, trim, st.il); st.il -= trim
+}
+
+export function take(st, upTo) {
+  upTo = Math.min(upTo, st.pos)
+  if (upTo <= st.oread) return new Float32Array(0)
+  let len = Math.floor(upTo - st.oread)
+  let out = new Float32Array(len)
+  for (let i = 0; i < len; i++) {
+    let j = st.oread + i, n = st.nf > 0 ? Math.max(st.nb[j], st.nf) : st.nb[j]
+    out[i] = n > 1e-8 ? st.ob[j] / n : 0
+  }
+  st.oread += len
+  if (st.oread > st.N * 8) {
+    st.ob.copyWithin(0, st.oread); st.nb.copyWithin(0, st.oread)
+    st.pos -= st.oread; st.oread = 0
+    st.ob.fill(0, st.pos); st.nb.fill(0, st.pos)
+  }
+  return out
 }
 
 // Steady-state win² sum — floor prevents amplification at OLA boundaries.

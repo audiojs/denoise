@@ -45,7 +45,7 @@ export function minStats(half, opts = {}) {
   let buf = []                                 // ring of recent smoothed frames
 
   return {
-    get psd() { return psd },
+    psd,
     update(mag) {
       let p = new Float64Array(half + 1)
       for (let k = 0; k <= half; k++) {
@@ -81,7 +81,7 @@ export function imcra(half, opts = {}) {
   let resetEvery = opts.resetEvery || 80      // ≈ 0.9 s @ 44.1k, hop=512
 
   return {
-    get psd() { return psd },
+    psd,
     update(mag, sppOverride) {
       let init = !psdInit
       for (let k = 0; k <= half; k++) {

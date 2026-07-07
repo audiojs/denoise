@@ -7,7 +7,7 @@
 //   stftStream — write(chunk) / write() pull-based wrapper for real-time
 
 import { fft, ifft } from 'fourier-transform'
-import { hannWindow, makeStreamBufs, normFloor, PI2 } from './util.js'
+import { hannWindow, makeStreamBufs, appendIn, growOut, compactIn, take, normFloor, PI2 } from './util.js'
 
 export function wrapPhase(p) { return p - Math.round(p / PI2) * PI2 }
 
@@ -87,7 +87,7 @@ export function stftStream(process, opts) {
   function run() {
     while (aPos + N <= st.il) {
       let sf = frame(st.ib, aPos, win, half, process, state, ctx, sc)
-      st.growOut(st.pos + N)
+      growOut(st, st.pos + N)
       let ob = st.ob, nb = st.nb, base = st.pos
       for (let i = 0; i < N; i++) {
         ob[base + i] += sf[i] * win[i]
@@ -96,18 +96,18 @@ export function stftStream(process, opts) {
       aPos += hop
       st.pos += hop
     }
-    if (aPos > N * 2) { st.compactIn(aPos - N); aPos -= aPos - N }
+    if (aPos > N * 2) { compactIn(st, aPos - N); aPos -= aPos - N }
   }
 
   return {
     write(chunk) {
-      st.appendIn(chunk); run()
-      return st.take(Math.max(0, st.pos - N + hop))
+      appendIn(st, chunk); run()
+      return take(st, Math.max(0, st.pos - N + hop))
     },
     flush() {
-      if (!flushed) { st.appendIn(new Float32Array(N)); flushed = true }
+      if (!flushed) { appendIn(st, new Float32Array(N)); flushed = true }
       run()
-      return st.take(st.pos)
+      return take(st, st.pos)
     }
   }
 }

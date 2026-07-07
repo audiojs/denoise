@@ -61,6 +61,26 @@ test('stft — round-trip preserves signal', () => {
   ok(Math.sqrt(err / n) < 0.01, 'reconstruction error < 1%')
 })
 
+test('stft — streaming identity reconstructs mid-region across chunk boundaries', () => {
+  // Pins the stream-buffer bookkeeping (appendIn/compactIn/take): irregular chunk
+  // sizes force ring growth + input compaction; mid-region must reconstruct exactly.
+  let N = 2048, hop = 512
+  let x = sine(440, 12000)
+  let s = stftStream((mag, phase) => ({ mag, phase }), { frameSize: N, hopSize: hop })
+  let chunks = [], pos = 0
+  for (let size of [700, 4096, 33, 2048, 5000, 123]) {
+    chunks.push(s.write(x.subarray(pos, Math.min(pos + size, x.length))))
+    pos = Math.min(pos + size, x.length)
+  }
+  chunks.push(s.flush())
+  let out = new Float32Array(chunks.reduce((a, c) => a + c.length, 0)), o = 0
+  for (let c of chunks) { out.set(c, o); o += c.length }
+  ok(out.length >= 10000, 'stream emits the signal body')
+  let err = 0, n = 10000 - N
+  for (let i = N; i < 10000; i++) err += (out[i] - x[i]) ** 2
+  ok(Math.sqrt(err / n) < 0.01, 'mid-region reconstruction error < 1%')
+})
+
 test('stft — analyse visits frames in order', () => {
   let positions = []
   stftAnalyse(noise(4096), (mag, phase, pos) => positions.push(pos), { frameSize: 1024, hopSize: 512 })
