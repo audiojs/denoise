@@ -20,7 +20,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/audiojs/noise-reduction.git"
+    "url": "git+https://github.com/audiojs/denoise.git"
   },
   "keywords": [
     "noise-reduction",
@@ -75,8 +75,8 @@
     "access": "public"
   },
   "bugs": {
-    "url": "https://github.com/audiojs/noise-reduction/issues"
+    "url": "https://github.com/audiojs/denoise/issues"
   },
-  "homepage": "https://github.com/audiojs/noise-reduction#readme",
+  "homepage": "https://github.com/audiojs/denoise#readme",
   "main": "index.js"
 }

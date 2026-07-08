@@ -19,7 +19,7 @@ Single-pass noise reduction. 13 specialised methods + an auto-classifier.
 | [debreath](#debreath) | time | inter-word noise | ★★★ | low | breath / hiss in pauses |
 | [dereverb](#dereverb) | freq | late reverb | ★★ | medium | moderate room reverb |
 
-For broader DSP needs use [time-stretch](https://github.com/audiojs/time-stretch), [pitch-shift](https://github.com/audiojs/pitch-shift), [pitch-detection](https://github.com/audiojs/pitch-detection), [beat-detection](https://github.com/audiojs/beat-detection).
+For broader DSP needs use [stretch](https://github.com/audiojs/stretch), [shift](https://github.com/audiojs/shift), [pitch](https://github.com/audiojs/pitch), [beat](https://github.com/audiojs/beat).
 
 
 ## Usage

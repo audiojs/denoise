@@ -26,12 +26,12 @@
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/audiojs/noise-reduction.git",
+    "url": "git+https://github.com/audiojs/denoise.git",
     "directory": "packages/denoise-declip"
   },
-  "homepage": "https://github.com/audiojs/noise-reduction/tree/main/packages/denoise-declip",
+  "homepage": "https://github.com/audiojs/denoise/tree/main/packages/denoise-declip",
   "bugs": {
-    "url": "https://github.com/audiojs/noise-reduction/issues"
+    "url": "https://github.com/audiojs/denoise/issues"
   },
   "engines": {
     "node": ">=18"
