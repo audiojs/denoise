@@ -15,6 +15,7 @@ export { default as deesser } from '@audio/denoise-deesser'
 export { default as debreath } from '@audio/denoise-debreath'
 export { default as dereverb } from '@audio/denoise-dereverb'
 export { default as denoise, classify } from '@audio/denoise-detect'
+export { default as repair } from '@audio/denoise-repair'
 
 export { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/denoise-core'
 export { vad, spp, ddSnr } from '@audio/denoise-core'

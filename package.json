@@ -2,7 +2,7 @@
   "name": "@audio/denoise",
   "version": "0.2.0",
   "type": "module",
-  "description": "Noise reduction — gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, deesser, dereverb",
+  "description": "Noise reduction \u2014 gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, deesser, dereverb",
   "sideEffects": false,
   "exports": {
     ".": "./index.js",
@@ -61,7 +61,8 @@
     "@audio/denoise-debreath": "^0.1.0",
     "@audio/denoise-dereverb": "^0.1.0",
     "@audio/denoise-gate": "^0.1.0",
-    "@audio/denoise-detect": "^0.1.0"
+    "@audio/denoise-detect": "^0.1.0",
+    "@audio/denoise-repair": "^0.1.0"
   },
   "devDependencies": {
     "audio-lena": "^3.0.0",

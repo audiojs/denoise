@@ -1,10 +1,9 @@
 {
   "name": "@audio/denoise-repair",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Spectral repair — interpolate short time×frequency gaps and holes (De-Slop; iZotope RX class)",
   "type": "module",
   "sideEffects": false,
-  "private": true,
   "keywords": [
     "audio",
     "dsp",
@@ -15,5 +14,20 @@
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
   "engines": {
     "node": ">=18"
+  },
+  "main": "repair.js",
+  "exports": {
+    ".": "./repair.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "repair.js"
+  ],
+  "dependencies": {
+    "@audio/denoise-core": "^0.1.0",
+    "fourier-transform": "^2.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

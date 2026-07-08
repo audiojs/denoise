@@ -388,3 +388,38 @@ function convolve(x, h) {
   }
   return y.subarray(0, x.length)
 }
+
+import repair from '@audio/denoise-repair'
+
+function goertzelMag (d, f, from, to) {
+  let w = 2 * Math.PI * f / fs, cw = Math.cos(w), s1 = 0, s2 = 0
+  for (let i = from; i < to; i++) { let s0 = d[i] + 2 * cw * s1 - s2; s2 = s1; s1 = s0 }
+  return Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - 2 * cw * s1 * s2)) / (to - from)
+}
+
+test('repair — 60 ms dropout reconstructed to full level (tonal)', () => {
+	let n = fs, d = new Float32Array(n)
+	for (let i = 0; i < n; i++) d[i] = 0.7 * Math.sin(2 * Math.PI * 440 * i / fs)
+	let a = Math.round(0.45 * fs), b = Math.round(0.51 * fs)
+	for (let i = a; i < b; i++) d[i] = 0
+	let r = repair(d, { regions: [{ at: 0.45, duration: 0.06 }], fs: fs })
+	let gap = goertzelMag(r, 440, a, b), ref = goertzelMag(r, 440, 4410, 17640)
+	ok(Math.abs(gap / ref - 1) < 0.05, `gap restored to ${(100 * gap / ref).toFixed(1)}% of reference`)
+	ok(r.every(isFinite))
+})
+
+test('repair — band-limited region removes a beep, preserves program', () => {
+	let n = fs, d = new Float32Array(n)
+	let a = Math.round(0.45 * fs), b = Math.round(0.51 * fs)
+	for (let i = 0; i < n; i++) d[i] = 0.5 * Math.sin(2 * Math.PI * 300 * i / fs)
+	for (let i = a; i < b; i++) d[i] += 0.5 * Math.sin(2 * Math.PI * 1000 * (i - a) / fs)
+	let r = repair(d, { regions: [{ at: 0.44, duration: 0.08, from: 700, to: 1400 }], fs: fs })
+	ok(goertzelMag(r, 1000, a, b) < goertzelMag(d, 1000, a, b) * 0.05, 'beep gone (−26 dB+)')
+	almost(goertzelMag(r, 300, a, b) / goertzelMag(d, 300, 4410, 17640), 1, 0.05, 'program untouched')
+})
+
+test('repair — requires regions', () => {
+	let threw = false
+	try { repair(new Float32Array(4096), {}) } catch { threw = true }
+	ok(threw)
+})
