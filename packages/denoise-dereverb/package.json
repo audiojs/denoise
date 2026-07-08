@@ -7,10 +7,12 @@
   "main": "dereverb.js",
   "exports": {
     ".": "./dereverb.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./audio-module": "./audio-module.js"
   },
   "files": [
-    "dereverb.js"
+    "dereverb.js",
+    "audio-module.js"
   ],
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"

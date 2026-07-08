@@ -7,10 +7,12 @@
   "main": "debreath.js",
   "exports": {
     ".": "./debreath.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./audio-module": "./audio-module.js"
   },
   "files": [
-    "debreath.js"
+    "debreath.js",
+    "audio-module.js"
   ],
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"

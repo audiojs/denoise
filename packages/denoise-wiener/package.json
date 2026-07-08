@@ -7,10 +7,12 @@
   "main": "wiener.js",
   "exports": {
     ".": "./wiener.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./audio-module": "./audio-module.js"
   },
   "files": [
-    "wiener.js"
+    "wiener.js",
+    "audio-module.js"
   ],
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"
