@@ -93,6 +93,7 @@ export function stftStream(process, opts) {
         ob[base + i] += sf[i] * win[i]
         nb[base + i] += win[i] * win[i]
       }
+      st.hi = Math.max(st.hi, st.pos + N)
       aPos += hop
       st.pos += hop
     }

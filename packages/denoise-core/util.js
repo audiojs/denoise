@@ -120,7 +120,7 @@ export function makeStreamBufs(N, nf = 0) {
     N, nf,
     ib: new Float32Array(N * 4), il: 0,
     ob: new Float32Array(N * 8), nb: new Float32Array(N * 8),
-    pos: 0, oread: 0
+    pos: 0, oread: 0, hi: 0
   }
 }
 
@@ -156,9 +156,11 @@ export function take(st, upTo) {
   }
   st.oread += len
   if (st.oread > st.N * 8) {
+    // shift left; zero only past the high-water mark — frames extend N−hop beyond
+    // pos, so zeroing from pos would erase the last frame's partial overlap-add tail
     st.ob.copyWithin(0, st.oread); st.nb.copyWithin(0, st.oread)
-    st.pos -= st.oread; st.oread = 0
-    st.ob.fill(0, st.pos); st.nb.fill(0, st.pos)
+    st.pos -= st.oread; st.hi = Math.max(0, st.hi - st.oread); st.oread = 0
+    st.ob.fill(0, st.hi); st.nb.fill(0, st.hi)
   }
   return out
 }

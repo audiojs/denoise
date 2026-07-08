@@ -423,3 +423,23 @@ test('repair — requires regions', () => {
 	try { repair(new Float32Array(4096), {}) } catch { threw = true }
 	ok(threw)
 })
+
+test('stft stream — long-run ring compaction preserves OLA tails (regression)', () => {
+	// >N·8 samples through take() triggers ring compaction; the old fill(0, pos) erased
+	// the last frame's partial overlap-add tail → sample-level corruption mid-stream
+	let x = sine(330, fs)
+	let identity = (mag, phase) => ({ mag, phase })
+	let batch = stftBatch(x, identity, { fs })
+	let s = stftStream(identity, { fs })
+	let parts = []
+	for (let pos = 0, sizes = [64, 1000, 3, 2048, 777]; pos < x.length;) {
+		let n = Math.min(sizes[pos % sizes.length] || 512, x.length - pos)
+		parts.push(s.write(x.subarray(pos, pos + n))); pos += n
+	}
+	parts.push(s.flush())
+	let cat = new Float32Array(parts.reduce((a, p) => a + p.length, 0)), o = 0
+	for (let p of parts) { cat.set(p, o); o += p.length }
+	let m = 0
+	for (let i = 2048; i < batch.length - 2048; i++) m = Math.max(m, Math.abs(batch[i] - cat[i]))
+	ok(m < 1e-6, `stream ≡ batch over 1 s (${m.toExponential(1)})`)
+})

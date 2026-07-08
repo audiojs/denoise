@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared restoration primitives — STFT (batch/stream/analyse), noise estimation (min-stats, IMCRA), VAD, AR modeling, quality metrics",
   "type": "module",
   "sideEffects": false,
