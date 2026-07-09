@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-core",
-  "version": "0.1.1",
-  "description": "Shared restoration primitives — STFT (batch/stream/analyse), noise estimation (min-stats, IMCRA), VAD, AR modeling, quality metrics",
+  "version": "0.1.2",
+  "description": "Internal glue for @audio/denoise-* atoms — STFT (batch/stream/analyse), noise estimation (min-stats, IMCRA), AR modeling, quality metrics. VAD lives in @audio/vad (re-exported here).",
   "type": "module",
   "sideEffects": false,
   "main": "index.js",
@@ -25,7 +25,8 @@
     "quality.js"
   ],
   "dependencies": {
-    "fourier-transform": "^2.0.0"
+    "fourier-transform": "^2.0.0",
+    "@audio/vad": "^1.0.0"
   },
   "keywords": [
     "audio",

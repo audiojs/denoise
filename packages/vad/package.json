@@ -1,0 +1,44 @@
+{
+  "name": "@audio/vad",
+  "version": "1.0.0",
+  "description": "Voice activity detection — frame-level speech/non-speech decision (energy + spectral flatness) plus per-bin speech-presence probability and decision-directed a-priori SNR",
+  "type": "module",
+  "sideEffects": false,
+  "main": "vad.js",
+  "exports": {
+    ".": "./vad.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "vad.js"
+  ],
+  "dependencies": {
+    "@audio/stft": "^1.0.2"
+  },
+  "keywords": [
+    "audio",
+    "dsp",
+    "vad",
+    "voice-activity-detection",
+    "speech-detection",
+    "speech-presence-probability",
+    "spp"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/denoise.git",
+    "directory": "packages/vad"
+  },
+  "homepage": "https://github.com/audiojs/denoise/tree/main/packages/vad",
+  "bugs": {
+    "url": "https://github.com/audiojs/denoise/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

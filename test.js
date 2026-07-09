@@ -8,6 +8,7 @@ import {
   dewind, deplosive, deesser, debreath, dereverb, denoise, classify
 } from './index.js'
 import { vad, spp, ddSnr } from '@audio/denoise-core'
+import { vad as vadDirect } from '@audio/vad'
 import { noiseProfile, minStats, imcra } from '@audio/denoise-core'
 import { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/denoise-core'
 import { stftBatch, stftStream, stftAnalyse } from '@audio/denoise-core'
@@ -98,6 +99,12 @@ test('vad — flags speech-only frames active', () => {
 test('vad — silence yields no active frames', () => {
   let { active } = vad(new Float32Array(fs), { fs })
   is(active.reduce((a, b) => a + b, 0), 0)
+})
+
+test('vad — @audio/vad standalone is the same fn denoise-core re-exports (promotion is a forward, not a copy)', () => {
+  is(vadDirect, vad, 'denoise-core forwards to @audio/vad — single implementation')
+  let { active } = vadDirect(lena.subarray(0, fs * 2), { fs })
+  ok(active.reduce((a, b) => a + b, 0) > 0, 'standalone @audio/vad flags speech active')
 })
 
 test('spp — pure tone gets high probability', () => {
