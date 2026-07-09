@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-declip",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "De-clip — restore samples that have been hard-clipped at ±threshold",
   "type": "module",
   "sideEffects": false,
@@ -12,7 +12,8 @@
   },
   "files": [
     "declip.js",
-    "atom.js"
+    "atom.js",
+    "index.d.ts"
   ],
   "dependencies": {
     "@audio/lpc": "^1.0.0"
@@ -40,5 +41,6 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "types": "index.d.ts"
 }
