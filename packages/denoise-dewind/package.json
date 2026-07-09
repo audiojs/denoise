@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dewind",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "De-wind / de-rumble — adaptive high-pass that opens wider when low-frequency",
   "type": "module",
   "sideEffects": false,

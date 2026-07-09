@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-detect",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "denoise — content-aware auto-selector that classifies the dominant noise type",
   "type": "module",
   "sideEffects": false,

@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-deesser",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "De-esser — dynamic peaking EQ centred on the sibilance band",
   "type": "module",
   "sideEffects": false,
