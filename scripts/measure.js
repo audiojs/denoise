@@ -44,6 +44,18 @@ function rumble(n, fc) {
   for (let i = 0; i < n; i++) { y = a * y + (1 - a) * d[i]; d[i] = y * 4 }
   return d
 }
+// Intermittent wind gusts — dewind's design center (vs continuous rumble = wiener's)
+function gusts(n, fc) {
+  let d = new Float32Array(n), y = 0, a = Math.exp(-2 * Math.PI * fc / fs)
+  for (let g = 0; g < 6; g++) {
+    let at = Math.floor((0.3 + g * 1.3) * fs), len = Math.floor(0.4 * fs)
+    for (let i = 0; i < len && at + i < n; i++) {
+      let w = Math.random() * 2 - 1; y = a * y + (1 - a) * w
+      d[at + i] += y * 6 * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / len))
+    }
+  }
+  return d
+}
 function reverbTail(x, t60) {
   let n = x.length, h = new Float32Array(8192)
   for (let i = 0; i < h.length; i++) h[i] = (Math.random() * 2 - 1) * Math.exp(-6.9 * i / (t60 * fs))
@@ -97,6 +109,7 @@ let humSig = add(speech, sine(60, speech.length, 0.3), sine(120, speech.length, 
 let whiteSig = add(speech, white(speech.length, 0.05))
 let clickSig = add(speech, clicks(speech.length, 30))
 let rumbleSig = add(speech, rumble(speech.length, 80))
+let gustSig = add(speech, gusts(speech.length, 80))
 let sissSig = add(speech, sine(7000, speech.length, 0.15))
 let reverbSig = reverbTail(speech, 0.6)
 
@@ -125,6 +138,11 @@ measure('Clicks / vinyl pops', [
 measure('LF rumble / wind', [
   { label: 'rumble', dirty: rumbleSig, methods: [
     { name: 'dewind', fn: dewind, opts: {} },
+    { name: 'wiener', fn: wiener, opts: {} },
+  ]},
+  { label: 'gusts', dirty: gustSig, methods: [
+    { name: 'dewind', fn: dewind, opts: {} },
+    { name: 'wiener', fn: wiener, opts: {} },
   ]},
 ])
 

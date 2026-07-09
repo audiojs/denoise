@@ -110,7 +110,8 @@ dewind(data, { cutoffMin: 60, cutoffMax: 250 })
 | `Q` | `0.707` | Butterworth-ish |
 | `blockSize` | `1024` | Coefficient update interval (samples) |
 
-**Use when:** wind buffeting, handheld-mic rumble, low-frequency room modes.
+**Use when:** intermittent wind buffeting, handling thumps, low-frequency room modes — the adaptive cutoff opens on gusts and closes between them (measured: beats `wiener` on gusty wind at ~1/10 the CPU).<br>
+**Not for:** continuous rumble under speech — a time-domain cutoff can't separate overlapping spectra; use `wiener`/`omlsa` there (measured ~9 dB vs ~1 dB SNR gain). An LPC-null post-filter was evaluated and rejected: voiced speech is as AR-predictable as wind, so nulling wind poles whitens vowels too (LSD improves, SNR and speech level degrade).
 
 
 ### `deplosive`
@@ -269,8 +270,7 @@ declip(data)                                                   // auto-detects c
 
 ### `dereverb`
 
-Late-reverb spectral subtraction (Lebart, Boucher & Denbigh 2001). Models the late tail as exponentially decaying noise:
-`|R̂(k)|² ≈ exp(-2·δ·t·hop) · |Y_prev(k)|²` and subtracts à la Berouti.
+Late-reverb suppression (Lebart, Boucher & Denbigh 2001 estimate, Habets-class gain). Models the late tail as a decaying sum of past frames' power, then applies a decision-directed Wiener gain on the signal-to-reverb ratio — the cross-frame smoothing suppresses the musical noise hard subtraction produces.
 
 ```js
 dereverb(data, { t60: 0.6, predelay: 0.04 })
@@ -280,8 +280,9 @@ dereverb(data, { t60: 0.6, predelay: 0.04 })
 |---|---|---|
 | `t60` | `0.5` | Assumed reverberation time (s) |
 | `predelay` | `0.04` | Direct-sound passthrough (s) |
-| `alpha` | `1.5` | Over-subtraction factor |
-| `beta` | `0.05` | Spectral floor |
+| `alpha` | `1.5` | Reverb-PSD over-estimation factor |
+| `alphaDD` | `0.98` | Decision-directed SIR smoothing |
+| `gMin` | `0.05` | Gain floor for reverb-dominated bins |
 
 **Use when:** moderate room reverb (RT60 ≤ 1 s) on a single channel.<br>
 **Not for:** heavy reverb or convolutive distortion — use multi-channel WPE (out of scope).

@@ -6,7 +6,7 @@
 //   - click — high kurtosis of AR residual → declick
 //   - hi    — 5–9 kHz / mid energy ratio → deesser
 //   - lf    — LF/mid energy ratio → dewind
-//   - nonstationarity — frame-energy CV → omlsa
+//   - stationarity — frame-energy floor CV: stable → wiener, wandering → omlsa
 //   - otherwise → wiener (transparent broadband)
 //
 // dereverb has no reliable single-pass signature, so auto-mode never selects it —
@@ -50,18 +50,19 @@ export function classify(data, fs = 44100) {
   let frameVar = []                                 // for stationarity
 
   stftAnalyse(data, mag => {
-    let lf = 0, mf = 0, hi = 0
+    let lf = 0, mf = 0, hi = 0, tot = 0
     for (let k = 0; k <= half; k++) {
       let p = mag[k] * mag[k]
       bins[k] += p
+      tot += p
       let f = k * fs / N
       if (f < 200) lf += p
       else if (f < 2000) mf += p
       else if (f >= 5000 && f < 9000) hi += p    // sibilance band, kept specific (not 2–9 kHz)
     }
     lfSum += lf; mfSum += mf; hiSum += hi
-    frameVar.push(lf + mf + hi)
-    frames++
+    frameVar.push(tot)                            // full-spectrum energy — band-restricted
+    frames++                                      // sums under-average the floor statistic
   }, { frameSize: N, hopSize: hop })
   if (!frames) return { method: 'wiener', scores: {} }
 
@@ -118,27 +119,43 @@ export function classify(data, fs = 44100) {
     }
   }
 
-  // Stationarity: variance-of-variances of frame energy
-  let mean = 0; for (let v of frameVar) mean += v; mean /= frames
-  let varE = 0; for (let v of frameVar) varE += (v - mean) ** 2; varE /= frames
-  let cv = mean > 0 ? Math.sqrt(varE) / mean : 0       // higher = less stationary
+  // Noise stationarity: CV of the frame-energy FLOOR (rolling minimum over ~0.75 s).
+  // Speech dynamics ride above the floor, so the floor tracks the *noise bed*:
+  // stationary noise → stable floor (CV ≈ 0.06 measured on speech+white), babble /
+  // wandering beds → drifting floor (CV ≈ 0.5). Raw frame-energy CV can't make this
+  // call — speech's own variance trips it regardless of the noise.
+  let floorCV = 0
+  {
+    let D = 64, step = 16, floors = []
+    for (let i = D; i < frames; i += step) {
+      let mn = Infinity
+      for (let j = i - D; j < i; j++) if (frameVar[j] < mn) mn = frameVar[j]
+      floors.push(mn)
+    }
+    if (floors.length >= 3) {
+      let m = 0; for (let f of floors) m += f; m /= floors.length
+      let v = 0; for (let f of floors) v += (f - m) ** 2; v /= floors.length
+      floorCV = m > 0 ? Math.sqrt(v) / m : 0
+    }
+  }
 
   let scores = {
     hum: humBest, humFreq,
     click: clickScore,
     lf: lfRatio,
     hi: hiRatio,
-    nonstationarity: cv
+    stationarity: floorCV                              // low = stationary noise bed
   }
 
-  // Priority: tonal hum > impulses > sibilance > rumble > non-stationary > broadband.
+  // Priority: tonal hum > impulses > sibilance > rumble > stationary → wiener,
+  // non-stationary → omlsa (IMCRA keeps adapting where a frozen profile can't).
   // humBest is a hit count: ≥2 of the first 3 harmonics show 20× peak-to-median sharpness.
   let method = 'wiener'
   if (humBest >= 2) method = 'dehum'
   else if (clickScore > 12) method = 'declick'
   else if (hiRatio > 8) method = 'deesser'                // white noise scores ~3.9 by bandwidth alone
   else if (lfRatio > 3) method = 'dewind'
-  else if (cv > 0.6) method = 'omlsa'
+  else if (floorCV > 0.3) method = 'omlsa'         // white ~0.06 · rumble ~0.2 · babble ~0.5
 
   return { method, scores, humFreq }
 }

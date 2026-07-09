@@ -268,6 +268,26 @@ test('dewind — attenuates LF rumble', () => {
   ok(narrowEnergy(clean, 40) < narrowEnergy(dirty, 40) * 0.3, 'rumble cut ≥3×')
 })
 
+test('dewind — improves SNR on intermittent gusts (design center)', () => {
+  // Wind buffeting comes in bursts; the adaptive cutoff opens on gusts and closes
+  // between them — where dewind beats spectral methods at a fraction of the cost.
+  let speech = lena.subarray(0, fs * 4)
+  let gust = new Float32Array(speech.length)
+  let seed = 0x9e3779b9                                    // deterministic LCG noise
+  let rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 0x100000000) * 2 - 1
+  let y = 0, a = Math.exp(-2 * Math.PI * 80 / fs)
+  for (let g = 0; g < 3; g++) {
+    let at = Math.floor((0.3 + g * 1.3) * fs), glen = Math.floor(0.4 * fs)
+    for (let i = 0; i < glen && at + i < gust.length; i++) {
+      y = a * y + (1 - a) * rand()
+      gust[at + i] += y * 6 * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / glen))
+    }
+  }
+  let dirty = add(speech, gust)
+  let clean = dewind(copy(dirty), { fs })
+  ok(snr(speech, clean) > snr(speech, dirty) + 1, `gusts: SNR +${(snr(speech, clean) - snr(speech, dirty)).toFixed(1)} dB (≥1 required)`)
+})
+
 // =================== deplosive ===================
 
 test('deplosive — complementary split leaves non-plosive content untouched', () => {
@@ -368,6 +388,20 @@ test('classify — rumble routes to dewind', () => {
 
 test('classify — broadband noise routes to wiener', () => {
   is(classify(noise(fs, 0.1), fs).method, 'wiener')
+})
+
+test('classify — stationary noise bed under speech routes to wiener', () => {
+  let speech = lena.subarray(0, fs * 4)
+  let dirty = add(speech, noise(speech.length, 0.05))
+  is(classify(dirty, fs).method, 'wiener', 'stable floor → wiener despite speech dynamics')
+})
+
+test('classify — wandering (non-stationary) noise bed routes to omlsa', () => {
+  // slow deep AM on the noise bed — babble/traffic class (deterministic LFO)
+  let speech = lena.subarray(0, fs * 4)
+  let bed = noise(speech.length, 0.06)
+  for (let i = 0; i < bed.length; i++) bed[i] *= 1 + 0.8 * Math.sin(2 * Math.PI * 0.35 * i / fs)
+  is(classify(add(speech, bed), fs).method, 'omlsa', 'wandering floor → omlsa')
 })
 
 test('denoise — returnPlan exposes routing decision', () => {
