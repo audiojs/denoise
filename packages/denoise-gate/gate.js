@@ -1,11 +1,12 @@
 // Look-ahead noise gate with hysteresis.
 //   - Detection envelope tracks |x| with attack/release time constants
 //   - Hysteresis: separate open/close thresholds prevents chatter near the threshold
-//   - Look-ahead: detection runs `lookahead` samples ahead of audio so attack opens
-//     *before* the transient, preserving onsets
+//   - Look-ahead: detection reads `lookahead` samples ahead of the sample being
+//     gated so the attack opens *before* the transient, preserving onsets. Output
+//     stays sample-aligned with input (no net latency, no dropped tail).
 //
 // Returns the same buffer modified in-place. Pass the same params object on every
-// call to persist envelope state across blocks.
+// call to persist envelope/gain state across blocks.
 
 import { db2lin } from '@audio/denoise-core'
 
@@ -23,49 +24,34 @@ export default function gate(data, params = {}) {
   let aR = Math.exp(-1 / (release * fs))
   let holdSamples = Math.round(hold * fs)
   let laSamples = Math.round(lookahead * fs)
+  let openGate = (1 + range) / 2                   // midpoint of open(1)/closed(range)
 
   let env = params._env ?? 0
   let gain = params._gain ?? range
   let holdLeft = params._hold ?? 0
-  let lab = params._lab                            // look-ahead delay line for audio
-  if (!lab || lab.length !== laSamples) {
-    lab = new Float32Array(laSamples || 1)
-    params._labPos = 0
-  }
-  let labPos = params._labPos ?? 0
 
   let n = data.length
   for (let i = 0; i < n; i++) {
-    // Detection runs on incoming sample (the "future" relative to delayed audio).
-    let xDet = data[i], xa = Math.abs(xDet)
+    // Detection peeks ahead within the buffer (clamped at the end); reading a
+    // future, not-yet-written sample is safe in-place since we only write data[i].
+    let xa = Math.abs(data[i + laSamples < n ? i + laSamples : n - 1])
     if (xa > env) env = aA * env + (1 - aA) * xa
     else env = aR * env + (1 - aR) * xa
 
     let target
     if (env > openTh) { target = 1; holdLeft = holdSamples }
-    else if (env > closeTh || holdLeft > 0) { target = gain > 0.5 ? 1 : range }
-    else { target = range }
+    else if (env > closeTh || holdLeft > 0) target = gain > openGate ? 1 : range
+    else target = range
     if (holdLeft > 0) holdLeft--
 
     if (target > gain) gain = aA * gain + (1 - aA) * target
     else gain = aR * gain + (1 - aR) * target
 
-    // Pull delayed audio sample, push new one.
-    let delayed
-    if (laSamples > 0) {
-      delayed = lab[labPos]
-      lab[labPos] = xDet
-      labPos = (labPos + 1) % laSamples
-    } else {
-      delayed = xDet
-    }
-    data[i] = delayed * gain
+    data[i] = data[i] * gain
   }
 
   params._env = env
   params._gain = gain
   params._hold = holdLeft
-  params._lab = lab
-  params._labPos = labPos
   return data
 }

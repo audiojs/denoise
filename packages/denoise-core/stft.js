@@ -55,7 +55,10 @@ export function stftBatch(data, process, opts) {
   let sc = scratch(N, half)
   let pos = 0
 
-  while (pos + N <= outLen + hop) {
+  // Start a frame at every hop up to the last sample so the tail keeps the
+  // steady-state overlap count — bounding by `pos + N <= outLen` would stop
+  // N−hop samples early (tail under-normalized) and drop inputs shorter than N.
+  while (pos < outLen) {
     let sf = frame(data, pos, win, half, process, state, ctx, sc)
     for (let i = 0; i < N && pos + i < outLen; i++) {
       out[pos + i] += sf[i] * win[i]

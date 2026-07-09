@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-gate",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Look-ahead noise gate with hysteresis",
   "type": "module",
   "sideEffects": false,

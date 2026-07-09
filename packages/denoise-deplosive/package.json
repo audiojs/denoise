@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-deplosive",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "De-plosive — detect short low-frequency bursts ('p', 'b' attacks on close mics)",
   "type": "module",
   "sideEffects": false,
