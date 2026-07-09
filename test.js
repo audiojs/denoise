@@ -270,14 +270,30 @@ test('dewind — attenuates LF rumble', () => {
 
 // =================== deplosive ===================
 
-test('deplosive — ducks LF burst', () => {
-  let speech = lena.subarray(0, fs * 2)
-  let burst = new Float32Array(speech.length)
-  let blen = 0.05 * fs
-  for (let i = 0; i < blen; i++) burst[Math.floor(fs * 0.3) + i] = 0.6 * Math.exp(-i / (blen / 2))
-  let dirty = add(speech, burst)
+test('deplosive — complementary split leaves non-plosive content untouched', () => {
+  // No LF burst → gain stays 1 → HF = x − LF makes output identical to input.
+  // The old independent LP+HP Butterworth split notched content near the crossover.
+  let x = sine(200, fs, 0.3)                              // sits right at the 200 Hz crossover
+  let out = deplosive(copy(x), { fs })
+  almost(rms(out), rms(x), rms(x) * 0.02, '200 Hz preserved — no crossover notch')
+  let md = 0
+  for (let i = 0; i < x.length; i++) md = Math.max(md, Math.abs(out[i] - x[i]))
+  ok(md < 1e-5, 'output equals input sample-for-sample when no plosive fires')
+})
+
+test('deplosive — ducks a dominant LF burst, preserves the high band', () => {
+  // LF burst must dominate the high band by > triggerRatio (4) to fire. A strong
+  // 90 Hz burst over a quiet 1.5 kHz reference triggers ducking on the LF band only.
+  let n = fs
+  let hi = sine(1500, n, 0.05)                            // quiet high-band reference
+  let at = Math.floor(fs * 0.3), blen = Math.floor(0.08 * fs)
+  let burst = new Float32Array(n)
+  for (let i = 0; i < blen; i++) burst[at + i] = Math.sin(2 * Math.PI * 40 * i / fs)   // 40 Hz thump, amp 1.0
+  let dirty = add(hi, burst)
   let clean = deplosive(copy(dirty), { fs })
-  ok(rms(clean) <= rms(dirty), 'burst energy reduced')
+  let seg = (d, f) => { let w = 2 * Math.PI * f / fs, c = 2 * Math.cos(w), s1 = 0, s2 = 0; for (let i = at; i < at + blen; i++) { let s = d[i] + c * s1 - s2; s2 = s1; s1 = s } return Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - c * s1 * s2)) / blen }
+  ok(seg(clean, 40) < seg(dirty, 40) * 0.5, 'LF burst ducked ≥6 dB')
+  almost(narrowEnergy(clean, 1500), narrowEnergy(dirty, 1500), narrowEnergy(dirty, 1500) * 0.03, 'high band preserved')
 })
 
 // =================== deesser ===================
@@ -299,24 +315,33 @@ test('deesser — preserves low-mid content', () => {
 
 // =================== debreath ===================
 
-test('debreath — attenuates noise during silent gaps', () => {
+test('debreath — attenuates non-speech far more than speech', () => {
+  // Pure noise (VAD all-inactive) must be pulled down; loud speech must survive.
+  // A no-op or a full-mute would fail one side or the other.
   let speech = lena.subarray(0, fs * 4)
-  let breath = noise(speech.length, 0.02)
-  let dirty = add(speech, breath)
-  let clean = debreath(copy(dirty), { fs })
-  ok(rms(clean) <= rms(dirty), 'output not louder')
+  let n = noise(fs, 0.05)
+  let retNoise = rms(debreath(copy(n), { fs })) / rms(n)
+  let retSpeech = rms(debreath(copy(speech), { fs })) / rms(speech)
+  ok(retNoise < 0.6, 'pure non-speech attenuated (VAD inactive)')
+  ok(retSpeech > retNoise * 1.5, 'speech retained far more than noise')
 })
 
 // =================== dereverb ===================
 
-test('dereverb — reduces tail energy', () => {
-  let speech = lena.subarray(0, fs * 2)
-  let imp = new Float32Array(speech.length)
-  let t60 = 0.5
-  for (let i = 0; i < speech.length; i++) imp[i] = (Math.random() * 2 - 1) * Math.exp(-6.9 * i / (t60 * fs))
-  let rev = convolve(speech, imp.subarray(0, 4096))
+test('dereverb — reduces the reverberant tail after a burst', () => {
+  // A short 500 Hz burst then silence; the room tail fills the silence with decaying
+  // energy. dereverb must pull the tail (0.2–0.6 s, past predelay) down, not just
+  // "not boost" it — the old +10% bound was satisfied by an identity implementation.
+  let n = fs, t60 = 0.5
+  let dry = new Float32Array(n)
+  for (let i = 0; i < 2000; i++) dry[i] = Math.sin(2 * Math.PI * 500 * i / fs) * Math.exp(-i / 400)
+  let h = new Float32Array(8192)
+  for (let i = 0; i < h.length; i++) h[i] = (i === 0 ? 1 : 0) + (Math.random() * 2 - 1) * 0.5 * Math.exp(-6.9 * i / (t60 * fs))
+  let rev = convolve(dry, h)
   let clean = dereverb(rev, { fs, t60 })
-  ok(rms(clean) <= rms(rev) * 1.1, 'tail not boosted')
+  let tail = d => { let s = 0, a = Math.floor(0.2 * fs), b = Math.floor(0.6 * fs); for (let i = a; i < b; i++) s += d[i] * d[i]; return Math.sqrt(s / (b - a)) }
+  ok(tail(clean) < tail(rev) * 0.9, 'late-tail energy reduced ≥10%')
+  ok(clean.every(isFinite), 'finite output')
 })
 
 // =================== denoise auto-classifier ===================
@@ -450,4 +475,32 @@ test('stft stream — long-run ring compaction preserves OLA tails (regression)'
 	let m = 0
 	for (let i = 2048; i < batch.length - 2048; i++) m = Math.max(m, Math.abs(batch[i] - cat[i]))
 	ok(m < 1e-6, `stream ≡ batch over 1 s (${m.toExponential(1)})`)
+})
+
+test('stft — short input (< N−hop) reconstructs instead of returning silence', () => {
+	// Old batch bound `pos + N <= outLen + hop` never entered the loop for inputs
+	// shorter than N−hop → all zeros. `while (pos < outLen)` runs at least one frame.
+	let N = 2048, hop = 512
+	let x = sine(440, 1200, 0.5)                            // 1200 < N−hop = 1536
+	let out = stftBatch(x, (mag, phase) => ({ mag, phase }), { frameSize: N, hopSize: hop })
+	ok(rms(out) > rms(x) * 0.1, `short input reconstructed, not zeroed (rms ${rms(out).toFixed(3)})`)
+})
+
+test('stft — batch tail reaches the last sample (not under-normalized)', () => {
+	// Old bound stopped N−hop samples early, attenuating the final ~1536 samples.
+	let N = 2048, hop = 512
+	let x = sine(440, 20000, 0.5)
+	let out = stftBatch(x, (mag, phase) => ({ mag, phase }), { frameSize: N, hopSize: hop })
+	let seg = (d, a, b) => { let s = 0; for (let i = a; i < b; i++) s += d[i] * d[i]; return Math.sqrt(s / (b - a)) }
+	ok(Math.abs(seg(out, 18500, 19900) / seg(x, 18500, 19900) - 1) < 0.05, 'tail amplitude within 5% of input')
+})
+
+test('gate — look-ahead keeps output aligned: no silence prefix, no dropped tail', () => {
+	// Old delay-line look-ahead prepended `lookahead` samples of silence (and dropped
+	// the same count off the tail). Future-indexed detection stays sample-aligned.
+	let x = sine(440, 8192, 0.5)                            // −6 dBFS, gate stays wide open
+	let out = gate(copy(x), { threshold: -60, attack: 0.0005, fs, lookahead: 0.005 })
+	let la = Math.round(0.005 * fs)
+	ok(rms(out.subarray(0, la)) > rms(x) * 0.3, 'first look-ahead samples are signal, not silence')
+	ok(rms(out.subarray(x.length - la)) > rms(x) * 0.3, 'tail samples preserved, not dropped')
 })

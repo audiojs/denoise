@@ -52,10 +52,10 @@ function exp1(v) {
 }
 
 function makeProcess(opts) {
-  let alphaDD = opts.alphaDD ?? 0.92
+  let alphaDD = opts.alphaDD ?? opts.alpha ?? 0.92 // `alpha` = documented alias
   let xiMin = opts.xiMin ?? 0.0316
   let qPrior = opts.qPrior ?? 0.3                  // a-priori speech absence
-  let gMin = db2lin(opts.gMin ?? -20)
+  let gMin = db2lin(opts.gMinDb ?? opts.gMin ?? -20) // `gMinDb` = documented name
   let N = opts.frameSize || 2048
   let half = N >> 1
   let est = imcra(half, opts.estimator || {})

@@ -1,10 +1,11 @@
 // De-reverb — late-reverb spectral subtraction (Lebart, Boucher & Denbigh 2001).
 //
-// Models late-reverberation tail as decaying noise:
-//   |R(k)|² ≈ exp(-2·δ·t_60·hop) · |Y_prev(k)|²
+// Models the late-reverberation tail as exponentially-decaying noise whose power at
+// frame n is the decayed superposition of earlier frames' power:
+//   |R̂(k)|² = Σ_{m≥P} exp(-2·δ·m·hop) · |Y_{n-m}(k)|²      (P = predelay, in frames)
 //
-// where δ = 6·ln(10)/T60 is the decay rate. Subtract from current frame magnitude
-// like Berouti spectral subtraction:
+// where δ = 3·ln(10)/T60 gives a 60 dB energy decay over T60. The sum is accumulated
+// recursively (rev ← e^{-2δ·hop}·rev + e^{-2δ·P·hop}·|Y_{n-P}|²). Subtract à la Berouti:
 //
 //   |Ŝ(k)|² = max(|Y(k)|² − α·|R̂(k)|², β·|Y(k)|²)
 //
@@ -45,29 +46,31 @@ function makeProcess(opts) {
   let half = N >> 1
 
   let hopSec = hop / fs
-  let delta = 6 * Math.log(10) / t60               // 1/s
+  let delta = 3 * Math.log(10) / t60               // 1/s — 60 dB energy decay over T60
   let predelayFrames = Math.max(1, Math.round(predelay / hopSec))
+  let dStep = Math.exp(-2 * delta * hopSec)         // per-hop energy decay
+  let dPre = Math.exp(-2 * delta * predelayFrames * hopSec)
 
   return function (mag, phase, state) {
     if (!state.history) {
       state.history = []                            // ring of recent power spectra
+      state.rev = new Float64Array(half + 1)        // recursive late-reverb power sum
     }
-    let hist = state.history
+    let hist = state.history, rev = state.rev
     let pwr = new Float64Array(half + 1)
     for (let k = 0; k <= half; k++) pwr[k] = mag[k] * mag[k]
     hist.push(pwr)
-    if (hist.length > predelayFrames + 4) hist.shift()
+    if (hist.length > predelayFrames + 1) hist.shift()
 
     if (hist.length <= predelayFrames) return { mag, phase }
-    let past = hist[hist.length - 1 - predelayFrames]
-    let decay = Math.exp(-2 * delta * predelayFrames * hopSec)
+    let past = hist[0]                              // frame predelayFrames hops ago
 
     for (let k = 0; k <= half; k++) {
+      // rev accumulates Σ_{m≥P} e^{-2δ·m·hop}·|Y_{n-m}|² — the decaying reverb tail
+      rev[k] = dStep * rev[k] + dPre * past[k]
       let p = pwr[k]
-      let r = decay * past[k]
-      let cleaned = p - alpha * r
-      let floor = beta * p
-      mag[k] = Math.sqrt(Math.max(cleaned, floor))
+      let cleaned = p - alpha * rev[k]
+      mag[k] = Math.sqrt(Math.max(cleaned, beta * p))
     }
     return { mag, phase }
   }

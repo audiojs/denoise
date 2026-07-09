@@ -26,10 +26,11 @@ export default function dewind(data, params = {}) {
     params._mfDc = [0, 0]
   }
 
-  let lfHp = highpass(40, 0.707, fs)          // gate band: anything > 40 Hz
   let lfLp = lowpassNum(200, fs)
   let mfBp = bandpassNum(300, 2000, fs)
-  let lfState = [0, 0], mfState = [0, 0]
+  // Measurement-filter states persist across calls so the LF/MF ratio is continuous
+  // at chunk boundaries in streaming mode (fresh [0,0] each call would re-ring).
+  let lfState = params._lfDc, mfState = params._mfDc
 
   let aA = Math.exp(-blockSize / (attack * fs))
   let aR = Math.exp(-blockSize / (release * fs))
@@ -49,7 +50,7 @@ export default function dewind(data, params = {}) {
     }
     lfE /= len; mfE /= len
     let ratio = lfE / Math.max(mfE, 1e-12)
-    // ratio: 0–1 calm, > 5 windy
+    // map ratio → cutoff: clamped at cutoffMin for ratio ≲1.7, reaching cutoffMax near ratio≈19
     let target = cutoffMin + (cutoffMax - cutoffMin) * Math.min(1, Math.max(0, (Math.log(ratio + 1) - 1) / 2))
     let prev = params._fc
     let aRate = target > prev ? aA : aR

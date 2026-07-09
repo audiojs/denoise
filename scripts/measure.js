@@ -9,7 +9,7 @@ import {
   dehum, specsub, wiener, omlsa, declick, decrackle, declip,
   dewind, deesser, debreath, dereverb, denoise
 } from '../index.js'
-import { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/denoise-core'
+import { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/quality'
 
 let fs = 44100
 let lena = new Float32Array(raw)

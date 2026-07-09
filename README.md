@@ -99,26 +99,35 @@ dehum(data, { freq: 50, adaptive: true, drift: 0.5 })          // tracks slow ma
 Adaptive high-pass. Cutoff slides between `cutoffMin` and `cutoffMax` based on the LF/MF energy ratio.
 
 ```js
-dewind(data, { cutoffMin: 60, cutoffMax: 200 })
+dewind(data, { cutoffMin: 60, cutoffMax: 250 })
 ```
 
 | Param | Default | |
 |---|---|---|
 | `cutoffMin` | `60` | Hz — minimum cutoff (LF mostly clean) |
-| `cutoffMax` | `200` | Hz — maximum cutoff (heavy rumble) |
+| `cutoffMax` | `250` | Hz — maximum cutoff (heavy rumble) |
+| `order` | `2` | HP sections (each 12 dB/oct) |
 | `Q` | `0.707` | Butterworth-ish |
-| `block` | `512` | Coefficient update interval (samples) |
+| `blockSize` | `1024` | Coefficient update interval (samples) |
 
 **Use when:** wind buffeting, handheld-mic rumble, low-frequency room modes.
 
 
 ### `deplosive`
 
-Splits the signal into LF (`<200 Hz`) and HF bands; ducks the LF band when it spikes relative to HF (a plosive signature).
+Splits the signal into an LF band (`< crossover`) and its exact complement; ducks the LF band when its energy spikes above `triggerRatio`× the high band (a plosive signature). With no plosive present the output equals the input sample-for-sample — no crossover coloration.
 
 ```js
-deplosive(data, { ratio: 0.2, attack: 0.005, release: 0.05 })
+deplosive(data, { triggerRatio: 4, attack: 0.005, release: 0.08 })
 ```
+
+| Param | Default | |
+|---|---|---|
+| `triggerRatio` | `4` | LF/high energy ratio that opens the duck |
+| `attenuation` | `-18` | dB cut on the LF band when triggered |
+| `crossover` | `200` | Hz — LF/high split point |
+| `attack` | `0.005` | s |
+| `release` | `0.08` | s |
 
 **Use when:** mic plosives (`p`, `b`, `t`) producing low-frequency thuds.
 
@@ -136,9 +145,10 @@ deesser(data, { freq: 6500, threshold: -28, ratio: 4 })
 | `freq` | `6000` | Sibilance centre (Hz) |
 | `threshold` | `-30` | dBFS — engagement level |
 | `ratio` | `4` | Compression ratio above threshold |
-| `attack` | `0.001` | s |
-| `release` | `0.05` | s |
+| `attack` | `0.001` | s — how fast the cut engages |
+| `release` | `0.05` | s — how slowly it recovers |
 | `Q` | `1.4` | Peaking EQ Q |
+| `block` | `64` | Coefficient update interval (samples) |
 
 **Use when:** voice post-production with hot s/sh; vocal bus de-essing.
 
@@ -147,11 +157,18 @@ deesser(data, { freq: 6500, threshold: -28, ratio: 4 })
 
 ### `specsub`
 
-Berouti spectral subtraction (1979). Estimates noise from the first `noiseFrames` and subtracts `α·N̂(k)` from each magnitude frame, with a `β·|Y(k)|` floor.
+Berouti spectral subtraction (1979). Estimates noise from the first `noiseFrames` (or tracks it via Minimum Statistics) and subtracts `α(γ)·N̂(k)` — an SNR-adaptive over-subtraction factor — from each magnitude frame, with a `β·|Y(k)|²` spectral floor. Pass an explicit `alpha` to force a fixed factor.
 
 ```js
-specsub(data, { alpha: 2, beta: 0.01, noiseFrames: 6 })
+specsub(data, { beta: 0.02, noiseFrames: 6 })                 // adaptive α(γ)
+specsub(data, { alpha: 2, beta: 0.02 })                       // fixed over-subtraction
 ```
+
+| Param | Default | |
+|---|---|---|
+| `alpha` | adaptive | Fixed over-subtraction factor; omit for Berouti α(γ) |
+| `beta` | `0.02` | Spectral floor (fraction of the noisy spectrum) |
+| `noiseFrames` | first 4 frames | Leading noise-only frames for the PSD bootstrap |
 
 **Use when:** quick baseline; offline cleanup with a known noise-only preamble.<br>
 **Not for:** musical-noise-sensitive material — use `wiener` or `omlsa`.
@@ -162,17 +179,17 @@ specsub(data, { alpha: 2, beta: 0.01, noiseFrames: 6 })
 MMSE Wiener / log-MMSE (Ephraim-Malah 1984/1985) with decision-directed a-priori SNR.
 
 ```js
-wiener(data, { rule: 'mmse-lsa', alpha: 0.98 })
-wiener(data)                                                   // defaults: 'wiener' rule
+wiener(data, { rule: 'wiener' })                              // pure Wiener gain
+wiener(data)                                                   // defaults: 'mmse-lsa' rule
 ```
 
 | Param | Default | |
 |---|---|---|
-| `rule` | `'wiener'` | `'wiener'` or `'mmse-lsa'` (log-spectral, less musical noise) |
-| `alpha` | `0.98` | Decision-directed smoothing |
-| `frameSize` | `1024` | STFT frame |
+| `rule` | `'mmse-lsa'` | `'wiener'` or `'mmse-lsa'` (log-spectral, less musical noise) |
+| `alpha` | `0.98` | Decision-directed smoothing (alias of `alphaDD`) |
+| `frameSize` | `2048` | STFT frame |
 | `hopSize` | `frameSize/4` | OLA hop |
-| `noiseFrames` | `6` | Initial noise-only frames for PSD bootstrap |
+| `noiseFrames` | first 4 frames | Leading noise-only frames for PSD bootstrap |
 
 **Use when:** transparent broadband denoise; the "safe default" for stationary noise.
 
@@ -189,9 +206,9 @@ omlsa(data, { gMinDb: -25 })                                   // less aggressiv
 
 | Param | Default | |
 |---|---|---|
-| `gMinDb` | `-25` | dB floor for non-speech bins |
-| `alpha` | `0.92` | Decision-directed smoothing |
-| `frameSize` | `1024` | |
+| `gMinDb` | `-20` | dB floor for non-speech bins (alias of `gMin`) |
+| `alpha` | `0.92` | Decision-directed smoothing (alias of `alphaDD`) |
+| `frameSize` | `2048` | |
 | `hopSize` | `frameSize/4` | |
 
 **Use when:** speech in non-stationary noise (street, café, car); generally the highest-quality choice for noisy speech.
@@ -204,15 +221,15 @@ omlsa(data, { gMinDb: -25 })                                   // less aggressiv
 Detects impulses as AR-residual outliers (`> threshold·σ`); replaces each click region with an AR-LS interpolation (Janssen 1986 / Godsill-Rayner 1998).
 
 ```js
-declick(data, { threshold: 4, order: 50 })
+declick(data, { threshold: 4, order: 60 })
 ```
 
 | Param | Default | |
 |---|---|---|
 | `threshold` | `4` | σ-multiple for click detection |
-| `order` | `50` | AR model order |
-| `pad` | `2` | Extra samples on each side of the detected click |
-| `maxGap` | `order` | Maximum gap to interpolate (longer → skipped) |
+| `order` | `60` | AR model order |
+| `guard` | `2` | Extra samples on each side of the detected click |
+| `maxBurst` | `64` | Longest run repaired (longer → left as a real transient) |
 
 **Use when:** vinyl pops, edit clicks, occasional impulse noise.<br>
 **Not for:** dense crackle (use `decrackle`); long dropouts (use `arInterpolate` directly).
@@ -223,7 +240,7 @@ declick(data, { threshold: 4, order: 50 })
 Continuous AR-residual outlier detection with MAD-based threshold. Suited to high-rate impulse noise.
 
 ```js
-decrackle(data, { madThreshold: 4 })
+decrackle(data, { threshold: 3 })
 ```
 
 **Use when:** shellac / 78 RPM crackle; persistent low-amplitude clicks.
@@ -289,7 +306,7 @@ gate(data, { threshold: -45, attack: 0.005, release: 0.1, hold: 0.05, lookahead:
 VAD-driven inverse gate. Uses energy + spectral flatness with a percentile-based noise floor; attenuates frames classified as non-speech with smooth attack/release.
 
 ```js
-debreath(data, { reduction: 0.3 })                             // -10 dB on non-speech
+debreath(data, { range: -10 })                                // -10 dB on non-speech (default -12)
 ```
 
 **Use when:** breath, mouth noise, hiss in pauses on a voiceover.

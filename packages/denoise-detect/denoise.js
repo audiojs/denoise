@@ -2,14 +2,15 @@
 // in `data` and dispatches to the most suitable single-pass method.
 //
 // Classification (single STFT sweep over the input):
-//   - tonalScore     — strong narrow peaks at mains harmonics → dehum
-//   - clickScore     — high kurtosis of AR residual → declick
-//   - lfScore        — LF/MF energy ratio above 4 → dewind
-//   - sibilanceScore — 5–9 kHz peaks vs. mids → deesser
-//   - reverbScore    — slow late-tail decay (cepstral peak) → dereverb
-//   - stationary    → omlsa  (best non-stationary general denoise)
-//   - otherwise     → wiener (transparent broadband)
+//   - hum   — narrow peaks at mains harmonics (Goertzel) → dehum
+//   - click — high kurtosis of AR residual → declick
+//   - hi    — 5–9 kHz / mid energy ratio → deesser
+//   - lf    — LF/mid energy ratio → dewind
+//   - nonstationarity — frame-energy CV → omlsa
+//   - otherwise → wiener (transparent broadband)
 //
+// dereverb has no reliable single-pass signature, so auto-mode never selects it —
+// reach it explicitly via `denoise(data, { force: 'dereverb' })` or `dereverb()`.
 // Returns { out, plan } so callers can inspect which method ran.
 
 import { stftAnalyse } from '@audio/stft'
@@ -56,7 +57,7 @@ export function classify(data, fs = 44100) {
       let f = k * fs / N
       if (f < 200) lf += p
       else if (f < 2000) mf += p
-      else if (f < 9000) hi += p
+      else if (f >= 5000 && f < 9000) hi += p    // sibilance band, kept specific (not 2–9 kHz)
     }
     lfSum += lf; mfSum += mf; hiSum += hi
     frameVar.push(lf + mf + hi)
@@ -91,23 +92,30 @@ export function classify(data, fs = 44100) {
   // HI/MF ratio
   let hiRatio = hiSum / Math.max(mfSum, 1e-30)
 
-  // Click score: AR residual kurtosis on a short window
+  // Click score: max AR-residual excess kurtosis over windows spanning the whole
+  // signal. Clicks are sparse and impulsive — a fixed prefix window can miss them
+  // entirely, so scan across and take the peak (the window holding a click spikes).
   let clickScore = 0
-  if (data.length >= 4096) {
-    let win = data.subarray(0, 4096)
-    try {
-      let { a } = arFit(win, 30)
-      let resid = new Float64Array(4096), mean = 0, m2 = 0, m4 = 0
-      for (let i = 30; i < 4096; i++) {
-        let s = win[i]
-        for (let k = 1; k <= 30; k++) s += a[k] * win[i - k]
-        resid[i] = s; mean += s
-      }
-      mean /= (4096 - 30)
-      for (let i = 30; i < 4096; i++) { let d = resid[i] - mean; m2 += d * d; m4 += d * d * d * d }
-      m2 /= (4096 - 30); m4 /= (4096 - 30)
-      clickScore = m2 > 0 ? m4 / (m2 * m2) - 3 : 0     // excess kurtosis
-    } catch {}
+  let cw = 4096
+  if (data.length >= cw) {
+    let stride = Math.max(cw, Math.floor((data.length - cw) / 8) || cw)
+    for (let start = 0; start + cw <= data.length; start += stride) {
+      let seg = data.subarray(start, start + cw)
+      try {
+        let { a } = arFit(seg, 30)
+        let resid = new Float64Array(cw), mean = 0, m2 = 0, m4 = 0
+        for (let i = 30; i < cw; i++) {
+          let s = seg[i]
+          for (let k = 1; k <= 30; k++) s += a[k] * seg[i - k]
+          resid[i] = s; mean += s
+        }
+        mean /= (cw - 30)
+        for (let i = 30; i < cw; i++) { let d = resid[i] - mean; m2 += d * d; m4 += d * d * d * d }
+        m2 /= (cw - 30); m4 /= (cw - 30)
+        let ex = m2 > 0 ? m4 / (m2 * m2) - 3 : 0       // excess kurtosis
+        if (ex > clickScore) clickScore = ex
+      } catch {}
+    }
   }
 
   // Stationarity: variance-of-variances of frame energy

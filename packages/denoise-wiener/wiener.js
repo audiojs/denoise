@@ -34,7 +34,10 @@ function run(data, opts) {
   let profile = opts.profile
   if (!profile) {
     let from = opts.profileFrom ?? 0
-    let to = opts.profileTo ?? Math.min(data.length, from + N * 4)
+    let nf = opts.noiseFrames                                 // # leading noise-only frames
+    let to = opts.profileTo ?? (nf != null
+      ? Math.min(data.length, from + N + Math.max(0, nf - 1) * hop)
+      : Math.min(data.length, from + N * 4))
     profile = noiseProfile(data, { from, to, frameSize: N, hopSize: hop })
   }
   return stftBatch(data, makeProcess({ ...opts, profile }), { frameSize: N, hopSize: hop, fs: opts.fs })
@@ -58,7 +61,7 @@ function exp1(v) {
 
 function makeProcess(opts) {
   let rule = opts.rule || 'mmse-lsa'
-  let alphaDD = opts.alphaDD ?? 0.98
+  let alphaDD = opts.alphaDD ?? opts.alpha ?? 0.98           // `alpha` = documented alias
   let xiMin = opts.xiMin ?? 0.0316                 // -15 dB
   let auto = !opts.profile
   let N = opts.frameSize || 2048

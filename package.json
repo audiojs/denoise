@@ -15,7 +15,6 @@
     "test": "node test.js",
     "test:all": "npm test --workspaces --if-present && npm test",
     "measure": "node scripts/measure.js",
-    "compare": "node scripts/compare.js",
     "publish:all": "npm publish --workspaces && npm publish"
   },
   "repository": {

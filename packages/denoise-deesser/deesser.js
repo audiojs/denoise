@@ -34,7 +34,10 @@ export default function deesser(data, params = {}) {
 
   let aA = Math.exp(-1 / (attack * fs))
   let aR = Math.exp(-1 / (release * fs))
-  let aBlk = Math.exp(-block / (release * fs))      // EQ-gain smoothing across blocks
+  // EQ-gain smoothing runs once per block, so its coefficients are per-block:
+  // deepening the cut follows `attack`, recovering follows `release`.
+  let aBlkA = Math.exp(-block / (attack * fs))
+  let aBlkR = Math.exp(-block / (release * fs))
   let thLin = db2lin(threshold)
 
   // Sidechain: HP copy for detection
@@ -59,7 +62,7 @@ export default function deesser(data, params = {}) {
       let over = lin2db(peakEnv / thLin)
       target = -over * (1 - 1 / ratio)              // negative dB cut
     }
-    eqDb = target < eqDb ? aBlk * eqDb + (1 - aBlk) * target : aR * eqDb + (1 - aR) * target
+    eqDb = target < eqDb ? aBlkA * eqDb + (1 - aBlkA) * target : aBlkR * eqDb + (1 - aBlkR) * target
 
     let coef = peaking(freq, Q, fs, eqDb)
     let blk = data.subarray(pos, end)
