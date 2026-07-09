@@ -9,7 +9,7 @@
 // Best on broadband background impulse showers — quiet record surface noise,
 // shellac dust, mild dropouts. For loud isolated pops use declick.
 
-import { arFit, arInterpolate } from '@audio/denoise-core'
+import { arFit, arInterpolate } from '@audio/lpc'
 
 export default function decrackle(data, params = {}) {
   let p = params.order ?? 50

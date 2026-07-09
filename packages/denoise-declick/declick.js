@@ -11,7 +11,7 @@
 // One pass over the signal in overlapping windows. Edges of windows skipped to
 // avoid boundary effects (the AR fit is least reliable there).
 
-import { arFit, arInterpolate } from '@audio/denoise-core'
+import { arFit, arInterpolate } from '@audio/lpc'
 
 export default function declick(data, params = {}) {
   let p = params.order ?? 60                       // AR order — high captures vocal formants

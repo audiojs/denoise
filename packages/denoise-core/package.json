@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-core",
-  "version": "0.1.3",
-  "description": "Internal glue for @audio/denoise-* atoms — STFT (batch/stream/analyse), AR modeling, quality metrics, dB/linear + stream-writer utils. VAD → @audio/vad, noise estimation → @audio/noise-estimate.",
+  "version": "0.1.4",
+  "description": "Internal glue for @audio/denoise-* atoms — STFT (batch/stream/analyse), quality metrics, dB/linear + stream-writer utils. VAD → @audio/vad, noise estimation → @audio/noise-estimate, LPC/AR → @audio/lpc.",
   "type": "module",
   "sideEffects": false,
   "main": "index.js",
@@ -10,14 +10,12 @@
     "./package.json": "./package.json",
     "./stft": "./stft.js",
     "./util": "./util.js",
-    "./ar": "./ar.js",
     "./quality": "./quality.js"
   },
   "files": [
     "index.js",
     "stft.js",
     "util.js",
-    "ar.js",
     "quality.js"
   ],
   "dependencies": {

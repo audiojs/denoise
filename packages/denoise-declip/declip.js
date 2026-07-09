@@ -10,7 +10,7 @@
 // smooth fills that may sound dull — for those, a sparsity-based method (A-SPADE)
 // is more appropriate.
 
-import { arFit, arInterpolate } from '@audio/denoise-core'
+import { arFit, arInterpolate } from '@audio/lpc'
 
 export default function declip(data, params = {}) {
   let p = params.order ?? 100

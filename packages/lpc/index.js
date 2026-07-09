@@ -1,9 +1,10 @@
-// Auto-regressive modelling for click/click-burst interpolation and de-clip extrapolation.
-//   - Levinson-Durbin recursion → AR(p) coefficients from autocorrelation
-//   - LS interpolation of missing samples from neighbouring AR predictions
-//   - Forward AR extrapolation (used by de-clip)
+// Linear predictive coding — autoregressive modelling of audio.
+//   - autocorr + levinson (Levinson-Durbin) → AR(p) / LPC coefficients from a window
+//   - arPredict / arExtrapolate → forward prediction (de-clip projection)
+//   - arInterpolate → least-squares gap fill (de-click / de-crackle)
 //
-// Reference: Godsill & Rayner (1998), "Digital Audio Restoration", §5.
+// `lpc(x, p)` is the standard entry point (alias of arFit): coefficients a[] + residual e.
+// References: Markel & Gray (1976); Godsill & Rayner (1998), "Digital Audio Restoration" §5.
 
 // Biased autocorrelation R[0..p]. Bias is preferable for short windows (Toeplitz PSD).
 export function autocorr(x, p) {
@@ -38,10 +39,13 @@ export function levinson(R, p) {
   return { a, e }
 }
 
-// Convenience: AR fit on a window.
+// LPC analysis on a window → { a, e }. Standard entry point.
 export function arFit(x, p) {
   return levinson(autocorr(x, p), p)
 }
+
+// Alias: the conventional name for AR fit in the LPC literature.
+export const lpc = arFit
 
 // Predict next sample via AR(p): x̂[n] = -∑ a[k]·x[n-k], k=1..p.
 export function arPredict(a, hist) {
