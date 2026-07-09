@@ -8,7 +8,10 @@
 // Standard for voice post-production. Unlike a static shelf, the cut only engages
 // on loud 's' / 'sh' events, so dark consonants aren't thinned.
 
-import { biquad, highpassCoefs, peakingCoefs, db2lin, lin2db } from '@audio/denoise-core'
+import { process as biquad, highpass, peaking } from '@audio/biquad'
+
+const db2lin = db => Math.pow(10, db / 20)
+const lin2db = x => 20 * Math.log10(Math.max(x, 1e-30))
 
 export default function deesser(data, params = {}) {
   let fs = params.fs || 44100
@@ -22,7 +25,7 @@ export default function deesser(data, params = {}) {
 
   if (!params._init) {
     params._init = true
-    params._scC = highpassCoefs(freq, 0.707, fs)
+    params._scC = highpass(freq, 0.707, fs)
     params._scS = [0, 0]
     params._eqS = [0, 0]
     params._env = 0
@@ -37,7 +40,7 @@ export default function deesser(data, params = {}) {
   // Sidechain: HP copy for detection
   let sc = new Float32Array(data.length)
   for (let i = 0; i < data.length; i++) sc[i] = data[i]
-  biquad(sc, params._scC.b0, params._scC.b1, params._scC.b2, params._scC.a1, params._scC.a2, params._scS)
+  biquad(sc, params._scC, params._scS)
 
   let env = params._env
   let eqDb = params._eqGainDb
@@ -58,9 +61,9 @@ export default function deesser(data, params = {}) {
     }
     eqDb = target < eqDb ? aBlk * eqDb + (1 - aBlk) * target : aR * eqDb + (1 - aR) * target
 
-    let coef = peakingCoefs(freq, Q, eqDb, fs)
+    let coef = peaking(freq, Q, fs, eqDb)
     let blk = data.subarray(pos, end)
-    biquad(blk, coef.b0, coef.b1, coef.b2, coef.a1, coef.a2, params._eqS)
+    biquad(blk, coef, params._eqS)
   }
   params._env = env
   params._eqGainDb = eqDb

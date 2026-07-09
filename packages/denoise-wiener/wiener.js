@@ -10,9 +10,12 @@
 //
 // Noise PSD source: explicit `profile` from quiet segment, or auto via Minimum Statistics.
 
-import { stftBatch, stftStream } from '@audio/denoise-core'
-import { writer } from '@audio/denoise-core'
+import { stftBatch, stftStream } from '@audio/stft'
 import { minStats, noiseProfile } from '@audio/noise-estimate'
+
+// Wrap { write, flush } into a single callable (inlined convention).
+const writer = s => chunk => chunk ? s.write(chunk) : s.flush()
+
 
 export default function wiener(dataOrOpts, opts) {
   if (dataOrOpts instanceof Float32Array || dataOrOpts instanceof Float64Array) {

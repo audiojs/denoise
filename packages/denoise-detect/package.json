@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-detect",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "denoise — content-aware auto-selector that classifies the dominant noise type",
   "type": "module",
   "sideEffects": false,
@@ -13,7 +13,6 @@
     "denoise.js"
   ],
   "dependencies": {
-    "@audio/denoise-core": "^0.1.0",
     "@audio/denoise-wiener": "^0.1.0",
     "@audio/denoise-omlsa": "^0.1.0",
     "@audio/denoise-dehum": "^0.1.0",
@@ -21,7 +20,8 @@
     "@audio/denoise-dewind": "^0.1.0",
     "@audio/denoise-deesser": "^0.1.0",
     "@audio/denoise-dereverb": "^0.1.0",
-    "@audio/lpc": "^1.0.0"
+    "@audio/lpc": "^1.0.0",
+    "@audio/stft": "^1.0.3"
   },
   "keywords": [
     "audio",

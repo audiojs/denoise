@@ -10,8 +10,8 @@ import {
 import { vad, spp, ddSnr } from '@audio/vad'
 import { vad as vadUmbrella, minStats as minStatsUmbrella } from './index.js'
 import { noiseProfile, minStats, imcra } from '@audio/noise-estimate'
-import { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/denoise-core'
-import { stftBatch, stftStream, stftAnalyse } from '@audio/denoise-core'
+import { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/quality'
+import { stftBatch, stftStream, stftAnalyse } from '@audio/stft'
 
 let fs = 44100
 let lena = new Float32Array(raw)                          // 12.27s mono speech

@@ -6,7 +6,7 @@
 // Returns the same buffer modified in-place. Pass the same params object across blocks
 // so biquad state and tracker phase carry over.
 
-import { biquadCascade, notchCoefs } from '@audio/denoise-core'
+import { cascade, notch } from '@audio/biquad'
 
 export default function dehum(data, params = {}) {
   let freq = params.freq ?? 50
@@ -22,7 +22,7 @@ export default function dehum(data, params = {}) {
     for (let h = 1; h <= harmonics; h++) {
       let f = freq * h
       if (f >= fs / 2) break
-      coefs.push(notchCoefs(f, Q, fs))
+      coefs.push(notch(f, Q, fs))
     }
     params._coefs = coefs
     params._state = coefs.map(() => [0, 0])
@@ -37,7 +37,7 @@ export default function dehum(data, params = {}) {
       for (let h = 1; h <= harmonics; h++) {
         let fh = f * h
         if (fh >= fs / 2) break
-        coefs.push(notchCoefs(fh, Q, fs))
+        coefs.push(notch(fh, Q, fs))
       }
       params._coefs = coefs
       // keep state arrays — close enough freq, biquad memory still valid
@@ -46,7 +46,7 @@ export default function dehum(data, params = {}) {
     }
   }
 
-  biquadCascade(data, params._coefs, params._state)
+  cascade(data, params._coefs, params._state)
   return data
 }
 

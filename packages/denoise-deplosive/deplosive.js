@@ -7,7 +7,7 @@
 // of the LF band (HF = x − LF), so with gain = 1 the output equals the input sample
 // for sample — high content passes untouched, no crossover coloration.
 
-import { biquad, lowpassCoefs } from '@audio/denoise-core'
+import { process as biquad, lowpass } from '@audio/biquad'
 
 export default function deplosive(data, params = {}) {
   let fs = params.fs || 44100
@@ -19,7 +19,7 @@ export default function deplosive(data, params = {}) {
 
   if (!params._init) {
     params._init = true
-    params._lpC = lowpassCoefs(crossover, 0.707, fs)
+    params._lpC = lowpass(crossover, 0.707, fs)
     params._lpS = [0, 0]
     params._lfDetS = [0, 0]
     params._mfDetS = [0, 0]
@@ -33,7 +33,7 @@ export default function deplosive(data, params = {}) {
   // Low-passed copy; the high band is the sample-exact complement x − lf.
   let lfBuf = new Float32Array(data.length)
   for (let i = 0; i < data.length; i++) lfBuf[i] = data[i]
-  biquad(lfBuf, params._lpC.b0, params._lpC.b1, params._lpC.b2, params._lpC.a1, params._lpC.a2, params._lpS)
+  biquad(lfBuf, params._lpC, params._lpS)
 
   // detection: 1-pole envelopes on LF and the complementary high band
   let aDet = Math.exp(-1 / (0.003 * fs))

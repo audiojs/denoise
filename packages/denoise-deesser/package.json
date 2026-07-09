@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-deesser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "De-esser — dynamic peaking EQ centred on the sibilance band",
   "type": "module",
   "sideEffects": false,
@@ -13,7 +13,7 @@
     "deesser.js"
   ],
   "dependencies": {
-    "@audio/denoise-core": "^0.1.0"
+    "@audio/biquad": "^1.1.0"
   },
   "keywords": [
     "audio",

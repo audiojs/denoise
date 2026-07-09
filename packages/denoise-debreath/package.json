@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-debreath",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "De-breath — VAD-driven downward attenuation during non-speech regions",
   "type": "module",
   "sideEffects": false,
@@ -15,7 +15,6 @@
     "atom.js"
   ],
   "dependencies": {
-    "@audio/denoise-core": "^0.1.0",
     "@audio/vad": "^1.0.0"
   },
   "keywords": [

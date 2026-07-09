@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-deplosive",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "De-plosive — detect short low-frequency bursts ('p', 'b' attacks on close mics)",
   "type": "module",
   "sideEffects": false,
@@ -15,7 +15,7 @@
     "atom.js"
   ],
   "dependencies": {
-    "@audio/denoise-core": "^0.1.0"
+    "@audio/biquad": "^1.1.0"
   },
   "keywords": [
     "audio",

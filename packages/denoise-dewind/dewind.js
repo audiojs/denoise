@@ -6,7 +6,7 @@
 // One-pole tracker on the cutoff makes movement smooth — no audible swept-EQ
 // pumping. For sustained outdoor recording, set `cutoffMin: 120`.
 
-import { biquadCascade, highpassCoefs } from '@audio/denoise-core'
+import { cascade, highpass } from '@audio/biquad'
 
 export default function dewind(data, params = {}) {
   let fs = params.fs || 44100
@@ -26,7 +26,7 @@ export default function dewind(data, params = {}) {
     params._mfDc = [0, 0]
   }
 
-  let lfHp = highpassCoefs(40, 0.707, fs)          // gate band: anything > 40 Hz
+  let lfHp = highpass(40, 0.707, fs)          // gate band: anything > 40 Hz
   let lfLp = lowpassNum(200, fs)
   let mfBp = bandpassNum(300, 2000, fs)
   let lfState = [0, 0], mfState = [0, 0]
@@ -57,13 +57,13 @@ export default function dewind(data, params = {}) {
     params._fc = fc
 
     // rebuild HP cascade for this block
-    let coef = highpassCoefs(fc, Q, fs)
+    let coef = highpass(fc, Q, fs)
     let coefs = []
     for (let i = 0; i < order; i++) coefs.push(coef)
     params._coefs = coefs
 
     let blk = data.subarray(pos, end)
-    biquadCascade(blk, params._coefs, params._state)
+    cascade(blk, params._coefs, params._state)
     pos = end
   }
   return data

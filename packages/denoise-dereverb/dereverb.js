@@ -11,8 +11,11 @@
 // Single-channel — works for moderate RT60 (0.3-1s) on speech. Heavy reverb
 // requires multi-channel WPE (Tier 2).
 
-import { stftBatch, stftStream } from '@audio/denoise-core'
-import { writer } from '@audio/denoise-core'
+import { stftBatch, stftStream } from '@audio/stft'
+
+// Wrap { write, flush } into a single callable (inlined convention).
+const writer = s => chunk => chunk ? s.write(chunk) : s.flush()
+
 
 export default function dereverb(dataOrOpts, opts) {
   if (dataOrOpts instanceof Float32Array || dataOrOpts instanceof Float64Array) {

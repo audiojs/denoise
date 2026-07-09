@@ -1,3 +1,5 @@
+
+const db2lin = db => Math.pow(10, db / 20)
 // Look-ahead noise gate with hysteresis.
 //   - Detection envelope tracks |x| with attack/release time constants
 //   - Hysteresis: separate open/close thresholds prevents chatter near the threshold
@@ -8,7 +10,6 @@
 // Returns the same buffer modified in-place. Pass the same params object on every
 // call to persist envelope/gain state across blocks.
 
-import { db2lin } from '@audio/denoise-core'
 
 export default function gate(data, params = {}) {
   let openTh = db2lin(params.threshold ?? -40)

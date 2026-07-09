@@ -12,7 +12,7 @@
 //
 // Returns { out, plan } so callers can inspect which method ran.
 
-import { stftAnalyse } from '@audio/denoise-core'
+import { stftAnalyse } from '@audio/stft'
 import { arFit } from '@audio/lpc'
 import wiener from '@audio/denoise-wiener'
 import omlsa from '@audio/denoise-omlsa'

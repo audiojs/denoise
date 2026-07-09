@@ -5,7 +5,7 @@
 // regions repair chirps/beeps/holes without touching surrounding content.
 
 import { fft } from 'fourier-transform'
-import { stftBatch, hannWindow } from '@audio/denoise-core'
+import { stftBatch, hannWindow } from '@audio/stft'
 
 // analyze one frame's half-spectrum at pos (mag + phase copies)
 function analyze (data, pos, win, half) {

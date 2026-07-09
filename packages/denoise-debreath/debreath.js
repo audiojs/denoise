@@ -7,7 +7,8 @@
 //   - default attenuation is moderate (-12 dB), preserves naturalness vs full mute
 
 import { vad as runVad } from '@audio/vad'
-import { db2lin } from '@audio/denoise-core'
+
+const db2lin = db => Math.pow(10, db / 20)
 
 export default function debreath(data, params = {}) {
   let fs = params.fs || 44100

@@ -9,9 +9,14 @@
 // Best-in-class for non-stationary noise (babble, traffic, HVAC swells) — adapts the
 // noise PSD continuously without freezing during voiced regions.
 
-import { stftBatch, stftStream } from '@audio/denoise-core'
-import { writer, db2lin } from '@audio/denoise-core'
+import { stftBatch, stftStream } from '@audio/stft'
 import { imcra } from '@audio/noise-estimate'
+
+// Wrap { write, flush } into a single callable (inlined convention).
+const writer = s => chunk => chunk ? s.write(chunk) : s.flush()
+
+const db2lin = db => Math.pow(10, db / 20)
+
 
 export default function omlsa(dataOrOpts, opts) {
   if (dataOrOpts instanceof Float32Array || dataOrOpts instanceof Float64Array) {
