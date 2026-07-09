@@ -1,4 +1,4 @@
-// audio-module manifest — wraps the LF-burst ducker kernel per @audio/module CONTRACT.
+// atom manifest — wraps the LF-burst ducker kernel per @audio/atom CONTRACT.
 // deplosive.js persists its filter/envelope state directly on the object it's called
 // with (`params._lpC`, `_hpC`, `_lpS`, `_hpS`, `_lfDetS`, `_mfDetS`, `_gain`) — same
 // state-per-channel style as denoise-dehum. triggerRatio/attenuation/attack/release are

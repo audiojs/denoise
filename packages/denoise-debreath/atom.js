@@ -1,4 +1,4 @@
-// audio-module manifest — wraps the VAD-driven breath attenuator per @audio/module
+// atom manifest — wraps the VAD-driven breath attenuator per @audio/atom
 // CONTRACT. debreath.js computes its VAD decision from a GLOBAL statistic — a 10th-
 // percentile energy floor over every frame of the ENTIRE input (vad.js: "Global noise
 // floor ... Robust on signals where any short window may be entirely speech") — and its

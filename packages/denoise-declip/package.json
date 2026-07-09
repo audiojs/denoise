@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-declip",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "De-clip — restore samples that have been hard-clipped at ±threshold",
   "type": "module",
   "sideEffects": false,
@@ -8,11 +8,11 @@
   "exports": {
     ".": "./declip.js",
     "./package.json": "./package.json",
-    "./audio-module": "./audio-module.js"
+    "./atom": "./atom.js"
   },
   "files": [
     "declip.js",
-    "audio-module.js"
+    "atom.js"
   ],
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"

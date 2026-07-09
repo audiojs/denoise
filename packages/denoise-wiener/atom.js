@@ -1,4 +1,4 @@
-// audio-module manifest — wraps the Wiener/MMSE-LSA kernel per @audio/module CONTRACT.
+// atom manifest — wraps the Wiener/MMSE-LSA kernel per @audio/atom CONTRACT.
 // Same streaming shape as denoise-spectral: wiener.js's opts-only call returns a
 // writer(stftStream(...)) function that auto-tracks noise PSD online via Minimum
 // Statistics (no manual `profile` passed — the Float64Array profile argument can't be
@@ -9,7 +9,7 @@
 // 10**(xiFloor/10) — matches the kernel's own default of 0.0316 == -15dB exactly).
 //
 // Same FIFO-absorbed variable-length write() + fixed extra delay as denoise-spectral —
-// see that package's audio-module.js header for how the 3072-sample figure (frameSize
+// see that package's atom.js header for how the 3072-sample figure (frameSize
 // 2048 / hopSize 512, both fixed here) was measured.
 
 import wiener_ from './wiener.js'

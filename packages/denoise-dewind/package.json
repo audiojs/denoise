@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dewind",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "De-wind / de-rumble — adaptive high-pass that opens wider when low-frequency",
   "type": "module",
   "sideEffects": false,
@@ -8,11 +8,11 @@
   "exports": {
     ".": "./dewind.js",
     "./package.json": "./package.json",
-    "./audio-module": "./audio-module.js"
+    "./atom": "./atom.js"
   },
   "files": [
     "dewind.js",
-    "audio-module.js"
+    "atom.js"
   ],
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"

@@ -1,4 +1,4 @@
-// audio-module manifest — wraps the spectral-subtraction kernel per @audio/module CONTRACT.
+// atom manifest — wraps the spectral-subtraction kernel per @audio/atom CONTRACT.
 // specsub.js exposes a streaming API (opts-only call returns a writer(stftStream(...))
 // function) that auto-tracks the noise PSD online via Minimum Statistics whenever no
 // manual `profile` is supplied — that auto path is what this manifest uses (a Float64Array

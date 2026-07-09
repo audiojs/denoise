@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dehum",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Mains hum / tonal noise removal via cascaded high-Q biquad notches",
   "type": "module",
   "sideEffects": false,
@@ -8,11 +8,11 @@
   "exports": {
     ".": "./dehum.js",
     "./package.json": "./package.json",
-    "./audio-module": "./audio-module.js"
+    "./atom": "./atom.js"
   },
   "files": [
     "dehum.js",
-    "audio-module.js"
+    "atom.js"
   ],
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"

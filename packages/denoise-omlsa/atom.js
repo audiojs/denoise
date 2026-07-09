@@ -1,4 +1,4 @@
-// audio-module manifest — wraps the OM-LSA kernel per @audio/module CONTRACT.
+// atom manifest — wraps the OM-LSA kernel per @audio/atom CONTRACT.
 // Same streaming shape as denoise-spectral/denoise-wiener: omlsa.js's opts-only call
 // returns a writer(stftStream(...)) function. Unlike specsub/wiener, omlsa never takes
 // a manual noise profile at all — IMCRA (Cohen 2003) is always-on and fully online, so
@@ -9,7 +9,7 @@
 // from 0/1 (the kernel divides by 1-qPrior).
 //
 // Same FIFO-absorbed variable-length write() + fixed extra delay as denoise-spectral —
-// see that package's audio-module.js header for how the 3072-sample figure (frameSize
+// see that package's atom.js header for how the 3072-sample figure (frameSize
 // 2048 / hopSize 512, both fixed here) was measured.
 
 import omlsa_ from './omlsa.js'

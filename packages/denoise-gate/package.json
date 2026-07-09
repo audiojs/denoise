@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-gate",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Look-ahead noise gate with hysteresis",
   "type": "module",
   "sideEffects": false,
@@ -8,11 +8,11 @@
   "exports": {
     ".": "./gate.js",
     "./package.json": "./package.json",
-    "./audio-module": "./audio-module.js"
+    "./atom": "./atom.js"
   },
   "files": [
     "gate.js",
-    "audio-module.js"
+    "atom.js"
   ],
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"

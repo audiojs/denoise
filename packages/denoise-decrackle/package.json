@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-decrackle",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "De-crackle — continuous-stream version of de-click for vinyl-style noise",
   "type": "module",
   "sideEffects": false,
@@ -8,11 +8,11 @@
   "exports": {
     ".": "./decrackle.js",
     "./package.json": "./package.json",
-    "./audio-module": "./audio-module.js"
+    "./atom": "./atom.js"
   },
   "files": [
     "decrackle.js",
-    "audio-module.js"
+    "atom.js"
   ],
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"

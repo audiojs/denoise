@@ -1,5 +1,5 @@
-// audio-module manifest — wraps the late-reverb spectral-subtraction kernel per
-// @audio/module CONTRACT. Same streaming shape as denoise-spectral: dereverb.js's
+// atom manifest — wraps the late-reverb spectral-subtraction kernel per
+// @audio/atom CONTRACT. Same streaming shape as denoise-spectral: dereverb.js's
 // opts-only call returns a writer(stftStream(...)) function. There is no noise-profile
 // argument at all here — the late-reverb tail model is driven entirely by t60 (assumed
 // decay time) plus a rolling history of recent frame power, both online/causal by
@@ -9,7 +9,7 @@
 // carry flags:['restart'].
 //
 // Same FIFO-absorbed variable-length write() + fixed extra delay as denoise-spectral —
-// see that package's audio-module.js header for how the 3072-sample figure (frameSize
+// see that package's atom.js header for how the 3072-sample figure (frameSize
 // 2048 / hopSize 512, both fixed here) was measured.
 
 import dereverb_ from './dereverb.js'

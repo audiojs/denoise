@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-spectral",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Spectral subtraction (Boll 1979) with Berouti over-subtraction + spectral floor",
   "type": "module",
   "sideEffects": false,
@@ -8,11 +8,11 @@
   "exports": {
     ".": "./specsub.js",
     "./package.json": "./package.json",
-    "./audio-module": "./audio-module.js"
+    "./atom": "./atom.js"
   },
   "files": [
     "specsub.js",
-    "audio-module.js"
+    "atom.js"
   ],
   "dependencies": {
     "@audio/denoise-core": "^0.1.0"
