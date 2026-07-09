@@ -6,7 +6,7 @@
 //     even when its peak is similar to speech low energy
 //   - default attenuation is moderate (-12 dB), preserves naturalness vs full mute
 
-import { vad as runVad } from '@audio/denoise-core'
+import { vad as runVad } from '@audio/vad'
 import { db2lin } from '@audio/denoise-core'
 
 export default function debreath(data, params = {}) {

@@ -1,6 +1,4 @@
 export * from './stft.js'
 export * from './util.js'
-export * from './noise.js'
-export * from './vad.js'
 export * from './ar.js'
 export * from './quality.js'

@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-core",
-  "version": "0.1.2",
-  "description": "Internal glue for @audio/denoise-* atoms — STFT (batch/stream/analyse), noise estimation (min-stats, IMCRA), AR modeling, quality metrics. VAD lives in @audio/vad (re-exported here).",
+  "version": "0.1.3",
+  "description": "Internal glue for @audio/denoise-* atoms — STFT (batch/stream/analyse), AR modeling, quality metrics, dB/linear + stream-writer utils. VAD → @audio/vad, noise estimation → @audio/noise-estimate.",
   "type": "module",
   "sideEffects": false,
   "main": "index.js",
@@ -10,8 +10,6 @@
     "./package.json": "./package.json",
     "./stft": "./stft.js",
     "./util": "./util.js",
-    "./noise": "./noise.js",
-    "./vad": "./vad.js",
     "./ar": "./ar.js",
     "./quality": "./quality.js"
   },
@@ -19,22 +17,17 @@
     "index.js",
     "stft.js",
     "util.js",
-    "noise.js",
-    "vad.js",
     "ar.js",
     "quality.js"
   ],
   "dependencies": {
-    "fourier-transform": "^2.0.0",
-    "@audio/vad": "^1.0.0"
+    "fourier-transform": "^2.0.0"
   },
   "keywords": [
     "audio",
     "dsp",
     "denoise",
-    "stft",
-    "vad",
-    "noise-estimation"
+    "stft"
   ],
   "license": "MIT",
   "author": "Dmitry Iv. <dfcreative@gmail.com>",

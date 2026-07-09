@@ -18,6 +18,6 @@ export { default as denoise, classify } from '@audio/denoise-detect'
 export { default as repair } from '@audio/denoise-repair'
 
 export { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/denoise-core'
-export { vad, spp, ddSnr } from '@audio/denoise-core'
-export { noiseProfile, minStats, imcra } from '@audio/denoise-core'
+export { vad, spp, ddSnr } from '@audio/vad'
+export { noiseProfile, minStats, imcra } from '@audio/noise-estimate'
 export { stftBatch, stftStream, stftAnalyse } from '@audio/denoise-core'

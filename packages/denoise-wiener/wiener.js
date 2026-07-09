@@ -12,7 +12,7 @@
 
 import { stftBatch, stftStream } from '@audio/denoise-core'
 import { writer } from '@audio/denoise-core'
-import { minStats, noiseProfile } from '@audio/denoise-core'
+import { minStats, noiseProfile } from '@audio/noise-estimate'
 
 export default function wiener(dataOrOpts, opts) {
   if (dataOrOpts instanceof Float32Array || dataOrOpts instanceof Float64Array) {

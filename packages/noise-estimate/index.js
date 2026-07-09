@@ -1,11 +1,11 @@
 // Noise PSD estimators feeding the statistical denoisers (Wiener, OM-LSA, MMSE).
-//   - profile: average |X|² over a user-chosen quiet segment (manual baseline)
-//   - minimumStatistics: Martin (2001) — track minima of smoothed |X|² in sliding window
+//   - noiseProfile: average |X|² over a user-chosen quiet segment (manual baseline)
+//   - minStats: Martin (2001) — track minima of smoothed |X|² in sliding window
 //   - imcra: Cohen (2003) — Improved MCRA, two-iteration smoothing + speech-presence-driven
 //
 // All estimators are stateful: pass the same params object across frames in stream mode.
 
-import { stftAnalyse } from './stft.js'
+import { stftAnalyse } from '@audio/stft'
 
 // One-shot batch profile from a quiet segment of `data`. Returns Float64Array(N/2+1).
 export function noiseProfile(data, opts = {}) {
@@ -66,7 +66,7 @@ export function minStats(half, opts = {}) {
 
 // IMCRA — Improved Minima Controlled Recursive Averaging (Cohen 2003).
 // Drives noise PSD via speech-presence probability (SPP) so it stops updating
-// during voiced regions. SPP itself is supplied by the caller (see vad.js spp())
+// during voiced regions. SPP itself is supplied by the caller (see @audio/vad spp())
 // or computed internally from the smoothed-to-min PSD ratio.
 export function imcra(half, opts = {}) {
   let alpha = opts.alpha ?? 0.92

@@ -11,7 +11,7 @@
 
 import { stftBatch, stftStream } from '@audio/denoise-core'
 import { writer, db2lin } from '@audio/denoise-core'
-import { imcra } from '@audio/denoise-core'
+import { imcra } from '@audio/noise-estimate'
 
 export default function omlsa(dataOrOpts, opts) {
   if (dataOrOpts instanceof Float32Array || dataOrOpts instanceof Float64Array) {
