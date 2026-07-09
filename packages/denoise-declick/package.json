@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-declick",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "De-click — detect impulsive transients via AR prediction residual, replace with",
   "type": "module",
   "sideEffects": false,

@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-decrackle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "De-crackle — continuous-stream version of de-click for vinyl-style noise",
   "type": "module",
   "sideEffects": false,
