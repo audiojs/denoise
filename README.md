@@ -68,7 +68,7 @@ denoise(data, { force: 'wiener' })                             // skip classifie
 2. impulses (excess kurtosis of AR residual > 12)
 3. sibilance (high/mid band power ratio > 8)
 4. LF rumble (low/mid band power ratio > 3)
-5. non-stationary noise (frame-energy CV > 0.6) → omlsa
+5. non-stationary noise (CV of the rolling-minimum frame-energy floor > 0.3) → omlsa
 6. otherwise → wiener
 
 
