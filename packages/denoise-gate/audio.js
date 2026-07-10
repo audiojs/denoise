@@ -1,4 +1,4 @@
-// atom manifest — wraps the look-ahead hysteresis gate kernel per @audio/atom
+// atom manifest — wraps the look-ahead hysteresis gate kernel per @audio/compile
 // CONTRACT. gate.js is a per-sample causal state machine that persists its envelope/
 // hold/lookahead-delay-line state directly on the object it's called with (`params._env`,
 // `_gain`, `_hold`, `_lab`, `_labPos`) — same style as denoise-dehum's state-per-channel

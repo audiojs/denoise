@@ -1,5 +1,5 @@
-// atom manifest — wraps the AR-residual crackle repair kernel per @audio/atom
-// CONTRACT. Same AR-window shape as declick.js (see denoise-declick/atom.js):
+// atom manifest — wraps the AR-residual crackle repair kernel per @audio/compile
+// CONTRACT. Same AR-window shape as declick.js (see denoise-declick/audio.js):
 // each window's repair region depends on trailing context beyond the burst, and the
 // kernel exposes only a single whole-array call (`decrackle(data, params)`), no
 // streaming variant — declared streaming: false.

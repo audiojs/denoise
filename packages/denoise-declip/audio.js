@@ -1,4 +1,4 @@
-// atom manifest — wraps the AR-extrapolation de-clip kernel per @audio/atom
+// atom manifest — wraps the AR-extrapolation de-clip kernel per @audio/compile
 // CONTRACT. declip.js fits AR models on left AND right un-clipped context around each
 // clipped run (`context` samples on both sides) and exposes a single whole-array call
 // (`declip(data, params)`) with no streaming variant — an "AR reconstruction over the

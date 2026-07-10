@@ -1,4 +1,4 @@
-// atom manifest — wraps the dehum kernel per @audio/atom CONTRACT.
+// atom manifest — wraps the dehum kernel per @audio/compile CONTRACT.
 // Kernel keeps biquad state + tracker phase on a persistent params object per
 // channel; it rebuilds notch coefficients itself when freq/harmonics/Q change,
 // so all params are live.

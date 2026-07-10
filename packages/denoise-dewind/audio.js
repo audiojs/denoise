@@ -1,4 +1,4 @@
-// atom manifest — wraps the adaptive-cutoff de-wind kernel per @audio/atom
+// atom manifest — wraps the adaptive-cutoff de-wind kernel per @audio/compile
 // CONTRACT. dewind.js persists its filter cascade + cutoff tracker state directly on the
 // object it's called with (`params._state`, `_fc`, `_coefs`, `_lfDc`, `_mfDc`) — same
 // state-per-channel style as denoise-dehum. cutoffMin/cutoffMax/Q/attack/release are read

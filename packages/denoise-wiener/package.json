@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-wiener",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Wiener filter / MMSE-LSA denoise with decision-directed a-priori SNR",
   "type": "module",
   "sideEffects": false,
@@ -8,11 +8,11 @@
   "exports": {
     ".": "./wiener.js",
     "./package.json": "./package.json",
-    "./atom": "./atom.js"
+    "./audio": "./audio.js"
   },
   "files": [
     "wiener.js",
-    "atom.js",
+    "audio.js",
     "index.d.ts"
   ],
   "dependencies": {
@@ -43,5 +43,6 @@
   "publishConfig": {
     "access": "public"
   },
-  "types": "index.d.ts"
+  "types": "index.d.ts",
+  "audio": "./audio.js"
 }

@@ -1,4 +1,4 @@
-// atom manifest — wraps the AR-residual click repair kernel per @audio/atom
+// atom manifest — wraps the AR-residual click repair kernel per @audio/compile
 // CONTRACT. declick.js is genuinely non-causal, not merely lookahead-delayed: each
 // overlapping analysis window fits an AR model on samples both before AND after any
 // click it repairs (the "central region" logic explicitly needs windowSize/2 of
