@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "description": "Noise reduction — gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, deesser, dereverb",
   "sideEffects": false,
@@ -57,11 +57,11 @@
     "@audio/denoise-declip": "^0.1.0",
     "@audio/denoise-dewind": "^0.1.0",
     "@audio/denoise-deplosive": "^0.1.0",
-    "@audio/denoise-deesser": "^0.1.0",
     "@audio/denoise-debreath": "^0.1.0",
     "@audio/denoise-dereverb": "^0.1.0",
-    "@audio/denoise-gate": "^0.1.0",
     "@audio/denoise-detect": "^0.1.0",
+    "@audio/dynamics-gate": "^0.1.4",
+    "@audio/dynamics-deesser": "^0.2.3",
     "@audio/denoise-repair": "^0.1.0",
     "@audio/quality": "^1.0.0",
     "@audio/stft": "^1.0.3"

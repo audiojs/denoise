@@ -4,7 +4,7 @@
 // state-per-channel style as denoise-dehum. triggerRatio/attenuation/attack/release are
 // read fresh every call, so they stay live. crossover is the one exception: the kernel
 // only ever reads it inside a ONE-TIME `if (!params._init)` guard (a boolean flag, not a
-// value comparison — unlike denoise-gate/denoise-dewind's length-checked reinit), so it
+// value comparison — unlike denoise-dewind's length-checked reinit), so it
 // has zero effect after the first call. Seeded once from the initial ctx snapshot and
 // never refreshed live (refreshing it would just be a silently-ignored write); flagged
 // restart since a real change requires a new instance.

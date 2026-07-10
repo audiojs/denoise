@@ -135,7 +135,7 @@ deplosive(data, { triggerRatio: 4, attack: 0.005, release: 0.08 })
 
 ### `deesser`
 
-Dynamic peaking EQ centred on the sibilance band. Detection runs on a HP side-chain; when the envelope exceeds threshold, a negative-gain peaking EQ at `freq` engages on the audio path. Re-computed every `block` samples for smooth gain riding.
+Dynamic peaking EQ centred on the sibilance band. Detection runs on a HP side-chain; when the envelope exceeds threshold, a negative-gain peaking EQ at `freq` engages on the audio path. Re-computed every `block` samples for smooth gain riding. Backed by [`@audio/dynamics-deesser`](https://github.com/audiojs/dynamics) `mode: 'band'` since the 2026-07 near-dupe merge — same seconds-based options here.
 
 ```js
 deesser(data, { freq: 6500, threshold: -28, ratio: 4 })
@@ -292,7 +292,7 @@ dereverb(data, { t60: 0.6, predelay: 0.04 })
 
 ### `gate`
 
-Look-ahead noise gate with hysteresis.
+Look-ahead noise gate with hysteresis. Backed by [`@audio/dynamics-gate`](https://github.com/audiojs/dynamics) since the 2026-07 near-dupe merge — same seconds-based options here; `closeThreshold` (default `threshold − 6` dB) sets the hysteresis close level.
 
 ```js
 gate(data, { threshold: -45, attack: 0.005, release: 0.1, hold: 0.05, lookahead: 0.005 })

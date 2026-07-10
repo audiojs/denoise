@@ -20,8 +20,25 @@ import omlsa from '@audio/denoise-omlsa'
 import dehum from '@audio/denoise-dehum'
 import declick from '@audio/denoise-declick'
 import dewind from '@audio/denoise-dewind'
-import deesser from '@audio/denoise-deesser'
+import deesser_ from '@audio/dynamics-deesser'
 import dereverb from '@audio/denoise-dereverb'
+
+// deesser — @audio/dynamics-deesser mode 'band' behind this family's seconds/fs
+// API (2026-07 near-dupe merge; small local adapter per workspace policy)
+const deesser = (data, params = {}) => {
+  data.set(deesser_(data, {
+    sampleRate: params.fs || 44100,
+    mode: 'band',
+    freq: params.freq ?? 6000,
+    q: params.Q ?? 1.4,
+    threshold: params.threshold ?? -30,
+    ratio: params.ratio ?? 4,
+    attack: (params.attack ?? 0.001) * 1000,
+    release: (params.release ?? 0.05) * 1000,
+    block: params.block,
+  }))
+  return data
+}
 
 export default function denoise(data, params = {}) {
   let fs = params.fs || 44100
