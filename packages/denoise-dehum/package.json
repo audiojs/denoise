@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dehum",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Mains hum / tonal noise removal via cascaded high-Q biquad notches",
   "type": "module",
   "sideEffects": false,

@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-repair",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Spectral repair — interpolate short time×frequency gaps and holes (De-Slop; iZotope RX class)",
   "type": "module",
   "sideEffects": false,
