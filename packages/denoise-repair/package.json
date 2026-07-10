@@ -29,5 +29,10 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/denoise.git",
+    "directory": "packages/denoise-repair"
   }
 }

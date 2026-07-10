@@ -15,7 +15,7 @@ export const dehum = (ctx) => {
 			const st = state[c]
 			st.freq = params.freq[0]
 			st.harmonics = params.harmonics[0]
-			st.Q = params.q[0]
+			st.Q = params.Q[0]
 			st.adaptive = params.adaptive
 			out[c].set(inp[c])
 			dehum_(out[c], st)  // in-place, state carries across blocks
@@ -26,6 +26,6 @@ dehum.channels = 'any'
 dehum.params = {
 	freq:      { type: 'number', min: 20, max: 400, default: 50, unit: 'Hz' },
 	harmonics: { type: 'number', min: 1, max: 16, default: 4 },
-	q:         { type: 'number', min: 1, max: 200, default: 30 },
+	Q:         { type: 'number', min: 1, max: 200, default: 30 },
 	adaptive:  { type: 'bool', default: false },
 }

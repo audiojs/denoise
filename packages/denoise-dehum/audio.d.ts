@@ -15,7 +15,7 @@ export interface DehumOptions {
   /** 1..16 (default 4) */
   "harmonics"?: Auto
   /** 1..200 (default 30) */
-  "q"?: Auto
+  "Q"?: Auto
   /** default false */
   "adaptive"?: boolean
   at?: number | string
@@ -31,7 +31,7 @@ export declare const dehum: {
     /** 1..16 (default 4) */
     "harmonics": { type: "number", default: 4 }
     /** 1..200 (default 30) */
-    "q": { type: "number", default: 30 }
+    "Q": { type: "number", default: 30 }
     /** default false */
     "adaptive": { type: "bool", default: false }
   }

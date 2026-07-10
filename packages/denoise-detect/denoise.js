@@ -24,8 +24,9 @@ import deesser_ from '@audio/dynamics-deesser'
 import dereverb from '@audio/denoise-dereverb'
 
 // deesser — @audio/dynamics-deesser mode 'band' behind this family's seconds/fs
-// API (2026-07 near-dupe merge; small local adapter per workspace policy)
-const deesser = (data, params = {}) => {
+// API (2026-07 near-dupe merge). Exported: the umbrella index.js re-exports this
+// same adapter instead of carrying its own copy.
+export const deesser = (data, params = {}) => {
   data.set(deesser_(data, {
     sampleRate: params.fs || 44100,
     mode: 'band',

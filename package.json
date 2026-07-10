@@ -61,7 +61,6 @@
     "@audio/denoise-dereverb": "^0.1.0",
     "@audio/denoise-detect": "^0.1.0",
     "@audio/dynamics-gate": "^0.1.4",
-    "@audio/dynamics-deesser": "^0.2.3",
     "@audio/denoise-repair": "^0.1.0",
     "@audio/quality": "^1.0.0",
     "@audio/stft": "^1.0.3"
