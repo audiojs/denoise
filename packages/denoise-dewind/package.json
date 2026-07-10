@@ -1,19 +1,23 @@
 {
   "name": "@audio/denoise-dewind",
   "version": "0.1.6",
-  "description": "De-wind / de-rumble \u2014 adaptive high-pass that opens wider when low-frequency",
+  "description": "De-wind / de-rumble — adaptive high-pass that opens wider when low-frequency",
   "type": "module",
   "sideEffects": false,
   "main": "dewind.js",
   "exports": {
     ".": "./dewind.js",
     "./package.json": "./package.json",
-    "./audio": "./audio.js"
+    "./audio": {
+      "types": "./audio.d.ts",
+      "default": "./audio.js"
+    }
   },
   "files": [
     "dewind.js",
     "audio.js",
-    "index.d.ts"
+    "index.d.ts",
+    "audio.d.ts"
   ],
   "dependencies": {
     "@audio/biquad": "^1.1.0"

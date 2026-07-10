@@ -1,19 +1,23 @@
 {
   "name": "@audio/denoise-debreath",
   "version": "0.1.6",
-  "description": "De-breath \u2014 VAD-driven downward attenuation during non-speech regions",
+  "description": "De-breath — VAD-driven downward attenuation during non-speech regions",
   "type": "module",
   "sideEffects": false,
   "main": "debreath.js",
   "exports": {
     ".": "./debreath.js",
     "./package.json": "./package.json",
-    "./audio": "./audio.js"
+    "./audio": {
+      "types": "./audio.d.ts",
+      "default": "./audio.js"
+    }
   },
   "files": [
     "debreath.js",
     "audio.js",
-    "index.d.ts"
+    "index.d.ts",
+    "audio.d.ts"
   ],
   "dependencies": {
     "@audio/vad": "^1.0.0"
