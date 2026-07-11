@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-declip",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "De-clip — restore samples that have been hard-clipped at ±threshold",
   "type": "module",
   "sideEffects": false,
@@ -47,5 +47,6 @@
     "access": "public"
   },
   "types": "index.d.ts",
-  "audio": "./audio.js"
+  "audio": "./audio.js",
+  "funding": "https://github.com/sponsors/audiojs"
 }

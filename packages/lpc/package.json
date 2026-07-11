@@ -1,6 +1,6 @@
 {
   "name": "@audio/lpc",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Linear predictive coding — Levinson-Durbin AR analysis, prediction, forward extrapolation, and least-squares gap interpolation",
   "type": "module",
   "sideEffects": false,
@@ -10,8 +10,10 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "index.js"
+    "index.js",
+    "index.d.ts"
   ],
+  "types": "index.d.ts",
   "keywords": [
     "audio",
     "dsp",
@@ -38,5 +40,6 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "funding": "https://github.com/sponsors/audiojs"
 }

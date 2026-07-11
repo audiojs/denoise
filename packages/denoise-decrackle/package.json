@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-decrackle",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "De-crackle — continuous-stream version of de-click for vinyl-style noise",
   "type": "module",
   "sideEffects": false,
@@ -47,5 +47,6 @@
     "access": "public"
   },
   "types": "index.d.ts",
-  "audio": "./audio.js"
+  "audio": "./audio.js",
+  "funding": "https://github.com/sponsors/audiojs"
 }

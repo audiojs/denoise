@@ -1,6 +1,6 @@
 {
   "name": "@audio/vad",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Voice activity detection — frame-level speech/non-speech decision (energy + spectral flatness) plus per-bin speech-presence probability and decision-directed a-priori SNR",
   "type": "module",
   "sideEffects": false,
@@ -10,8 +10,10 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "vad.js"
+    "vad.js",
+    "index.d.ts"
   ],
+  "types": "index.d.ts",
   "dependencies": {
     "@audio/stft": "^1.0.2"
   },
@@ -40,5 +42,6 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "funding": "https://github.com/sponsors/audiojs"
 }

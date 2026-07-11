@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dereverb",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "De-reverb — late-reverb spectral subtraction (Lebart, Boucher & Denbigh 2001)",
   "type": "module",
   "sideEffects": false,
@@ -47,5 +47,6 @@
     "access": "public"
   },
   "types": "index.d.ts",
-  "audio": "./audio.js"
+  "audio": "./audio.js",
+  "funding": "https://github.com/sponsors/audiojs"
 }

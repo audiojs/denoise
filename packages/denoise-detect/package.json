@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-detect",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "denoise — content-aware auto-selector that classifies the dominant noise type",
   "type": "module",
   "sideEffects": false,
@@ -10,8 +10,10 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "denoise.js"
+    "denoise.js",
+    "index.d.ts"
   ],
+  "types": "index.d.ts",
   "dependencies": {
     "@audio/denoise-wiener": "^0.1.0",
     "@audio/denoise-omlsa": "^0.1.0",
@@ -46,5 +48,6 @@
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "funding": "https://github.com/sponsors/audiojs"
 }

@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "type": "module",
   "description": "Noise reduction — gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, deesser, dereverb",
   "sideEffects": false,
@@ -80,5 +80,6 @@
     "url": "https://github.com/audiojs/denoise/issues"
   },
   "homepage": "https://github.com/audiojs/denoise#readme",
-  "main": "index.js"
+  "main": "index.js",
+  "funding": "https://github.com/sponsors/audiojs"
 }
