@@ -1,0 +1,67 @@
+{
+  "name": "@audio/denoise-dewow",
+  "version": "0.1.0",
+  "description": "Wow & flutter correction — pitch-drift removal for tape/vinyl/cassette transfers",
+  "type": "module",
+  "sideEffects": false,
+  "main": "dewow.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": "./dewow.js",
+    "./package.json": "./package.json",
+    "./audio": {
+      "types": "./audio.d.ts",
+      "default": "./audio.js"
+    }
+  },
+  "files": [
+    "dewow.js",
+    "audio.js",
+    "index.d.ts",
+    "audio.d.ts"
+  ],
+  "audio": "./audio.js",
+  "dependencies": {
+    "@audio/biquad": "^1.2.1",
+    "@audio/pitch-pyin": "^1.0.1",
+    "@audio/resample-sinc": "^1.1.2",
+    "@audio/stft": "^1.0.6"
+  },
+  "devDependencies": {
+    "audio-lena": "^3.0.1",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "audio",
+    "dsp",
+    "denoise",
+    "restoration",
+    "wow-and-flutter",
+    "wow",
+    "flutter",
+    "pitch-drift",
+    "tape-restoration",
+    "vinyl-restoration"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/denoise.git",
+    "directory": "packages/denoise-dewow"
+  },
+  "homepage": "https://github.com/audiojs/denoise/tree/main/packages/denoise-dewow",
+  "bugs": {
+    "url": "https://github.com/audiojs/denoise/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "funding": "https://github.com/sponsors/audiojs"
+}

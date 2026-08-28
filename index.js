@@ -16,6 +16,8 @@ export { default as debreath } from '@audio/denoise-debreath'
 export { default as dereverb } from '@audio/denoise-dereverb'
 export { default as denoise, classify, deesser } from '@audio/denoise-detect'
 export { default as repair } from '@audio/denoise-repair'
+export { default as desilence, segments as silenceSegments, split as splitSilence } from '@audio/denoise-desilence'
+export { default as dewow, analyze as wowFlutter } from '@audio/denoise-dewow'
 
 export { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/quality'
 export { vad, spp, ddSnr } from '@audio/vad'

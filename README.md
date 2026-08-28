@@ -19,7 +19,9 @@ Single-pass noise reduction. 13 specialised methods + an auto-classifier.
 | [deplosive](#deplosive) | time | LF bursts | ★★★ | low | mic plosives (p, b) |
 | [deesser](#deesser) | time | sibilance | ★★★★ | low | voice (s, sh) |
 | [debreath](#debreath) | time | inter-word noise | ★★★ | low | breath / hiss in pauses |
+| [desilence](#desilence) | time | pauses | ★★★ | low | remove / shorten / trim silence, split by pause |
 | [dereverb](#dereverb) | freq | late reverb | ★★ | medium | moderate room reverb |
+| [dewow](#dewow) | time + freq | pitch drift | ★★★ | medium | tape / vinyl / cassette wow & flutter |
 
 For broader DSP needs use [stretch](https://github.com/audiojs/stretch), [shift](https://github.com/audiojs/shift), [pitch](https://github.com/audiojs/pitch), [beat](https://github.com/audiojs/beat).
 
@@ -290,6 +292,34 @@ dereverb(data, { t60: 0.6, predelay: 0.04 })
 **Not for:** heavy reverb or convolutive distortion — use multi-channel WPE (out of scope).
 
 
+## Pitch drift
+
+### `dewow`
+
+Wow & flutter correction. Estimates the transport speed curve — from stable spectral partials tracked with a phase vocoder (McAulay–Quatieri linking, amplitude-weighted median across tracks), from a known reference tone (mains hum, calibration tone, tape bias residual), or from monophonic pitch — then reads the signal back through a variable-rate windowed-sinc resampler along the integrated curve. Whole-signal (needs the full curve), length-preserving by default. The classical counterpart of Celemony Capstan; `wowFlutter()` alone is a wow & flutter meter.
+
+```js
+dewow(data, { fs })                                            // partial tracking (default)
+dewow(data, { fs, mode: 'reference', refFreq: 50 })            // lock to 50 Hz hum
+dewow(data, { fs, wow: true, flutter: false })                 // remove slow drift only
+wowFlutter(data, { fs })                                       // → { speed, times, wow, flutter, confidence }
+```
+
+| Param | Default | |
+|---|---|---|
+| `mode` | `'partial'` | `'partial' \| 'reference' \| 'pitch'` |
+| `refFreq` | — | Hz — the known tone for `reference` mode |
+| `smooth` | `0.05` | s — flutter-band smoothing of the speed curve |
+| `wow` / `flutter` | `true` / `true` | correct the < 6 Hz / 6–43 Hz bands |
+| `maxDeviation` | `0.05` | clamp on the speed ratio (±5 %) |
+| `keepLength` | `true` | output length equals input |
+
+Measured on synthetic 2 % wow @ 0.8 Hz + 0.4 % flutter @ 30 Hz over a sustained chord: curve correlation 0.98, residual deviation of the 440 Hz partial 1.4 % → 0.18 %; clean input passes at 44 dB SNR.
+
+**Use when:** tape, cassette, vinyl and film transfers with audible pitch wobble; material with sustained tones or a reference tone.<br>
+**Not for:** dropouts, azimuth/time-skew, material with no stable partials (percussion-only); flutter above `fs/(2·hopSize)` ≈ 43 Hz at defaults needs a smaller `hopSize`.
+
+
 ## Gates & inter-word
 
 ### `gate`
@@ -313,6 +343,33 @@ debreath(data, { range: -10 })                                // -10 dB on non-s
 ```
 
 **Use when:** breath, mouth noise, hiss in pauses on a voiceover.
+
+
+### `desilence`
+
+VAD-driven silence editing. Runs `vad` once, folds frames into speech/pause segments, then cuts pauses per `mode` with equal-power crossfades at every splice — never a hard cut. Length-changing, so it is a batch call (and a `silence` stat atom), not a streaming processor.
+
+```js
+desilence(data, { mode: 'shorten', maxSilence: 0.25 })          // Overcast "Smart Speed": long pauses → 0.25 s
+desilence(data, { mode: 'remove', minSilence: 0.5, pad: 0.1 })  // cut pauses > 0.5 s, keep 0.1 s around speech
+desilence(data, { mode: 'trim' })                                // leading/trailing silence only
+silenceSegments(data, { fs })                                    // → { speech: [{start, end}], silence: [...] }
+splitSilence(data, { fs })                                       // → one Float32Array per phrase
+```
+
+| Param | Default | |
+|---|---|---|
+| `mode` | `'shorten'` | `'shorten' \| 'remove' \| 'trim'` |
+| `minSilence` | `0.5` | s — pauses shorter than this are never touched |
+| `maxSilence` | `0.25` | s — `shorten` target length of any remaining pause (cut from the middle, onsets kept) |
+| `pad` | `0.1` | s — silence kept on each side of speech in `remove` mode |
+| `merge` | `0.15` | s — speech gaps shorter than this join one segment |
+| `fade` | `0.01` | s — crossfade at every cut |
+
+Returns `{ data, segments, removed, map }`; `project(map, t)` re-times markers/subtitles (`@audio/subtitle` `project()` takes the same map).
+
+**Use when:** podcast/lecture pause tightening, split-by-silence, auto-trim.<br>
+**Not for:** music (a rest is a pause to this VAD); overlapping speech.
 
 
 ## Quality measurement

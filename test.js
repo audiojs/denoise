@@ -538,3 +538,36 @@ test('gate — look-ahead keeps output aligned: no silence prefix, no dropped ta
 	ok(rms(out.subarray(0, la)) > rms(x) * 0.3, 'first look-ahead samples are signal, not silence')
 	ok(rms(out.subarray(x.length - la)) > rms(x) * 0.3, 'tail samples preserved, not dropped')
 })
+
+// =================== desilence / dewow (2026-08 atoms; depth lives in each package's own suite) ===================
+import { desilence, silenceSegments, splitSilence, dewow, wowFlutter } from './index.js'
+
+test('desilence — shortens long pauses in a burst/pause scene, keeps speech level, exposes a time map', () => {
+  let seg = (n) => { let d = new Float32Array(n); for (let i = 0; i < n; i++) { let s = 0; for (let h = 1; h <= 8; h++) s += Math.sin(2 * Math.PI * 150 * h * i / fs) / h; d[i] = 0.3 * s * Math.sin(Math.PI * i / n) } return d }   // voiced-like harmonic burst (the VAD gates on tonality)
+  let gap = (s) => new Float32Array(Math.round(s * fs))
+  let x = add(seg(Math.round(0.6 * fs)))
+  let parts = [seg(Math.round(0.6 * fs)), gap(2), seg(Math.round(0.6 * fs)), gap(0.2), seg(Math.round(0.6 * fs))]
+  let total = parts.reduce((n, p) => n + p.length, 0), off = 0
+  x = new Float32Array(total); for (let p of parts) { x.set(p, off); off += p.length }
+  x = add(x, noise(total, 0.001))                       // −60 dBFS floor: a real recording is never digital zero
+  let { speech } = silenceSegments(x, { fs })
+  ok(speech.length >= 2 && speech.length <= 3, 'speech segments ' + speech.length)
+  let r = desilence(x, { fs, mode: 'shorten', maxSilence: 0.25, minSilence: 0.5 })
+  ok(r.data.length < x.length - fs, 'removed at least 1 s: ' + ((x.length - r.data.length) / fs).toFixed(2) + ' s')
+  ok(r.map.length >= 2 && r.removed > 1, 'map + removed seconds')
+  is(splitSilence(x, { fs }).length, speech.length, 'split gives one array per phrase')
+})
+
+test('dewow — flattens a synthetic 2 % wow on a sustained chord; wowFlutter reports it', () => {
+  let n = 4 * fs, clean = new Float32Array(n)
+  for (let i = 0; i < n; i++) clean[i] = 0.3 * (Math.sin(2 * Math.PI * 220 * i / fs) + Math.sin(2 * Math.PI * 330 * i / fs) + Math.sin(2 * Math.PI * 440 * i / fs))
+  // apply wow by variable-rate resampling: speed = 1 + 0.02 sin(2π 0.8 t)
+  let wowed = new Float32Array(n), pos = 0
+  for (let i = 0; i < n; i++) { let p = Math.floor(pos), f = pos - p; wowed[i] = p + 1 < n ? clean[p] * (1 - f) + clean[p + 1] * f : 0; pos += 1 + 0.02 * Math.sin(2 * Math.PI * 0.8 * i / fs) }
+  let a = wowFlutter(wowed, { fs })
+  ok(a.wow > 1 && a.wow < 3, 'wow % measured ' + a.wow.toFixed(2))
+  let fixed = dewow(copy(wowed), { fs })
+  is(fixed.length, wowed.length, 'length preserved')
+  let a2 = wowFlutter(fixed, { fs })
+  ok(a2.wow < a.wow / 3, 'residual wow ' + a2.wow.toFixed(2) + ' % < ' + (a.wow / 3).toFixed(2))
+})

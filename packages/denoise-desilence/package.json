@@ -1,0 +1,56 @@
+{
+  "name": "@audio/denoise-desilence",
+  "version": "0.1.0",
+  "description": "De-silence — VAD-driven silence handling for speech: remove, shorten (Smart Speed), split, trim",
+  "type": "module",
+  "sideEffects": false,
+  "main": "desilence.js",
+  "exports": {
+    ".": "./desilence.js",
+    "./package.json": "./package.json",
+    "./audio": {
+      "types": "./audio.d.ts",
+      "default": "./audio.js"
+    }
+  },
+  "files": [
+    "desilence.js",
+    "audio.js",
+    "index.d.ts",
+    "audio.d.ts"
+  ],
+  "dependencies": {
+    "@audio/vad": "^1.0.0",
+    "@audio/stft": "^1.0.2"
+  },
+  "keywords": [
+    "audio",
+    "dsp",
+    "denoise",
+    "restoration",
+    "desilence",
+    "vad",
+    "silence-removal",
+    "smart-speed"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/denoise.git",
+    "directory": "packages/denoise-desilence"
+  },
+  "homepage": "https://github.com/audiojs/denoise/tree/main/packages/denoise-desilence",
+  "bugs": {
+    "url": "https://github.com/audiojs/denoise/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "types": "index.d.ts",
+  "audio": "./audio.js",
+  "funding": "https://github.com/sponsors/audiojs"
+}
