@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "wiener.js",
   "exports": {
-    ".": "./wiener.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./wiener.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "deplosive.js",
   "exports": {
-    ".": "./deplosive.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./deplosive.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

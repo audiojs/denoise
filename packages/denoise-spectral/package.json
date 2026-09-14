@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "specsub.js",
   "exports": {
-    ".": "./specsub.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./specsub.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

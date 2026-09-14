@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "dehum.js",
   "exports": {
-    ".": "./dehum.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./dehum.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

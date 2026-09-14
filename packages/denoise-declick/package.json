@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "declick.js",
   "exports": {
-    ".": "./declick.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./declick.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

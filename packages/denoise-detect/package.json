@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "denoise.js",
   "exports": {
-    ".": "./denoise.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./denoise.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

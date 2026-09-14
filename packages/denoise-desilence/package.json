@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "desilence.js",
   "exports": {
-    ".": "./desilence.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./desilence.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

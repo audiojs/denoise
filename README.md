@@ -1,4 +1,4 @@
-# @audio/denoise [![npm](https://img.shields.io/npm/v/@audio/denoise)](https://www.npmjs.com/package/@audio/denoise) [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+# @audio/denoise [![npm](https://img.shields.io/npm/v/@audio/denoise)](https://www.npmjs.com/package/@audio/denoise) [![license](https://img.shields.io/badge/license-MIT-green.svg)](https://spdx.org/licenses/MIT.html)
 
 Try it in the browser: [Noise remover](https://audiojs.dev/util/denoise/). Runs on this package, nothing is uploaded.
 

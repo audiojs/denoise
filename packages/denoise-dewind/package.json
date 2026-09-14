@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "dewind.js",
   "exports": {
-    ".": "./dewind.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./dewind.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

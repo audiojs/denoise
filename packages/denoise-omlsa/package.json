@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "omlsa.js",
   "exports": {
-    ".": "./omlsa.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./omlsa.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

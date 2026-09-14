@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "declip.js",
   "exports": {
-    ".": "./declip.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./declip.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

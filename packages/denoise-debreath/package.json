@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "debreath.js",
   "exports": {
-    ".": "./debreath.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./debreath.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

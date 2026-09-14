@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "decrackle.js",
   "exports": {
-    ".": "./decrackle.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./decrackle.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",

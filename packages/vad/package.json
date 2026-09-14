@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "vad.js",
   "exports": {
-    ".": "./vad.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./vad.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

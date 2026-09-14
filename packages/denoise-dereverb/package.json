@@ -6,7 +6,10 @@
   "sideEffects": false,
   "main": "dereverb.js",
   "exports": {
-    ".": "./dereverb.js",
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./dereverb.js"
+    },
     "./package.json": "./package.json",
     "./audio": {
       "types": "./audio.d.ts",
