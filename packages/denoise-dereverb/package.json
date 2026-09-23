@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dereverb",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "De-reverb — late-reverb spectral subtraction (Lebart, Boucher & Denbigh 2001)",
   "type": "module",
   "sideEffects": false,
@@ -23,7 +23,7 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/stft": "^1.0.3"
+    "@audio/stft": "^1.0.7"
   },
   "keywords": [
     "audio",

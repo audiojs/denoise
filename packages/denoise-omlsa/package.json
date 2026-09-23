@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-omlsa",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "OM-LSA — Optimally Modified Log-Spectral Amplitude (Cohen 2002), with IMCRA noise",
   "type": "module",
   "sideEffects": false,
@@ -24,7 +24,7 @@
   ],
   "dependencies": {
     "@audio/noise-estimate": "^1.0.0",
-    "@audio/stft": "^1.0.3"
+    "@audio/stft": "^1.0.7"
   },
   "keywords": [
     "audio",

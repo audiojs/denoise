@@ -7,21 +7,18 @@
 // gain closure at construction (makeProcess reads opts.alpha/opts.beta once, not per call),
 // so both carry flags:['restart'].
 //
-// stftStream.write(chunk) returns a variable-length burst (STFT hop/frame bookkeeping is
-// not 1:1 with input chunking) — a per-channel FIFO absorbs that into the fixed
-// equal-frames-in/out shape §process requires, at a fixed extra delay. That delay was
-// measured directly (feed white noise through fs=44100/frameSize=2048/hopSize=512 at
-// alpha=0,beta=1 — an exact passthrough since cleaned=p-0 and floor=1*p leave mag
-// unchanged — then cross-correlate output against input): 3072 samples, confirmed to
-// floating-point-exact residual (8e-16) and independently by input/output sample-count
-// bookkeeping. 3072 = 1.5x frameSize = 6x hopSize.
+// stftStream.write(chunk) returns a variable-length burst: a sample leaves once no later
+// frame covers it, at most FRAME − 1 samples after it arrived (@audio/stft ≥ 1.0.7), with
+// output sample j aligned to input sample j. A per-channel FIFO primed with FRAME − 1 zeros
+// turns the bursts into the equal-frames-in/out shape §process requires: it never runs dry,
+// so the delay is exactly FRAME − 1 under any block size (pinned in test.js).
 
 import specsub_ from './specsub.js'
 
 const FRAME = 2048, HOP = 512
-const LATENCY = 3072
+const LATENCY = FRAME - 1
 
-function makeFifo() { return { buf: new Float32Array(1 << 14), len: 0 } }
+function makeFifo() { return { buf: new Float32Array(1 << 14), len: LATENCY } }   // primed with zeros
 function fifoPush(f, chunk) {
 	if (!chunk.length) return
 	let need = f.len + chunk.length

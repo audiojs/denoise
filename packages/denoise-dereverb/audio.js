@@ -8,16 +8,15 @@
 // per call — predelay in particular sizes state.history's ring length), so all four
 // carry flags:['restart'].
 //
-// Same FIFO-absorbed variable-length write() + fixed extra delay as denoise-spectral —
-// see that package's audio.js header for how the 3072-sample figure (frameSize
-// 2048 / hopSize 512, both fixed here) was measured.
+// Same primed FIFO as denoise-spectral (see its audio.js header): a constant FRAME − 1
+// delay under any block size.
 
 import dereverb_ from './dereverb.js'
 
 const FRAME = 2048, HOP = 512
-const LATENCY = 3072
+const LATENCY = FRAME - 1
 
-function makeFifo() { return { buf: new Float32Array(1 << 14), len: 0 } }
+function makeFifo() { return { buf: new Float32Array(1 << 14), len: LATENCY } }   // primed with zeros
 function fifoPush(f, chunk) {
 	if (!chunk.length) return
 	let need = f.len + chunk.length

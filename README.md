@@ -139,15 +139,15 @@ deplosive(data, { triggerRatio: 4, attack: 0.005, release: 0.08 })
 
 ### `deesser`
 
-Dynamic peaking EQ centred on the sibilance band. Detection runs on a HP side-chain; when the envelope exceeds threshold, a negative-gain peaking EQ at `freq` engages on the audio path. Re-computed every `block` samples for smooth gain riding. Backed by [`@audio/dynamics-deesser`](https://github.com/audiojs/dynamics) `mode: 'band'` since the 2026-07 near-dupe merge — same seconds-based options here.
+Dynamic peaking EQ centred on the sibilance band. Detection runs on a HP side-chain; when the envelope exceeds threshold, a negative-gain peaking EQ at `fc` engages on the audio path. Re-computed every `block` samples for smooth gain riding. Backed by [`@audio/dynamics-deesser`](https://github.com/audiojs/dynamics) `mode: 'band'` since the 2026-07 near-dupe merge — same seconds-based options here.
 
 ```js
-deesser(data, { freq: 6500, threshold: -28, ratio: 4 })
+deesser(data, { fc: 6500, threshold: -28, ratio: 4 })
 ```
 
 | Param | Default | |
 |---|---|---|
-| `freq` | `6000` | Sibilance centre (Hz) |
+| `fc` | `6000` | Sibilance centre (Hz; `freq` still accepted) |
 | `threshold` | `-30` | dBFS — engagement level |
 | `ratio` | `4` | Compression ratio above threshold |
 | `attack` | `0.001` | s — how fast the cut engages |

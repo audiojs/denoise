@@ -268,6 +268,24 @@ test('dewind — attenuates LF rumble', () => {
   ok(narrowEnergy(clean, 40) < narrowEnergy(dirty, 40) * 0.3, 'rumble cut ≥3×')
 })
 
+test('dewind — the cutoff tracker keeps its clock across calls: same output under any chunking', () => {
+  // Analysis blocks restarted at every call, and each short tail block took a full block's
+  // attack/release step: at 64-sample host blocks the cutoff tracked 16× too fast
+  let n = 2 * fs, x = add(sine(800, n, 0.2), sine(40, n, 0.5))
+  for (let i = 0; i < n; i++) if (i % fs > fs / 2) x[i] *= 0.05          // wind gusts on and off
+  let run = block => {
+    let d = copy(x), opts = { fs }
+    for (let i = 0; i < n; i += block) dewind(d.subarray(i, Math.min(n, i + block)), opts)
+    return d
+  }
+  let ref = dewind(copy(x), { fs })
+  for (let block of [1, 64, 997, 1024, 5000]) {
+    let d = run(block), m = 0
+    for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(d[i] - ref[i]))
+    is(m, 0, `block ${block} ≡ one call`)
+  }
+})
+
 test('dewind — improves SNR on intermittent gusts (design center)', () => {
   // Wind buffeting comes in bursts; the adaptive cutoff opens on gusts and closes
   // between them — where dewind beats spectral methods at a fraction of the cost.
@@ -323,13 +341,13 @@ test('deesser — reduces 7kHz sibilance', () => {
   let siss = new Float32Array(speech.length)
   for (let i = 0; i < speech.length; i++) siss[i] = 0.3 * Math.sin(2 * Math.PI * 7000 * i / fs)
   let dirty = add(speech, siss)
-  let clean = deesser(copy(dirty), { fs, freq: 7000 })
+  let clean = deesser(copy(dirty), { fs, fc: 7000 })
   ok(narrowEnergy(clean, 7000) < narrowEnergy(dirty, 7000), 'sibilance attenuated')
 })
 
 test('deesser — preserves low-mid content', () => {
   let mix = add(sine(220, fs, 0.3), sine(7000, fs, 0.3))
-  let clean = deesser(copy(mix), { fs, freq: 7000 })
+  let clean = deesser(copy(mix), { fs, fc: 7000 })
   ok(narrowEnergy(clean, 220) > 0.1, '220Hz preserved')
 })
 
@@ -570,4 +588,49 @@ test('dewow — flattens a synthetic 2 % wow on a sustained chord; wowFlutter re
   is(fixed.length, wowed.length, 'length preserved')
   let a2 = wowFlutter(fixed, { fs })
   ok(a2.wow < a.wow / 3, 'residual wow ' + a2.wow.toFixed(2) + ' % < ' + (a.wow / 3).toFixed(2))
+})
+
+// Manifests (audio.js) — the host's view: fixed blocks in, equal blocks out.
+import { specsub as specsubAtom } from '@audio/denoise-spectral/audio'
+import { dereverb as dereverbAtom } from '@audio/denoise-dereverb/audio'
+import { omlsa as omlsaAtom } from '@audio/denoise-omlsa/audio'
+import { wiener as wienerAtom } from '@audio/denoise-wiener/audio'
+import specsubKernel from '@audio/denoise-spectral'
+import dereverbKernel from '@audio/denoise-dereverb'
+import omlsaKernel from '@audio/denoise-omlsa'
+import wienerKernel from '@audio/denoise-wiener'
+
+function hostRun(atom, x, block) {
+  let params = Object.fromEntries(Object.entries(atom.params).map(([k, s]) => [k, s.type === 'number' ? Float32Array.of(s.default) : s.default]))
+  let process = atom({ sampleRate: fs, maxBlockSize: block, maxChannels: 1, params }), out = new Float32Array(x.length)
+  for (let i = 0; i < x.length; i += block) {
+    let n = Math.min(block, x.length - i), o = new Float32Array(n)
+    process([[x.subarray(i, i + n)]], [[o]], params); out.set(o, i)
+  }
+  return out
+}
+
+test('STFT manifests — output is the kernel stream delayed by exactly the declared latency, under any block size', () => {
+  // The kernel stream emits a sample up to FRAME − 1 samples late; an unprimed FIFO ran
+  // dry during warm-up and zero-filled, so where the signal landed depended on the block size
+  let x = add(sine(440, fs, 0.3), noise(fs, 0.05))
+  let f = Math.fround   // hosts carry params as Float32Array
+  let cases = [
+    [specsubAtom, () => specsubKernel({ alpha: 2, beta: f(0.02), frameSize: 2048, hopSize: 512, fs })],
+    [dereverbAtom, () => dereverbKernel({ t60: 0.5, alpha: 1.5, beta: f(0.05), predelay: f(0.04), frameSize: 2048, hopSize: 512, fs })],
+    [omlsaAtom, () => omlsaKernel({ alphaDD: f(0.92), xiMin: 10 ** (-15 / 10), qPrior: f(0.3), gMin: -20, frameSize: 2048, hopSize: 512, fs })],
+    [wienerAtom, () => wienerKernel({ rule: 'mmse-lsa', alphaDD: f(0.98), xiMin: 10 ** (-15 / 10), frameSize: 2048, hopSize: 512, fs })],
+  ]
+  for (let [atom, kernel] of cases) {
+    let write = kernel(), parts = [], L = atom.latency
+    for (let i = 0; i < x.length; i += 333) parts.push(write(x.subarray(i, i + 333)))
+    let ref = new Float32Array(x.length), o = 0
+    for (let p of parts) { ref.set(p.subarray(0, x.length - o), o); o += p.length }
+    for (let block of [2048, 997, 64, 1]) {
+      let out = hostRun(atom, x, block), err = 0
+      for (let i = 0; i < L; i++) err = Math.max(err, Math.abs(out[i]))
+      for (let i = L; i < x.length; i++) err = Math.max(err, Math.abs(out[i] - ref[i - L]))
+      ok(err === 0, `${atom.name}: block ${block}, latency ${L}: max deviation ${err}`)
+    }
+  }
 })

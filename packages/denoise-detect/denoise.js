@@ -30,8 +30,8 @@ export const deesser = (data, params = {}) => {
   data.set(deesser_(data, {
     sampleRate: params.fs || 44100,
     mode: 'band',
-    freq: params.freq ?? 6000,
-    q: params.Q ?? 1.4,
+    fc: params.fc ?? params.freq ?? 6000,   // `freq`: former name
+    Q: params.Q ?? 1.4,
     threshold: params.threshold ?? -30,
     ratio: params.ratio ?? 4,
     attack: (params.attack ?? 0.001) * 1000,

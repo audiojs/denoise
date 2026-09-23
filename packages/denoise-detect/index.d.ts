@@ -51,6 +51,8 @@ export interface DeesserOptions {
   /** sample rate (Hz), default 44100 */
   fs?: number
   /** center frequency (Hz), default 6000 */
+  fc?: number
+  /** @deprecated former name of `fc` */
   freq?: number
   /** notch Q, default 1.4 */
   Q?: number

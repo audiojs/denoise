@@ -8,16 +8,15 @@
 // xiFloor is exposed in dB (xiMin is a linear power-ratio floor internally, xiMin =
 // 10**(xiFloor/10) — matches the kernel's own default of 0.0316 == -15dB exactly).
 //
-// Same FIFO-absorbed variable-length write() + fixed extra delay as denoise-spectral —
-// see that package's audio.js header for how the 3072-sample figure (frameSize
-// 2048 / hopSize 512, both fixed here) was measured.
+// Same primed FIFO as denoise-spectral (see its audio.js header): a constant FRAME − 1
+// delay under any block size.
 
 import wiener_ from './wiener.js'
 
 const FRAME = 2048, HOP = 512
-const LATENCY = 3072
+const LATENCY = FRAME - 1
 
-function makeFifo() { return { buf: new Float32Array(1 << 14), len: 0 } }
+function makeFifo() { return { buf: new Float32Array(1 << 14), len: LATENCY } }   // primed with zeros
 function fifoPush(f, chunk) {
 	if (!chunk.length) return
 	let need = f.len + chunk.length
