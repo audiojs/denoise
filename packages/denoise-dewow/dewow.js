@@ -72,7 +72,7 @@ function normalizeChannels(data) {
 	return { channels, mono, multi: Array.isArray(data) }
 }
 
-function wrapPhase(p) { return p - Math.round(p / PI2) * PI2 }
+function wrapPhase(p) { return p - Math.floor(p / PI2 + 0.5) * PI2 }  // floor(x + 0.5) rounds like Math.round here, several times faster in V8 (hot: per bin per frame)
 
 // Phase-vocoder instantaneous frequency at bin k, given this frame's phase and
 // the previous frame's phase at the same bin. Exact for a stationary sinusoid
