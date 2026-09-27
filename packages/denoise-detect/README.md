@@ -26,7 +26,7 @@ denoise(data, { force: 'wiener' })                             // skip classifie
 
 **Routing (in priority order):**
 1. tonal hum (Goertzel — ≥2 of first 3 harmonics show 50× line/off-line ratio at 50 or 60 Hz)
-2. impulses (excess kurtosis of AR residual > 12)
+2. impulses: AR(30) residual samples over 12× the residual RMS within ±10 ms and 2× every residual 2.5–15 ms away (a glottal pulse has its like one pitch period off), more than 1 a second (`CLICK_RATE`)
 3. sibilance (high/mid band power ratio > 8)
 4. LF rumble (low/mid band power ratio > 3)
 5. non-stationary noise (frame-energy CV > 0.6) → omlsa

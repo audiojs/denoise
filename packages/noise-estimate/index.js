@@ -40,26 +40,29 @@ export function minStats(half, opts = {}) {
   let D = opts.D || 96
   let alpha = opts.alpha ?? 0.7              // smoothing on PSD
   let bias = opts.bias ?? 1.5                 // empirical comp from Martin §VII
-  let smoothed = new Float64Array(half + 1)
-  let psd = new Float64Array(half + 1)
-  let buf = []                                 // ring of recent smoothed frames
+  let bins = half + 1
+  let smoothed = new Float64Array(bins)
+  let psd = new Float64Array(bins)
+  // The D-frame minimum per bin, by monotonic deque: each bin keeps the frames that can still be its minimum,
+  // values rising from head to tail (O(1) amortized per bin per frame, not a rescan of D frames)
+  let val = new Float64Array(bins * D), at = new Int32Array(bins * D)
+  let head = new Int32Array(bins), size = new Int32Array(bins), frame = 0
 
   return {
     psd,
     update(mag) {
-      let p = new Float64Array(half + 1)
-      for (let k = 0; k <= half; k++) {
+      for (let k = 0, o = 0; k <= half; k++, o += D) {
         let pk = mag[k] * mag[k]
-        smoothed[k] = alpha * smoothed[k] + (1 - alpha) * pk
-        p[k] = smoothed[k]
+        let v = smoothed[k] = alpha * smoothed[k] + (1 - alpha) * pk
+        let h = head[k], n = size[k], t
+        if (n && at[o + h] <= frame - D) { if (++h === D) h = 0; n-- }    // oldest left the window
+        while (n && val[o + ((t = h + n - 1) >= D ? t - D : t)] >= v) n--  // newer and no larger: they can't be minima
+        t = h + n >= D ? h + n - D : h + n
+        val[o + t] = v; at[o + t] = frame; n++
+        head[k] = h; size[k] = n
+        psd[k] = val[o + h] * bias
       }
-      buf.push(p)
-      if (buf.length > D) buf.shift()
-      for (let k = 0; k <= half; k++) {
-        let mn = Infinity
-        for (let i = 0; i < buf.length; i++) if (buf[i][k] < mn) mn = buf[i][k]
-        psd[k] = mn * bias
-      }
+      frame++
     }
   }
 }

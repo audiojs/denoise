@@ -221,6 +221,23 @@ test('omlsa — improves segSNR on noisy speech', () => {
   ok(segSnr(clean, speech) > segSnr(dirty, speech), 'segSNR improved')
 })
 
+// minStats keeps each bin's minimum over the last D frames by monotonic deque; the rescan it replaced is the reference.
+// Windows of 1, 3 and 96 frames, fewer frames than the window, repeated values, minima falling and rising.
+test('minStats — the D-frame minimum equals a rescan of the last D frames', () => {
+  let seed = 5, rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
+  for (let [half, D, frames] of [[64, 96, 300], [16, 1, 50], [16, 3, 200], [64, 96, 20]]) {
+    let est = minStats(half, { D }), smoothed = new Float64Array(half + 1), hist = [], bad = 0
+    for (let f = 0; f < frames; f++) {
+      let mag = Float64Array.from({ length: half + 1 }, () => f % 37 < 5 ? 0 : rnd() < 0.1 ? 1 : rnd() * (1 + (f % 300) / 30))
+      est.update(mag)
+      hist.push(Float64Array.from(mag, (m, k) => smoothed[k] = 0.7 * smoothed[k] + (1 - 0.7) * (m * m)))
+      if (hist.length > D) hist.shift()
+      for (let k = 0; k <= half; k++) if (est.psd[k] !== Math.min(...hist.map(p => p[k])) * 1.5) bad++
+    }
+    is(bad, 0, `${half + 1} bins, D ${D}, ${frames} frames`)
+  }
+})
+
 // =================== declick ===================
 
 test('declick — removes injected clicks', () => {
@@ -392,6 +409,25 @@ test('classify — 60Hz hum routes to dehum', () => {
 test('classify — clicks route to declick', () => {
   let x = add(noise(fs, 0.05), clicks(fs, 12, 0.9))
   is(classify(x, fs).method, 'declick')
+})
+
+// Speech isn't clicks. Its AR residual is a glottal pulse train, impulsive but every 2.5–12 ms at like size; a click
+// stands alone. The residual's kurtosis, the old score, read 2.5–401 on clean narration against a trigger of 12.
+test('classify — speech and a sung vowel are not clicks; speech with clicks at 2.5 a second is', async () => {
+  let { CLICK_RATE } = await import('@audio/denoise-detect')
+  let speech = lena.subarray(0, fs * 4)
+  let vowel = new Float32Array(fs * 2), y1 = 0, y2 = 0, z1 = 0, z2 = 0
+  for (let i = 0; i < vowel.length; i++) {
+    let x = i % Math.round(fs / 120) === 0 ? 1 : 0   // 120 Hz glottal pulses
+    let y = x + 1.9 * Math.cos(2 * Math.PI * 700 / fs) * 0.95 * y1 - 0.9025 * y2; y2 = y1; y1 = y   // formant at 700 Hz
+    let z = y + 2 * Math.cos(2 * Math.PI * 1200 / fs) * 0.93 * z1 - 0.8649 * z2; z2 = z1; z1 = z   // and 1200 Hz
+    vowel[i] = z * 0.01
+  }
+  ok(classify(speech, fs).scores.click < CLICK_RATE, 'speech: ' + classify(speech, fs).scores.click.toFixed(2) + ' impulses/s')
+  ok(classify(vowel, fs).scores.click < CLICK_RATE, 'vowel: ' + classify(vowel, fs).scores.click.toFixed(2) + ' impulses/s')
+  let dirty = Float32Array.from(speech)
+  for (let t = 0.2; t < 4; t += 0.4) dirty[Math.round(t * fs)] += 0.3
+  is(classify(dirty, fs).method, 'declick', 'clicks: ' + classify(dirty, fs).scores.click.toFixed(2) + ' impulses/s')
 })
 
 test('classify — sibilance routes to deesser', () => {

@@ -3,7 +3,7 @@
 //
 // Classification (single STFT sweep over the input):
 //   - hum   — narrow peaks at mains harmonics (Goertzel) → dehum
-//   - click — high kurtosis of AR residual → declick
+//   - click — impulses standing out of the AR residual, over 1 a second → declick
 //   - hi    — 5–9 kHz / mid energy ratio → deesser
 //   - lf    — LF/mid energy ratio → dewind
 //   - stationarity — frame-energy floor CV: stable → wiener, wandering → omlsa
@@ -111,31 +111,10 @@ export function classify(data, fs = 44100) {
   // HI/MF ratio
   let hiRatio = hiSum / Math.max(mfSum, 1e-30)
 
-  // Click score: max AR-residual excess kurtosis over windows spanning the whole
-  // signal. Clicks are sparse and impulsive — a fixed prefix window can miss them
-  // entirely, so scan across and take the peak (the window holding a click spikes).
-  let clickScore = 0
-  let cw = 4096
-  if (data.length >= cw) {
-    let stride = Math.max(cw, Math.floor((data.length - cw) / 8) || cw)
-    for (let start = 0; start + cw <= data.length; start += stride) {
-      let seg = data.subarray(start, start + cw)
-      try {
-        let { a } = arFit(seg, 30)
-        let resid = new Float64Array(cw), mean = 0, m2 = 0, m4 = 0
-        for (let i = 30; i < cw; i++) {
-          let s = seg[i]
-          for (let k = 1; k <= 30; k++) s += a[k] * seg[i - k]
-          resid[i] = s; mean += s
-        }
-        mean /= (cw - 30)
-        for (let i = 30; i < cw; i++) { let d = resid[i] - mean; m2 += d * d; m4 += d * d * d * d }
-        m2 /= (cw - 30); m4 /= (cw - 30)
-        let ex = m2 > 0 ? m4 / (m2 * m2) - 3 : 0       // excess kurtosis
-        if (ex > clickScore) clickScore = ex
-      } catch {}
-    }
-  }
+  // Click score: impulses per second. A click stands far out of the AR(30) prediction error around it; a glottal
+  // pulse doesn't, its neighbours 2.5–12 ms away being pulses too (the error's kurtosis can't tell them apart:
+  // clean narration read 2.5–401 against a trigger of 12).
+  let clickScore = impulseRate(data, fs)
 
   // Noise stationarity: CV of the frame-energy FLOOR (rolling minimum over ~0.75 s).
   // Speech dynamics ride above the floor, so the floor tracks the *noise bed*:
@@ -170,7 +149,7 @@ export function classify(data, fs = 44100) {
   // humBest is a hit count: ≥2 of the first 3 harmonics show 20× peak-to-median sharpness.
   let method = 'wiener'
   if (humBest >= 2) method = 'dehum'
-  else if (clickScore > 12) method = 'declick'
+  else if (clickScore > CLICK_RATE) method = 'declick'
   else if (hiRatio > 8) method = 'deesser'                // white noise scores ~3.9 by bandwidth alone
   else if (lfRatio > 3) method = 'dewind'
   else if (floorCV > 0.3) method = 'omlsa'         // white ~0.06 · rumble ~0.2 · babble ~0.5
@@ -179,6 +158,39 @@ export function classify(data, fs = 44100) {
 }
 
 // Goertzel power at frequency f.
+/** Impulses per second a recording must carry for declick. Measured: clean narration, music and a sung vowel 0–0.87;
+ *  the same with clicks at 2.5 a second 1.9 and up, faint ones (0.05) 1.3 and up (Spoken Wikipedia takes, lena). */
+export const CLICK_RATE = 1
+
+/** Impulses per second. An impulse is an AR(30) residual sample over 12× the residual RMS within ±10 ms that also
+ *  towers (2×) over every residual 2.5–15 ms away: a glottal pulse has its like one pitch period off, a click doesn't.
+ *  Events 5 ms apart, over up to 64 windows of 4096 samples spread across the signal (≈ 6 s at 44.1 kHz). */
+function impulseRate(data, fs) {
+  const W = 4096, P = 30, K = 12, M = 2
+  const h = Math.round(0.01 * fs), gap = Math.round(0.005 * fs), near = Math.round(0.0025 * fs), far = Math.round(0.015 * fs)
+  if (data.length < W || W - P <= 2 * h) return 0
+  let count = Math.min(64, Math.floor(data.length / W)), stride = count > 1 ? (data.length - W) / (count - 1) : 0
+  let r = new Float64Array(W), events = 0, seconds = 0
+  for (let w = 0; w < count; w++) {
+    let seg = data.subarray(Math.round(w * stride), Math.round(w * stride) + W), a
+    try { ({ a } = arFit(seg, P)) } catch { continue }
+    for (let i = P; i < W; i++) { let e = seg[i]; for (let k = 1; k <= P; k++) e += a[k] * seg[i - k]; r[i] = e }
+    let e2 = 0, last = -gap
+    for (let i = P; i < P + 2 * h; i++) e2 += r[i] * r[i]
+    for (let i = P + h; i < W - h; i++) {
+      let v = Math.abs(r[i]), rms = Math.sqrt(e2 / (2 * h))
+      if (rms > 0 && v > K * rms && i - last > gap) {
+        let m = 0
+        for (let j = Math.max(P, i - far); j <= Math.min(W - 1, i + far); j++) if (Math.abs(j - i) >= near && Math.abs(r[j]) > m) m = Math.abs(r[j])
+        if (v > M * m) { events++; last = i }
+      }
+      e2 += r[i + h] * r[i + h] - r[i - h] * r[i - h]
+    }
+    seconds += (W - P - 2 * h) / fs
+  }
+  return seconds ? events / seconds : 0
+}
+
 function goertzelE(data, f, fs) {
   let w = 2 * Math.PI * f / fs, c = 2 * Math.cos(w), s1 = 0, s2 = 0
   for (let i = 0; i < data.length; i++) { let s = data[i] + c * s1 - s2; s2 = s1; s1 = s }
