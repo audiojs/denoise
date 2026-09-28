@@ -23,7 +23,7 @@ export interface WienerOptions {
 export declare const wiener: {
   (ctx: Ctx): Process
   channels: "any"
-  latency: 3072
+  latency: (ctx: { sampleRate: number, params: Live }) => number
   tail: 0
   params: {
     /** default "mmse-lsa" [restart] */

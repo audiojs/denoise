@@ -8,15 +8,13 @@
 // xiFloor is exposed in dB (xiMin is a linear power-ratio floor internally, xiMin =
 // 10**(xiFloor/10) — matches the kernel's own default of 0.0316 == -15dB exactly).
 //
-// Same primed FIFO as denoise-spectral (see its audio.js header): a constant FRAME − 1
+// Same primed FIFO as denoise-spectral (see its audio.js header): a constant frame − 1
 // delay under any block size.
 
-import wiener_ from './wiener.js'
+import wiener_, { frame } from './wiener.js'
 
-const FRAME = 2048, HOP = 512
-const LATENCY = FRAME - 1
-
-function makeFifo() { return { buf: new Float32Array(1 << 14), len: LATENCY } }   // primed with zeros
+// the frame follows the rate (wiener.js `frame`: the power of two nearest 32 ms), so the latency is declared per rate
+function makeFifo(L) { return { buf: new Float32Array(1 << 14), len: L } }   // primed with zeros
 function fifoPush(f, chunk) {
 	if (!chunk.length) return
 	let need = f.len + chunk.length
@@ -33,15 +31,15 @@ function fifoPull(f, out) {
 }
 
 export const wiener = (ctx) => {
-	const chans = []
-	for (let c = 0, N = ctx.maxChannels ?? 8; c < N; c++) {
+	const chans = [], N = frame(ctx.sampleRate)
+	for (let c = 0, C = ctx.maxChannels ?? 8; c < C; c++) {
 		chans.push({
 			write: wiener_({
 				rule: ctx.params.rule, alphaDD: ctx.params.alphaDD[0],
 				xiMin: 10 ** (ctx.params.xiFloor[0] / 10),
-				frameSize: FRAME, hopSize: HOP, fs: ctx.sampleRate
+				frameSize: N, hopSize: N >> 2, fs: ctx.sampleRate
 			}),
-			fifo: makeFifo()
+			fifo: makeFifo(N - 1)
 		})
 	}
 	return (inputs, outputs) => {
@@ -55,7 +53,7 @@ export const wiener = (ctx) => {
 	}
 }
 wiener.channels = 'any'
-wiener.latency = LATENCY
+wiener.latency = ({ sampleRate }) => frame(sampleRate) - 1
 wiener.tail = 0
 wiener.params = {
 	rule:    { type: 'enum', values: ['wiener', 'mmse-lsa'], default: 'mmse-lsa', flags: ['restart'] },

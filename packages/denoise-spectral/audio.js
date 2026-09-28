@@ -8,17 +8,15 @@
 // so both carry flags:['restart'].
 //
 // stftStream.write(chunk) returns a variable-length burst: a sample leaves once no later
-// frame covers it, at most FRAME − 1 samples after it arrived (@audio/stft ≥ 1.0.7), with
-// output sample j aligned to input sample j. A per-channel FIFO primed with FRAME − 1 zeros
+// frame covers it, at most frame − 1 samples after it arrived (@audio/stft ≥ 1.0.7), with
+// output sample j aligned to input sample j. A per-channel FIFO primed with frame − 1 zeros
 // turns the bursts into the equal-frames-in/out shape §process requires: it never runs dry,
-// so the delay is exactly FRAME − 1 under any block size (pinned in test.js).
+// so the delay is exactly frame − 1 under any block size (pinned in test.js).
 
-import specsub_ from './specsub.js'
+import specsub_, { frame } from './specsub.js'
 
-const FRAME = 2048, HOP = 512
-const LATENCY = FRAME - 1
-
-function makeFifo() { return { buf: new Float32Array(1 << 14), len: LATENCY } }   // primed with zeros
+// the frame follows the rate (specsub.js `frame`: the power of two nearest 32 ms), so the latency is declared per rate
+function makeFifo(L) { return { buf: new Float32Array(1 << 14), len: L } }   // primed with zeros
 function fifoPush(f, chunk) {
 	if (!chunk.length) return
 	let need = f.len + chunk.length
@@ -35,14 +33,14 @@ function fifoPull(f, out) {
 }
 
 export const specsub = (ctx) => {
-	const chans = []
-	for (let c = 0, N = ctx.maxChannels ?? 8; c < N; c++) {
+	const chans = [], N = frame(ctx.sampleRate)
+	for (let c = 0, C = ctx.maxChannels ?? 8; c < C; c++) {
 		chans.push({
 			write: specsub_({
-				alpha: ctx.params.alpha[0], beta: ctx.params.beta[0],
-				frameSize: FRAME, hopSize: HOP, fs: ctx.sampleRate
+				alpha: ctx.params.alpha[0], beta: ctx.params.beta[0],   // alpha 0: Berouti's α(SNR)
+				frameSize: N, hopSize: N >> 2, fs: ctx.sampleRate
 			}),
-			fifo: makeFifo()
+			fifo: makeFifo(N - 1)
 		})
 	}
 	return (inputs, outputs) => {
@@ -56,9 +54,9 @@ export const specsub = (ctx) => {
 	}
 }
 specsub.channels = 'any'
-specsub.latency = LATENCY
+specsub.latency = ({ sampleRate }) => frame(sampleRate) - 1
 specsub.tail = 0
 specsub.params = {
-	alpha: { type: 'number', min: 1, max: 6, default: 2.0, flags: ['restart'] },       // over-subtraction
-	beta:  { type: 'number', min: 0, max: 0.5, default: 0.02, unit: '', flags: ['restart'] }, // spectral floor
+	alpha: { type: 'number', min: 0, max: 6, default: 0, flags: ['restart'] },         // over-subtraction; 0: α(SNR), 4.75..1
+	beta:  { type: 'number', min: 0, max: 0.5, default: 0.05, unit: '', flags: ['restart'] }, // spectral floor, × noise
 }

@@ -6,13 +6,17 @@ export interface WienerOptions {
   alpha?: number
   /** decision-directed smoothing, default 0.98 */
   alphaDD?: number
-  /** a-priori SNR floor, default 0.0316 */
+  /** a-priori SNR floor, linear, default 10^-1.5 (−15 dB) */
   xiMin?: number
-  /** noise PSD; omit for minimum statistics */
+  /** noise PSD; omit for minimum statistics (Martin 2001, 1.5 s window) */
   profile?: Float64Array
-  /** leading noise-only frames for the PSD bootstrap */
+  /** leading noise-only frames to average for the profile */
   noiseFrames?: number
-  /** STFT frame, default 2048 */
+  /** noise profile segment start (samples) */
+  profileFrom?: number
+  /** noise profile segment end (samples) */
+  profileTo?: number
+  /** STFT frame, default `frame(fs)`: the power of two nearest 32 ms */
   frameSize?: number
   /** OLA hop, default frameSize/4 */
   hopSize?: number
@@ -24,3 +28,5 @@ export interface WienerOptions {
 export default function wiener(data: Float32Array | Float64Array, options?: WienerOptions): Float32Array
 /** Streaming form: returns a writer — call with chunks, call with no argument to flush. */
 export default function wiener(options?: WienerOptions): (chunk?: Float32Array) => Float32Array
+/** The default frame at a rate: the power of two nearest 32 ms (512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48). */
+export function frame(fs: number): number

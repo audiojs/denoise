@@ -10,9 +10,9 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 
 /** Chainable-host options for 'specsub' */
 export interface SpecsubOptions {
-  /** 1..6 (default 2) */
+  /** 0..6 (default 0) */
   "alpha"?: Auto
-  /** 0..0.5 (default 0.02) */
+  /** 0..0.5 (default 0.05) */
   "beta"?: Auto
   at?: number | string
   duration?: number | string
@@ -21,12 +21,12 @@ export interface SpecsubOptions {
 export declare const specsub: {
   (ctx: Ctx): Process
   channels: "any"
-  latency: 3072
+  latency: (ctx: { sampleRate: number, params: Live }) => number
   tail: 0
   params: {
-    /** 1..6 (default 2) [restart] */
-    "alpha": { type: "number", default: 2 }
-    /** 0..0.5 (default 0.02) [restart] */
-    "beta": { type: "number", default: 0.02 }
+    /** 0..6 (default 0) [restart] */
+    "alpha": { type: "number", default: 0 }
+    /** 0..0.5 (default 0.05) [restart] */
+    "beta": { type: "number", default: 0.05 }
   }
 }

@@ -10,9 +10,9 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 
 /** Chainable-host options for 'dehum' */
 export interface DehumOptions {
-  /** 20..400 Hz (default 50) */
+  /** 0..400 Hz (default 0) */
   "freq"?: Auto
-  /** 1..16 (default 4) */
+  /** 0..40 (default 0) */
   "harmonics"?: Auto
   /** 1..200 (default 30) */
   "Q"?: Auto
@@ -25,11 +25,13 @@ export interface DehumOptions {
 export declare const dehum: {
   (ctx: Ctx): Process
   channels: "any"
+  streaming: false
+  tail: 0
   params: {
-    /** 20..400 Hz (default 50) */
-    "freq": { type: "number", default: 50 }
-    /** 1..16 (default 4) */
-    "harmonics": { type: "number", default: 4 }
+    /** 0..400 Hz (default 0) */
+    "freq": { type: "number", default: 0 }
+    /** 0..40 (default 0) */
+    "harmonics": { type: "number", default: 0 }
     /** 1..200 (default 30) */
     "Q": { type: "number", default: 30 }
     /** default false */

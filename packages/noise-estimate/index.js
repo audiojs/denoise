@@ -2,6 +2,7 @@
 //   - noiseProfile: average |X|² over a user-chosen quiet segment (manual baseline)
 //   - minStats: Martin (2001) — track minima of smoothed |X|² in sliding window
 //   - imcra: Cohen (2003) — Improved MCRA, two-iteration smoothing + speech-presence-driven
+//   - known: a noiseProfile held, with imcra's per-frame SNR outputs (OM-LSA on a learned noise)
 //
 // All estimators are stateful: pass the same params object across frames in stream mode.
 
@@ -27,19 +28,19 @@ export function noiseProfile(data, opts = {}) {
 }
 
 // Minimum Statistics (Martin 2001) — frame-by-frame online updater.
-// Keeps a rolling D-frame minimum of smoothed PSD per bin; multiplies by a bias
-// compensation factor so the minimum tracks E{|N|²} rather than the lower-tail.
+// Keeps a rolling D-frame minimum of the smoothed PSD per bin, times the bias compensation B_min that makes the
+// minimum estimate E{|N|²} rather than its lower tail.
 //
 // Usage:
 //   let est = minStats(half, { D: 96 })
 //   stftAnalyse(data, m => est.update(m))
 //   let psd = est.psd  // current noise PSD
 //
-// D ≈ 1.5 s of frames at hop = N/4 ≈ 96 frames @ 44.1k / N=2048.
+// D = 96 frames ≈ 1.1 s at hop 512, 44.1 kHz.
 export function minStats(half, opts = {}) {
   let D = opts.D || 96
   let alpha = opts.alpha ?? 0.7              // smoothing on PSD
-  let bias = opts.bias ?? 1.5                 // empirical comp from Martin §VII
+  let bias = opts.bias ?? biasMin(D, alpha)
   let bins = half + 1
   let smoothed = new Float64Array(bins)
   let psd = new Float64Array(bins)
@@ -50,10 +51,15 @@ export function minStats(half, opts = {}) {
 
   return {
     psd,
+    bias,
     update(mag) {
+      let silent = true
+      for (let k = 0; k <= half; k++) if (mag[k]) { silent = false; break }
+      if (silent) return                         // digital silence holds no noise to learn: a zero would stay D frames
       for (let k = 0, o = 0; k <= half; k++, o += D) {
         let pk = mag[k] * mag[k]
-        let v = smoothed[k] = alpha * smoothed[k] + (1 - alpha) * pk
+        // the smoother starts at the first frame, not at 0: a warm-up from 0 would be the window's minimum for D frames
+        let v = smoothed[k] = frame ? alpha * smoothed[k] + (1 - alpha) * pk : pk
         let h = head[k], n = size[k], t
         if (n && at[o + h] <= frame - D) { if (++h === D) h = 0; n-- }    // oldest left the window
         while (n && val[o + ((t = h + n - 1) >= D ? t - D : t)] >= v) n--  // newer and no larger: they can't be minima
@@ -67,56 +73,173 @@ export function minStats(half, opts = {}) {
   }
 }
 
-// IMCRA — Improved Minima Controlled Recursive Averaging (Cohen 2003).
-// Drives noise PSD via speech-presence probability (SPP) so it stops updating
-// during voiced regions. SPP itself is supplied by the caller (see @audio/vad spp())
-// or computed internally from the smoothed-to-min PSD ratio.
+// B_min(D, Q_eq): the mean of the smoothed periodogram over the mean of its D-frame minimum, Martin 2001 eq. (17):
+// 1 + 2(D−1)(1 − M(D)) / (Q_eq − 2M(D)). A periodogram of Gaussian noise has 2 degrees of freedom; smoothing it by
+// α gives Q_eq = 2(1+α)/(1−α) (variance (1−α)/(1+α) of the periodogram's). M(D): Martin 2006 Table 5, interpolated
+// in 1/√D as VOICEBOX's v_estnoisem.m does. 3.44 for the defaults (D 96, α 0.7): on white Gaussian noise through the
+// family's 2048/512 Hann frames the estimate's mean is then 0.2 dB under the noise power; the 1.5 used before,
+// Martin 1994's factor for α = 0.95, left it 3.8 dB under.
+const MD = [[1, 0], [2, 0.26], [5, 0.48], [8, 0.58], [10, 0.61], [15, 0.668], [20, 0.705], [30, 0.762], [40, 0.8],
+  [60, 0.841], [80, 0.865], [120, 0.89], [140, 0.9], [160, 0.91], [180, 0.92], [220, 0.93], [260, 0.935], [300, 0.94]]
+function biasMin(D, alpha) {
+  let i = MD.findIndex(r => D <= r[0]), m
+  if (i < 0) m = MD[MD.length - 1][1]
+  else if (D === MD[i][0] || i === 0) m = MD[i][1]
+  else {
+    let [dj, mj] = MD[i - 1], [di, mi] = MD[i], qj = Math.sqrt(dj), qi = Math.sqrt(di), q = Math.sqrt(D)
+    m = mi + (qi * qj / q - qj) * (mj - mi) / (qi - qj)
+  }
+  let qeq = 2 * (1 + alpha) / (1 - alpha)
+  return 1 + 2 * (D - 1) * (1 - m) / (qeq - 2 * m)
+}
+
+// IMCRA: Improved Minima Controlled Recursive Averaging (Cohen, IEEE TSAP 11(5), 2003). Equation numbers are the
+// paper's; where it leaves a detail open (initialisation, subwindow bookkeeping) this follows Cohen's own omlsa.m
+// (israelcohen.com/software), which it reproduces on identical frames (test.js fixture).
+//
+//   S_f = b ∗ |Y|² over 2w+1 bins (14);  S = α_s S + (1 − α_s) S_f (15);  S_min: minimum of S over U subwindows of V frames
+//   first iteration, rough speech absence I = [|Y|² < γ0 B_min S_min] · [S < ζ0 B_min S_min] (18)-(21)
+//   second iteration: S̃_f = b ∗ (I |Y|²) / b ∗ I (26), S̃ = α_s S̃ + (1 − α_s) S̃_f (27), its minimum S̃_min
+//   γ̃_min = |Y|²/(B_min S̃_min), ζ̃ = S/(B_min S̃_min) (28) → a priori speech absence q̂ (29) → p (7)
+//   λ̄_d ← α̃_d λ̄_d + (1 − α̃_d)|Y|², α̃_d = α_d + (1 − α_d) p (10), (11);  λ̂_d = β λ̄_d (12)
+//
+// p needs the a priori SNR: decision-directed on the LSA gain under speech presence, ξ = α G_H1²(l−1) γ(l−1) +
+// (1 − α) max(γ − 1, 0) (32), (33) (Cohen & Berdugo 2001 eq. 18). The estimator keeps it and exposes, per frame, on the
+// updated noise: `xi`, `gamma` (a posteriori SNR), `v` = γξ/(1+ξ), `gain` (G_H1) and `p`, which OM-LSA's gain uses.
+//
+// Table I's constants hold for 8 ms frames (16 kHz, 128 hop): smoothing constants scale as a^(Δt / 8 ms) and V as
+// 15 · 8 ms / Δt with the actual frame step Δt = hop / fs, so time constants and the ~1 s minimum window keep their
+// length in seconds at any rate. Without `fs` and `hop` the constants apply per frame, as tabulated.
+const REF_DT = 128 / 16000
+
+// E1(v) for v > 0: Abramowitz & Stegun 5.1.53 (v < 1, |ε| < 2e-7) and 5.1.56 (v ≥ 1, |ε| < 2e-8 relative)
+function e1(v) {
+  if (v <= 0) return 30
+  if (v < 1) return ((((0.00107857 * v - 0.00976004) * v + 0.05519968) * v - 0.24991055) * v + 0.99999193) * v - 0.57721566 - Math.log(v)
+  return Math.exp(-v) / v * (0.2677737343 + v * (8.6347608925 + v * (18.0590169730 + v * (8.5733287401 + v)))) /
+    (3.9584969228 + v * (21.0996530827 + v * (25.6329561486 + v * (9.5733223454 + v))))
+}
+
+// Decision-directed a priori SNR and the LSA gain under speech presence against the noise estimate s.psd:
+// ξ = max(α G_H1²(l−1) γ(l−1) + (1 − α) max(γ − 1, 0), ξ_min) (Cohen & Berdugo 2001 eq. 18), γ and v = γξ/(1+ξ);
+// `next` computes G_H1 = ξ/(1+ξ) exp(½ E1(v)) (15) and keeps G_H1²γ for the next frame's ξ
+function lsa(s, next) {
+  let { y2, psd, eta2, xi, gamma, v, gain, aDD, xiMin } = s
+  for (let k = 0; k < y2.length; k++) {
+    let g = y2[k] / Math.max(psd[k], 1e-30), x = Math.max(aDD * eta2[k] + (1 - aDD) * Math.max(g - 1, 0), xiMin)
+    gamma[k] = g; xi[k] = x; v[k] = g * x / (1 + x)
+    if (next) { gain[k] = x / (1 + x) * Math.exp(0.5 * e1(v[k])); eta2[k] = gain[k] * gain[k] * g }
+  }
+}
+
+// A known noise: a profile learned where the noise plays alone (noiseProfile), held rather than tracked. Per frame the
+// outputs imcra gives, on it (ξ, γ, v, G_H1), so a gain written for imcra runs on a learned noise unchanged. `xi0` is
+// `xi` (a held noise does not move within the frame); nothing estimates speech presence, `p` stays 0.
+export function known(profile, opts = {}) {
+  let K = profile.length, psd = Float64Array.from(profile), y2 = new Float64Array(K), eta2 = new Float64Array(K).fill(1)
+  let xi = new Float64Array(K), gamma = new Float64Array(K), v = new Float64Array(K), gain = new Float64Array(K)
+  let s = { y2, psd, eta2, xi, gamma, v, gain, aDD: opts.alphaDD ?? 0.92, xiMin: opts.xiMin ?? 10 ** (-25 / 10) }
+  let est = { psd, xi, xi0: xi, gamma, v, gain, p: new Float64Array(K), frames: 0, update }
+  function update(mag) {
+    let silent = true
+    for (let k = 0; k < K; k++) { y2[k] = mag[k] * mag[k]; if (y2[k]) silent = false }
+    if (silent) return est                        // digital silence: skipped, as imcra skips it
+    lsa(s, true)
+    est.frames++
+    return est
+  }
+  return est
+}
+
 export function imcra(half, opts = {}) {
-  let alpha = opts.alpha ?? 0.92
-  let alphaD = opts.alphaD ?? 0.85
-  let beta = opts.beta ?? 1.47
-  let psd = new Float64Array(half + 1)
-  let psdInit = false
-  let smoothed = new Float64Array(half + 1)
-  let mins = new Float64Array(half + 1)
-  let prevMins = new Float64Array(half + 1)
-  let frameCount = 0
-  let resetEvery = opts.resetEvery || 80      // ≈ 0.9 s @ 44.1k, hop=512
+  let K = half + 1
+  let r = opts.fs && opts.hop ? opts.hop / opts.fs / REF_DT : 1
+  let as = (opts.alpha ?? 0.9) ** r              // α_s, (15)
+  let ad = (opts.alphaD ?? 0.85) ** r            // α_d, (11)
+  let beta = opts.beta ?? 1.47                   // (12)
+  let bMin = opts.bMin ?? 1.66                   // minimum's bias, (18)
+  let g0 = opts.gamma0 ?? 4.6, g1 = opts.gamma1 ?? 3, z0 = opts.zeta0 ?? 1.67   // (21), (29)
+  let U = opts.U ?? 8, V = opts.V ?? Math.max(1, Math.round(15 / r))
+  let aDD = opts.alphaDD ?? 0.92, xiMin = opts.xiMin ?? 10 ** (-25 / 10)
+  let w = opts.w ?? 1, b = new Float64Array(2 * w + 1), bs = 0
+  for (let i = 0; i < b.length; i++) bs += b[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * (i + 1) / (b.length + 1))   // MATLAB hanning(2w+1)
+  for (let i = 0; i < b.length; i++) b[i] /= bs
 
-  return {
-    psd,
-    update(mag, sppOverride) {
-      let init = !psdInit
-      for (let k = 0; k <= half; k++) {
-        let pk = mag[k] * mag[k]
-        smoothed[k] = init ? pk : alpha * smoothed[k] + (1 - alpha) * pk
-        if (init || smoothed[k] < mins[k]) mins[k] = smoothed[k]
-        if (!init && smoothed[k] < prevMins[k]) prevMins[k] = smoothed[k]
+  let psd = new Float64Array(K), lav = new Float64Array(K), y2 = new Float64Array(K), eta2 = new Float64Array(K)
+  let S = new Float64Array(K), St = new Float64Array(K), Smin = new Float64Array(K), Smint = new Float64Array(K)
+  let SMact = new Float64Array(K), SMactt = new Float64Array(K), SW = new Float64Array(U * K), SWt = new Float64Array(U * K)
+  let I = new Float64Array(K), sf = new Float64Array(K)
+  let xi = new Float64Array(K), gamma = new Float64Array(K), v = new Float64Array(K), gain = new Float64Array(K), p = new Float64Array(K)
+  let xi0 = new Float64Array(K)
+  let n = 0, ri = 0
+  let est = { psd, xi, xi0, gamma, v, gain, p, frames: 0, update }
+
+  // b ∗ x at bin k, zero past the edges (MATLAB conv, central part)
+  function smooth(x, k) {
+    let s = 0
+    for (let i = -w; i <= w; i++) { let j = k - i; if (j >= 0 && j < K) s += b[i + w] * x[j] }
+    return s
+  }
+
+  // decision-directed a priori SNR and G_H1 on the current noise estimate; `next` stores G_H1²γ for the next frame
+  let s = { y2, psd, eta2, xi, gamma, v, gain, aDD, xiMin }
+  const snr = next => lsa(s, next)
+
+  function update(mag, sppOverride) {
+    let silent = true
+    for (let k = 0; k < K; k++) { y2[k] = mag[k] * mag[k]; if (y2[k]) silent = false }
+    if (silent) return est                        // digital silence: nothing to learn (omlsa.m skips zero frames too)
+    let first = n === 0
+    if (first) { psd.set(y2); eta2.fill(1) }
+    snr(false)                                    // ξ, v on the previous estimate, for this frame's p
+    xi0.set(xi)
+
+    for (let k = 0; k < K; k++) sf[k] = smooth(y2, k)
+    if (first) { S.set(sf); St.set(sf); lav.set(y2) }
+    else for (let k = 0; k < K; k++) S[k] = as * S[k] + (1 - as) * sf[k]
+    let init = n < V - 1
+    for (let k = 0; k < K; k++) {
+      if (init) Smin[k] = SMact[k] = S[k]
+      else { if (S[k] < Smin[k]) Smin[k] = S[k]; if (S[k] < SMact[k]) SMact[k] = S[k] }
+      I[k] = y2[k] < g0 * bMin * Smin[k] && S[k] < z0 * bMin * Smin[k] ? 1 : 0
+    }
+    for (let k = 0; k < K; k++) {
+      let c = smooth(I, k), s = St[k]
+      if (c) { s = 0; for (let i = -w; i <= w; i++) { let j = k - i; if (j >= 0 && j < K) s += b[i + w] * I[j] * y2[j] } s /= c }
+      sf[k] = s
+    }
+    for (let k = 0; k < K; k++) {
+      if (init) St[k] = Smint[k] = SMactt[k] = S[k]
+      else {
+        St[k] = as * St[k] + (1 - as) * sf[k]
+        if (St[k] < Smint[k]) Smint[k] = St[k]
+        if (St[k] < SMactt[k]) SMactt[k] = St[k]
       }
-      frameCount++
-      if (frameCount >= resetEvery) {
-        for (let k = 0; k <= half; k++) {
-          let mn = Math.min(mins[k], prevMins[k])
-          prevMins[k] = mins[k]
-          mins[k] = smoothed[k]
-          // bias-compensated minimum tracker
-          if (init) psd[k] = mn * beta
+      let m = Math.max(Smint[k], 1e-30), gm = y2[k] / bMin / m, zt = S[k] / bMin / m, pk
+      if (sppOverride !== undefined) pk = typeof sppOverride === 'number' ? sppOverride : sppOverride[k]
+      else if (gm >= g1 || zt >= z0) pk = 1
+      else if (gm > 1) { let q = (g1 - gm) / (g1 - 1); pk = 1 / (1 + q / (1 - q) * (1 + xi[k]) * Math.exp(-v[k])) }
+      else pk = 0
+      p[k] = pk
+      let a = ad + (1 - ad) * pk
+      lav[k] = a * lav[k] + (1 - a) * y2[k]
+    }
+    if (++n % V === 0) {                          // a subwindow ends: store its minimum, the window's is the least of U
+      if (n === V) for (let u = 0; u < U; u++) { SW.set(S, u * K); SWt.set(St, u * K) }
+      else {
+        SW.set(SMact, ri * K); SWt.set(SMactt, ri * K); ri = (ri + 1) % U
+        for (let k = 0; k < K; k++) {
+          let m = Infinity, mt = Infinity
+          for (let u = 0, o = k; u < U; u++, o += K) { if (SW[o] < m) m = SW[o]; if (SWt[o] < mt) mt = SWt[o] }
+          Smin[k] = m; Smint[k] = mt
         }
-        frameCount = 0
-        psdInit = true
-      }
-
-      if (!psdInit) return
-
-      for (let k = 0; k <= half; k++) {
-        let mn = Math.min(mins[k], prevMins[k]) * beta
-        // SPP from local SNR vs minimum: high if smoothed >> minimum.
-        let snr = smoothed[k] / Math.max(mn, 1e-30)
-        let p = sppOverride !== undefined ? sppOverride : 1 / (1 + Math.exp(-3 * (snr - 5)))
-        let alphaTilde = alphaD + (1 - alphaD) * p
-        let pk = mag[k] * mag[k]
-        psd[k] = alphaTilde * psd[k] + (1 - alphaTilde) * pk
+        SMact.set(S); SMactt.set(St)
       }
     }
+    for (let k = 0; k < K; k++) psd[k] = beta * lav[k]
+    snr(true)                                     // on the updated estimate: this frame's gain, the next frame's ξ
+    est.frames = n
+    return est
   }
+  return est
 }

@@ -10,18 +10,22 @@ npm install @audio/denoise-spectral
 import specsub from '@audio/denoise-spectral'
 ```
 
-Berouti spectral subtraction (1979). Estimates noise from the first `noiseFrames` (or tracks it via Minimum Statistics) and subtracts `α(γ)·N̂(k)` — an SNR-adaptive over-subtraction factor — from each magnitude frame, with a `β·|Y(k)|²` spectral floor. Pass an explicit `alpha` to force a fixed factor.
+Power spectral subtraction with over-subtraction and a spectral floor (Berouti, Schwartz & Makhoul 1979): |Ŝ|² = |Y|² − α·N̂ where that stays above β·N̂, else β·N̂. Over-subtraction takes out the noise's peaks that plain subtraction leaves as musical tones; the floor, a fraction of the noise estimate, fills the valleys with a steady bed that masks what is left. α follows the frame's SNR (4 − 3/20·SNR: 4.75 at −5 dB down to 1 at 20 dB) unless fixed. The noise PSD is tracked by minimum statistics (Martin 2001) over a 1.5 s window, in batch and stream alike, unless a profile or a noise-only stretch is given.
 
 ```js
-specsub(data, { beta: 0.02, noiseFrames: 6 })                 // adaptive α(γ)
-specsub(data, { alpha: 2, beta: 0.02 })                       // fixed over-subtraction
+specsub(data, { fs })                                          // α(SNR), β 0.05, noise tracked
+specsub(data, { fs, alpha: 2 })                                // fixed over-subtraction
+specsub(data, { fs, noiseFrames: 6 })                          // noise from the first 6 frames
 ```
 
 | Param | Default | |
 |---|---|---|
-| `alpha` | adaptive | Fixed over-subtraction factor; omit for Berouti α(γ) |
-| `beta` | `0.02` | Spectral floor (fraction of the noisy spectrum) |
-| `noiseFrames` | first 4 frames | Leading noise-only frames for the PSD bootstrap |
+| `alpha` | α(SNR) | Fixed over-subtraction factor; omitted (or 0): Berouti's α(SNR) |
+| `beta` | `0.05` | Spectral floor, a fraction of the noise estimate: higher leaves less musical noise and more noise |
+| `frameSize` | power of two nearest 32 ms | STFT frame: 512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48 (`frame(fs)`) |
+| `hopSize` | `frameSize/4` | OLA hop |
+| `profile` | tracked | Noise PSD (`Float64Array`, `frameSize/2+1` bins) |
+| `noiseFrames` / `profileFrom` / `profileTo` | | A noise-only stretch to average for the profile |
 
 **Use when:** quick baseline; offline cleanup with a known noise-only preamble.<br>
 **Not for:** musical-noise-sensitive material — use `wiener` or `omlsa`.

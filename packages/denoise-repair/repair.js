@@ -1,80 +1,375 @@
-// Spectral repair (iZotope RX class) — replace time×frequency holes by interpolating
-// the spectrogram across each region: log-magnitude interpolated between the last clean
-// frame before and first clean frame after, phase advanced coherently from the leading
-// context (phase-vocoder style). Full-band regions repair dropouts/gaps; band-limited
-// regions repair chirps/beeps/holes without touching surrounding content.
+// Spectral repair (iZotope RX class): rebuild damaged time × frequency regions from their
+// surroundings. Four tiers; `method: 'auto'` routes each region by length and content, on
+// thresholds measured in the README:
+//   'ar'          gap-wise Janssen: AR(N/2) fitted to 2N of context either side with the gap
+//                 zeroed, least-squares fill (lpc arBridge), refit on the filled segment, refill
+//                 (Janssen, Veldhuis & Vries 1986; gap-wise, Mokrý & Rajmic 2025)
+//   'sinusoidal'  partials tracked either side (sinusoidal-track), measured at the frames touching
+//                 the gap, matched by frequency and bridged with cubic phase (McAulay & Quatieri
+//                 1986), over the context's residual floor log-interpolated across the gap and
+//                 shaped from white noise (Serra & Smith 1990)
+//   'similarity'  the passage within `window` s whose half-second contexts best match the gap's
+//                 (dB-spectrogram distance, Perraudin et al. 2018), aligned to the sample by
+//                 correlation, transplanted with crossfades
+//   'spectral'    log-magnitude interpolation between the clean frames either side, phase
+//                 advanced from the leading context (phase vocoder)
+// Band-limited regions take only their band from the fill, frame by frame. Samples no fill or
+// modified frame reaches are returned untouched.
 
 import { fft } from 'fourier-transform'
 import { stftBatch, hannWindow } from '@audio/stft'
+import { arFit, arBridge } from '@audio/lpc'
+import track from '@audio/sinusoidal-track'
 
-// analyze one frame's half-spectrum at pos (mag + phase copies)
-function analyze (data, pos, win, half) {
-	let N = win.length
-	let f = new Float64Array(N)
-	for (let i = 0; i < N; i++) f[i] = (data[pos + i] || 0) * win[i]
-	let [re, im] = fft(f)
-	let mag = new Float64Array(half + 1), phase = new Float64Array(half + 1)
-	for (let k = 0; k <= half; k++) {
-		mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k])
-		phase[k] = Math.atan2(im[k], re[k])
+const PI2 = 2 * Math.PI
+const princ = x => x - PI2 * Math.round(x / PI2)
+const clamp = (x, lo, hi) => x < lo ? lo : x > hi ? hi : x
+
+// 'auto' routing, measured (README "Measured"): a similarity transplant when the aligned passage
+// correlates with the gap's surroundings by R_LONG, or up to SHORT s by R_SHORT (r = 0.995 is a
+// match to 20 dB SNR, −10·log10(1 − r²): only a near-exact repeat beats AR there); failing that,
+// AR up to AR_MAX s, the sinusoidal bridge beyond. Band-limited regions route alike.
+const SHORT = 0.05, R_SHORT = 0.995, R_LONG = 0.4, AR_MAX = 0.07
+const METHODS = ['auto', 'ar', 'sinusoidal', 'similarity', 'spectral']
+
+function options(opts) {
+	if (!opts.regions?.length) throw new RangeError('repair: opts.regions is required')
+	let fs = opts.fs ?? 44100, N = opts.frameSize ?? 2048
+	return { fs, N, hop: opts.hopSize ?? (N >> 2), method: opts.method ?? 'auto', window: opts.window ?? 10 }
+}
+
+// region → samples [a, b) within the data, band [f0, f1] Hz, full-band flag
+function span(r, o, n) {
+	if (!Number.isFinite(r.at) || !(r.duration >= 0)) throw new RangeError('repair: a region needs `at` and `duration` in seconds')
+	let a = clamp(Math.round(r.at * o.fs), 0, n), b = clamp(Math.round((r.at + r.duration) * o.fs), a, n)
+	let f0 = r.from ?? 0, f1 = r.to ?? o.fs / 2
+	return { a, b, f0, f1, full: f0 <= 0 && f1 >= o.fs / 2 }
+}
+
+/**
+ * Resolve each region's method ('auto' → a tier) and, for 'similarity', its `source` (seconds: where
+ * the transplanted passage starts). Pass the result back as `regions` to repair several channels alike.
+ */
+export function plan(data, opts = {}) {
+	let o = options(opts)
+	return opts.regions.map(r => ({ ...r, ...resolve(data, r, o) }))
+}
+
+function resolve(x, r, o) {
+	let method = r.method ?? o.method
+	if (!METHODS.includes(method)) throw new RangeError(`repair: unknown method '${method}'`)
+	if (method === 'similarity' && r.source != null) return { method, source: r.source }
+	let { a, b } = span(r, o, x.length), D = (b - a) / o.fs
+	if (method === 'similarity' || method === 'auto') {
+		let m = similar(x, a, b, o)
+		if (m && (method === 'similarity' || m.r >= (D <= SHORT ? R_SHORT : R_LONG))) return { method: 'similarity', source: (a + m.d) / o.fs }
+		if (method === 'similarity') return { method: 'sinusoidal' }   // no passage to copy within the window
 	}
-	return { mag, phase }
+	if (method !== 'auto') return { method }
+	return { method: D <= AR_MAX ? 'ar' : 'sinusoidal' }
 }
 
 /**
  * @param {Float32Array} data — mono PCM
  * @param {object} opts — {
- *   regions: [{ at, duration, from = 0, to = fs/2 }] — seconds / Hz, required
- *   frameSize = 2048, hopSize = 512, fs = 44100
+ *   regions: [{ at, duration, from = 0, to = fs/2, method?, source? }]: seconds / Hz, required
+ *   method = 'auto' | 'ar' | 'sinusoidal' | 'similarity' | 'spectral', window = 10 (s, similarity search),
+ *   frameSize = 2048, hopSize = frameSize/4, fs = 44100
  * }
  * @returns {Float32Array} repaired copy
  */
-export default function repair (data, opts = {}) {
-	let regions = opts.regions
-	if (!regions?.length) throw new RangeError('repair: opts.regions is required')
-	let N = opts.frameSize ?? 2048
-	let hop = opts.hopSize ?? (N >> 2)
-	let fs = opts.fs ?? 44100
-	let half = N >> 1
-	let win = hannWindow(N)
-	let binHz = fs / N
-
-	// per region: frame span touching the gap + clean context frames fully outside it
-	let regs = regions.map(r => {
-		let a = Math.round(r.at * fs), b = Math.round((r.at + r.duration) * fs)
-		let fPre = Math.max(0, Math.floor((a - N) / hop))        // last frame fully before
-		let fPost = Math.ceil(b / hop)                           // first frame fully after
-		let pre = analyze(data, fPre * hop, win, half)
-		let prePre = analyze(data, Math.max(0, fPre - 1) * hop, win, half)
-		let post = fPost * hop + N <= data.length ? analyze(data, fPost * hop, win, half) : pre
-		// measured per-hop phase advance (phase vocoder): handles off-bin tones exactly
-		let adv = new Float64Array(half + 1)
-		for (let k = 0; k <= half; k++) {
-			let expected = 2 * Math.PI * hop * k / N
-			let d = pre.phase[k] - prePre.phase[k] - expected
-			d -= 2 * Math.PI * Math.round(d / (2 * Math.PI))
-			adv[k] = expected + (fPre > 0 ? d : 0)
+export default function repair(data, opts = {}) {
+	let o = options(opts), out = Float32Array.from(data), n = out.length
+	for (let r of opts.regions) {
+		let { a, b, f0, f1, full } = span(r, o, n)
+		if (b <= a) continue
+		let { method, source } = resolve(out, r, o)
+		if (method === 'spectral') { spectral(out, a, b, f0, f1, o); continue }
+		let X = 0, fill
+		if (method === 'ar') fill = arFill(out, a, b, o)
+		else if (method === 'sinusoidal') fill = sineFill(out, a, b, o), X = o.N >> 1
+		else {
+			let d = Math.round(source * o.fs) - a
+			if (a + d < 0 || b + d > n || (d < b - a && d > a - b)) throw new RangeError('repair: similarity source must be a clean passage as long as the region')
+			X = Math.max(0, Math.min(o.N, a, n - b, a + d, n - b - d, d > 0 ? d - (b - a) : -d - (b - a)))
+			fill = Float32Array.from(out)
+			for (let i = a - X; i < b + X; i++) fill[i] = out[i + d]
 		}
-		return {
-			f0: fPre + 1, f1: fPost - 1, pre, post, adv,
-			b0: Math.max(0, Math.round((r.from ?? 0) / binHz)),
-			b1: Math.min(half, Math.round((r.to ?? fs / 2) / binHz)),
-		}
-	})
+		if (full) splice(out, fill, a, b, X)
+		else bandSplice(out, fill, a, b, f0, f1, o)
+	}
+	return out
+}
 
-	let idx = -1
-	return stftBatch(data, (mag, phase, state) => {
-		idx++
-		for (let r of regs) {
-			if (idx < r.f0 || idx > r.f1) continue
-			let t = (idx - r.f0 + 1) / (r.f1 - r.f0 + 2)           // interp position in the hole
-			for (let k = r.b0; k <= r.b1; k++) {
-				// log-magnitude interpolation between clean context frames
-				mag[k] = Math.exp((1 - t) * Math.log(r.pre.mag[k] + 1e-12) + t * Math.log(r.post.mag[k] + 1e-12))
-				// coherent phase: pre-context phase advanced by the measured per-hop rotation
-				phase[k] = r.pre.phase[k] + (idx - r.f0 + 1) * r.adv[k]
-			}
+// full band: raised-cosine (equal-gain) crossfade over X samples either side of [a, b), in place
+function splice(x, fill, a, b, X) {
+	for (let n = Math.max(0, a - X); n < Math.min(x.length, b + X); n++) {
+		let w = n < a ? Math.sin(Math.PI / 2 * (n - a + X + 0.5) / X) ** 2 : n >= b ? Math.cos(Math.PI / 2 * (n - b + 0.5) / X) ** 2 : 1
+		x[n] += w * (fill[n] - x[n])
+	}
+}
+
+// band-limited: STFT frames overlapping [a, b) take bins [f0, f1] from the fill, in place
+function bandSplice(x, fill, a, b, f0, f1, { fs, N, hop }) {
+	let k0 = Math.max(0, Math.floor(f0 * N / fs)), k1 = Math.min(N >> 1, Math.ceil(f1 * N / fs))
+	let s0 = Math.max(0, a - 2 * N), s1 = Math.min(x.length, b + 2 * N), win = hannWindow(N), f = new Float64Array(N), i = 0
+	let y = stftBatch(x.subarray(s0, s1), (mag, phase, state, ctx) => {
+		let pos = s0 + (ctx.pos ?? i++ * hop)
+		if (pos < b && pos + N > a) {
+			// the fill's same frame, mirrored before s0 as the stft mirrors the segment
+			for (let j = 0, t = pos; j < N; j++, t++) f[j] = (fill[t < s0 ? 2 * s0 - t : t] || 0) * win[j]
+			let [re, im] = fft(f)
+			for (let k = k0; k <= k1; k++) { mag[k] = Math.hypot(re[k], im[k]); phase[k] = Math.atan2(im[k], re[k]) }
 		}
 		return { mag, phase }
 	}, { frameSize: N, hopSize: hop, fs })
+	for (let n = Math.max(s0, a - N + 1); n < Math.min(s1, b + N - 1); n++) x[n] = y[n - s0]
+}
+
+// ---- ar: gap-wise Janssen. Order N/2 on 2N of context either side (Mokrý & Rajmic 2025 use 2048 on
+// 4096 at 44.1 kHz; half the order measured equal here at half the cost), two passes: the refit on
+// the filled segment gains, further passes stall or slowly lose (README "Measured")
+function arFill(x, a, b, { N }) {
+	let s0 = Math.max(0, a - 2 * N), s1 = Math.min(x.length, b + 2 * N), fill = Float32Array.from(x)
+	let seg = Float64Array.from(x.subarray(s0, s1)), g0 = a - s0, g1 = b - s0
+	let p = Math.min(N >> 1, seg.length - (g1 - g0) - 1)
+	seg.fill(0, g0, g1)
+	for (let it = 0; it < 2 && p > 0; it++) {
+		let { a: coef, e } = arFit(seg, p)
+		if (!(e > 0) || !coef.every(Number.isFinite)) break
+		arBridge(seg, g0, g1, coef)
+	}
+	for (let n = a; n < b; n++) fill[n] = seg[n - s0]
+	return fill
+}
+
+// ---- sinusoidal bridge
+// zero-phase spectrum of x[s, s + N): the phase at a bin is the phase at the frame center
+function zspec(x, s, N) {
+	let win = hannWindow(N), f = new Float64Array(N), h = N >> 1
+	for (let i = 0; i < N; i++) f[(i + h) % N] = (x[s + i] || 0) * win[i]
+	let [re, im] = fft(f)
+	return { re: Float64Array.from(re), im: Float64Array.from(im) }
+}
+const logmag = (S, k) => Math.log(Math.hypot(S.re[k], S.im[k]) + 1e-30)
+
+// The partials alive at the frame touching the gap (dir −1: frame [s, s + N) ends at the gap; +1:
+// starts at it), measured at its center c: frequency from the phase advance between the inner
+// frames, extrapolated along its slope (vibrato); amplitude and phase from a joint Hann-weighted
+// least-squares fit, the harmonic + noise model's estimator (Stylianou 2001), free of scalloping and
+// mutual leakage. The residual floor: each inner frame minus its own fit, ±3 bins around partials
+// bridged over (FM sidebands are not noise), power-averaged, smoothed over ±4 bins.
+function edge(x, s, dir, { fs, N, hop }) {
+	let c = s + N / 2, c0 = dir < 0 ? s - N : s
+	let ctx = x.subarray(clamp(c0, 0, x.length), clamp(c0 + 2 * N, 0, x.length))
+	if (ctx.length < N + 2 * hop) return { peaks: [], psd: null, c }
+	let model = track(ctx, { fs, frameSize: N, hop }), last = model.frames - 1
+	let S = [0, 1, 2].map(j => zspec(x, s + j * dir * hop, N)), bin = PI2 / N, ws = []
+	for (let p of model.partials) {
+		if (dir < 0 ? p.start + p.freqs.length - 1 !== last : p.start !== 0) continue
+		let k = Math.round((dir < 0 ? p.freqs.at(-1) : p.freqs[0]) * N / fs)
+		if (k < 2 || k > (N >> 1) - 2) continue
+		let km = k
+		for (let j = k - 1; j <= k + 1; j++) if (logmag(S[0], j) > logmag(S[0], km)) km = j
+		let l = logmag(S[0], km - 1), m = logmag(S[0], km), r = logmag(S[0], km + 1)
+		let d = 0.5 * (l - r) / (l - 2 * m + r || 1e-12), w = bin * (km + (Math.abs(d) < 1 ? d : 0))
+		let ph = S.map(Q => Math.atan2(Q.im[km], Q.re[km]))
+		let adv = j => w + princ((dir > 0 ? ph[j + 1] - ph[j] : ph[j] - ph[j + 1]) - w * hop) / hop   // forward in time
+		let w01 = adv(0), w12 = adv(1), dw = 0
+		if (Math.abs(w01 - w) < bin) {
+			w = w01
+			if (Math.abs(w12 - w01) < bin) dw = w12 - w01, w += clamp(-dw / 2, -bin / 2, bin / 2)
+		}
+		if (ws.every(v => Math.abs(v.w - w) > bin)) ws.push({ w, dw })
+	}
+	let fits = [0, 1, 2].map(j => fit(x, s + j * dir * hop, N, ws.map(v => v.w + j * v.dw)))
+	let half = N >> 1, psd = new Float64Array(half + 1), mask = new Uint8Array(half + 1), win = hannWindow(N), f = new Float64Array(N)
+	for (let v of ws) { let kc = Math.round(v.w / bin); for (let k = Math.max(0, kc - 3); k <= Math.min(half, kc + 3); k++) mask[k] = 1 }
+	fits.forEach(({ y }, j) => {
+		let sj = s + j * dir * hop
+		for (let i = 0; i < N; i++) f[i] = ((x[sj + i] || 0) - y[i]) * win[i]
+		let [re, im] = fft(f)
+		for (let k = 0; k <= half; k++) psd[k] += (re[k] * re[k] + im[k] * im[k]) / 3
+	})
+	for (let k = 0, lo = -1; k <= half + 1; k++) {   // bridge masked bins log-linearly
+		if (k <= half && mask[k]) continue
+		if (k - lo > 1) {
+			let pl = Math.log((lo >= 0 ? psd[lo] : psd[Math.min(k, half)]) + 1e-30), pr = k <= half ? Math.log(psd[k] + 1e-30) : pl
+			for (let j = lo + 1; j < k; j++) psd[j] = Math.exp(pl + (pr - pl) * (j - lo) / (k - lo))
+		}
+		lo = k
+	}
+	let sm = new Float64Array(half + 1)
+	for (let k = 0; k <= half; k++) {
+		let acc = 0, n = 0
+		for (let j = Math.max(0, k - 4); j <= Math.min(half, k + 4); j++) acc += psd[j], n++
+		sm[k] = acc / n
+	}
+	return { peaks: fits[0].peaks, psd: sm, c }
+}
+
+// joint Hann-weighted least squares of cos/sin pairs at frequencies ws over x[s, s + N), time from
+// the frame center → peaks [{ w, amp, ph }] (x ≈ Σ amp·cos(w(n − c) + ph)) and the fitted frame y
+function fit(x, s, N, ws) {
+	let K = ws.length, M = 2 * K, y = new Float64Array(N)
+	if (!K) return { peaks: [], y }
+	let win = hannWindow(N), c = s + N / 2, G = new Float64Array(M * M), h = new Float64Array(M), u = new Float64Array(M)
+	for (let i = 0; i < N; i++) {
+		let t = s + i - c, wi = win[i], xi = (x[s + i] || 0) * wi
+		for (let k = 0; k < K; k++) u[2 * k] = Math.cos(ws[k] * t), u[2 * k + 1] = -Math.sin(ws[k] * t)
+		for (let p = 0; p < M; p++) { let up = u[p] * wi; h[p] += u[p] * xi; for (let q = p; q < M; q++) G[p * M + q] += up * u[q] }
+	}
+	let tr = 0
+	for (let p = 0; p < M; p++) tr += G[p * M + p]
+	for (let p = 0; p < M; p++) { G[p * M + p] += 1e-9 * tr / M; for (let q = 0; q < p; q++) G[p * M + q] = G[q * M + p] }
+	let z = cholesky(G, h, M), peaks = []
+	for (let k = 0; k < K; k++) {
+		let re = z[2 * k], im = z[2 * k + 1]
+		peaks.push({ w: ws[k], amp: Math.hypot(re, im), ph: Math.atan2(im, re) })
+		for (let i = 0; i < N; i++) { let t = s + i - c; y[i] += re * Math.cos(ws[k] * t) - im * Math.sin(ws[k] * t) }
+	}
+	return { peaks, y }
+}
+
+function cholesky(A, b, n) {
+	let L = new Float64Array(n * n), y = new Float64Array(n)
+	for (let i = 0; i < n; i++) for (let j = 0; j <= i; j++) {
+		let s = A[i * n + j]
+		for (let k = 0; k < j; k++) s -= L[i * n + k] * L[j * n + k]
+		L[i * n + j] = i === j ? Math.sqrt(Math.max(s, 1e-300)) : s / L[j * n + j]
+	}
+	for (let i = 0; i < n; i++) { let s = b[i]; for (let k = 0; k < i; k++) s -= L[i * n + k] * y[k]; y[i] = s / L[i * n + i] }
+	for (let i = n - 1; i >= 0; i--) { let s = y[i]; for (let k = i + 1; k < n; k++) s -= L[k * n + i] * y[k]; y[i] = s / L[i * n + i] }
+	return y
+}
+
+// Partials either side matched by nearest frequency within a semitone (greedy by distance: MQ
+// matching over one long step; ±50-cent vibrato needs the whole semitone), each pair on cubic phase
+// between the two frame centers (MQ 1986 eqs. 34–38: endpoint phases and frequencies kept, 2πM for
+// the smoothest trajectory), amplitude linear; an unmatched partial fades across. The noise: white,
+// shaped frame by frame by the floor log-interpolated from the left residual to the right.
+function sineFill(x, a, b, o) {
+	let { N, hop, fs } = o, L = edge(x, a - N, -1, o), R = edge(x, b, 1, o)
+	let cL = L.c, T = R.c - cL, s0 = Math.max(0, a - N), s1 = Math.min(x.length, b + N)
+	let acc = new Float64Array(s1 - s0), fill = Float32Array.from(x)
+	let add = (A0, A1, th) => { for (let n = s0; n < s1; n++) { let t = n - cL; acc[n - s0] += (A0 + (A1 - A0) * clamp(t / T, 0, 1)) * Math.cos(th(t)) } }
+	let pairs = []
+	for (let i = 0; i < L.peaks.length; i++) for (let j = 0; j < R.peaks.length; j++) {
+		let d = Math.abs(1200 * Math.log2(R.peaks[j].w / L.peaks[i].w))
+		if (d <= 100) pairs.push([d, i, j])
+	}
+	pairs.sort((p, q) => p[0] - q[0])
+	let mL = new Int32Array(L.peaks.length).fill(-1), mR = new Int32Array(R.peaks.length).fill(-1)
+	for (let [, i, j] of pairs) if (mL[i] < 0 && mR[j] < 0) mL[i] = j, mR[j] = i
+	L.peaks.forEach((l, i) => {
+		if (mL[i] < 0) return add(l.amp, 0, t => l.ph + l.w * t)
+		let r = R.peaks[mL[i]], M = Math.round(((l.ph + l.w * T - r.ph) + (r.w - l.w) * T / 2) / PI2)
+		let e = r.ph + PI2 * M - l.ph - l.w * T, al = 3 * e / (T * T) - (r.w - l.w) / T, be = -2 * e / (T * T * T) + (r.w - l.w) / (T * T)
+		add(l.amp, r.amp, t => t <= 0 ? l.ph + l.w * t : t >= T ? r.ph + PI2 * M + r.w * (t - T) : l.ph + t * (l.w + t * (al + t * be)))
+	})
+	R.peaks.forEach((r, j) => { if (mR[j] < 0) add(0, r.amp, t => r.ph + r.w * (t - T)) })
+	let pL = L.psd ?? R.psd, pR = R.psd ?? L.psd
+	if (pL) {
+		let pad = N, len = s1 - s0 + 2 * pad, rnd = lcg(a), wn = new Float32Array(len), w2 = 0, i = 0
+		for (let v of hannWindow(N)) w2 += v * v
+		for (let j = 0; j < len; j++) { let u = rnd() || 1e-12; wn[j] = Math.sqrt(-2 * Math.log(u)) * Math.cos(PI2 * rnd()) }
+		let lL = Float64Array.from(pL, v => Math.log(v / w2 + 1e-30)), lR = Float64Array.from(pR, v => Math.log(v / w2 + 1e-30))
+		let nz = stftBatch(wn, (mag, phase, state, ctx) => {
+			let u = clamp((s0 - pad + (ctx.pos ?? i++ * hop) + N / 2 - cL) / T, 0, 1)
+			for (let k = 0; k < mag.length; k++) mag[k] *= Math.exp(0.5 * ((1 - u) * lL[k] + u * lR[k]))
+			return { mag, phase }
+		}, { frameSize: N, hopSize: hop, fs })
+		for (let j = 0; j < s1 - s0; j++) acc[j] += nz[j + pad]
+	}
+	for (let j = 0; j < s1 - s0; j++) fill[s0 + j] = acc[j]
+	return fill
+}
+
+const lcg = seed => { let s = seed >>> 0; return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296 }
+
+// ---- similarity: features are dB spectra up to 6 kHz, clipped 50 dB under the peak (Perraudin et
+// al. 2018, F1), on two frame grids anchored at the gap's edges. A shift d compares 0.5 s of context
+// each side (their similarity-kernel length, ~40 frames) and keeps the copied span, crossfades
+// included, clear of the gap and within `window` s of it. The nearest shift is aligned to the sample
+// by the highest normalized correlation r over both transition zones within ±hop/2 (their §V-B);
+// r also says whether the transplant will join seamlessly (the 'auto' gate).
+function similar(x, a, b, { fs, N, hop, window }) {
+	let D = b - a, X = N, W = Math.round(window * fs), Lc = Math.round(0.5 * fs)
+	let lo = Math.max(0, a - W), hi = Math.min(x.length, b + W)
+	let kmax = Math.floor(W / hop), nL = Math.max(1, Math.floor((Lc - N) / hop) + 1)
+	let ok = d => (d >= D + X || d <= -(D + X)) && a - X + d >= lo && b + X + d <= hi
+	let startsA = [], startsB = []
+	for (let k = -kmax - nL; k <= kmax; k++) startsA.push(a - N + k * hop)
+	for (let k = -kmax; k <= kmax + nL; k++) startsB.push(b + k * hop)
+	let usable = s => s >= lo && s + N <= hi && !(s < b && s + N > a)
+	let FA = features(x, startsA, usable, N, fs), FB = features(x, startsB, usable, N, fs)
+	let dist = (u, v) => { let s = 0; for (let k = 0; k < u.length; k++) { let e = u[k] - v[k]; s += e * e } return s / u.length }
+	let best = Infinity, d0 = null
+	for (let k = -kmax; k <= kmax; k++) {
+		if (!ok(k * hop)) continue
+		let s = 0, c = 0
+		for (let j = 0; j < nL; j++) {
+			let u = FA[kmax + nL - j], v = FA[kmax + nL - j + k], p = FB[kmax + j], q = FB[kmax + j + k]
+			if (u && v) s += dist(u, v), c++
+			if (p && q) s += dist(p, q), c++
+		}
+		if (c >= nL && s / c < best) best = s / c, d0 = k * hop
+	}
+	if (d0 == null) return null
+	let top = -Infinity, dBest = d0
+	for (let d = d0 - (hop >> 1); d <= d0 + (hop >> 1); d++) {
+		if (!ok(d)) continue
+		let sxy = 0, sxx = 0, syy = 0
+		for (let [p, q] of [[a - X, a], [b, b + X]]) for (let n = p; n < q; n++) { let u = x[n] || 0, v = x[n + d] || 0; sxy += u * v; sxx += u * u; syy += v * v }
+		let r = sxy / Math.sqrt(sxx * syy + 1e-30)
+		if (r > top) top = r, dBest = d
+	}
+	return { d: dBest, r: top }
+}
+
+function features(x, starts, usable, N, fs) {
+	let win = hannWindow(N), f = new Float64Array(N), K = Math.min(N >> 1, Math.round(6000 * N / fs)), top = -Infinity
+	let F = starts.map(s => {
+		if (!usable(s)) return null
+		for (let i = 0; i < N; i++) f[i] = x[s + i] * win[i]
+		let [re, im] = fft(f), v = new Float32Array(K)
+		for (let k = 0; k < K; k++) { v[k] = 10 * Math.log10(re[k] * re[k] + im[k] * im[k] + 1e-20); if (v[k] > top) top = v[k] }
+		return v
+	})
+	for (let v of F) if (v) for (let k = 0; k < v.length; k++) v[k] = Math.max(0, (v[k] - top + 50) / 50)
+	return F
+}
+
+// ---- spectral: the original method, on a local span
+function spectral(x, a, b, f0, f1, { fs, N, hop }) {
+	let s0 = Math.max(0, a - 3 * N), s1 = Math.min(x.length, b + 3 * N), seg = x.subarray(s0, s1)
+	let half = N >> 1, win = hannWindow(N)
+	let fPre = Math.max(0, Math.floor((a - s0 - N) / hop)), fPost = Math.ceil((b - s0) / hop)
+	let pre = frame(seg, fPre * hop, win), prePre = frame(seg, Math.max(0, fPre - 1) * hop, win)
+	let post = fPost * hop + N <= seg.length ? frame(seg, fPost * hop, win) : pre
+	let adv = new Float64Array(half + 1)
+	for (let k = 0; k <= half; k++) {
+		let expected = PI2 * hop * k / N
+		adv[k] = expected + (fPre > 0 ? princ(pre.phase[k] - prePre.phase[k] - expected) : 0)
+	}
+	let k0 = Math.max(0, Math.round(f0 * N / fs)), k1 = Math.min(half, Math.round(f1 * N / fs)), c = 0
+	let y = stftBatch(seg, (mag, phase, state, ctx) => {
+		let i = (ctx.pos ?? c++ * hop) / hop                     // the frame's index on the hop grid from seg's start
+		if (i <= fPre || i >= fPost) return { mag, phase }
+		let t = (i - fPre) / (fPost - fPre)
+		for (let k = k0; k <= k1; k++) {
+			mag[k] = Math.exp((1 - t) * Math.log(pre.mag[k] + 1e-12) + t * Math.log(post.mag[k] + 1e-12))
+			phase[k] = pre.phase[k] + (i - fPre) * adv[k]
+		}
+		return { mag, phase }
+	}, { frameSize: N, hopSize: hop, fs })
+	for (let n = (fPre + 1) * hop; n < Math.min(seg.length, (fPost - 1) * hop + N); n++) x[s0 + n] = y[n]
+}
+
+function frame(data, pos, win) {
+	let N = win.length, half = N >> 1, f = new Float64Array(N)
+	for (let i = 0; i < N; i++) f[i] = (data[pos + i] || 0) * win[i]
+	let [re, im] = fft(f), mag = new Float64Array(half + 1), phase = new Float64Array(half + 1)
+	for (let k = 0; k <= half; k++) { mag[k] = Math.hypot(re[k], im[k]); phase[k] = Math.atan2(im[k], re[k]) }
+	return { mag, phase }
 }

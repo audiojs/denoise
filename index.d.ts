@@ -15,7 +15,7 @@ export { default as desilence, segments as silenceSegments, split as splitSilenc
 export { default as dewow, analyze as wowFlutter } from '@audio/denoise-dewow'
 export { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/quality'
 export { vad, spp, ddSnr } from '@audio/vad'
-export { noiseProfile, minStats, imcra } from '@audio/noise-estimate'
+export { noiseProfile, minStats, imcra, known } from '@audio/noise-estimate'
 export { stftBatch, stftStream, stftAnalyse } from '@audio/stft'
 
 export interface GateOptions {
@@ -43,9 +43,9 @@ export type { DenoiseMethod, ClassifyScores, Plan, DenoiseOptions, DenoiseResult
 export type { DewindOptions } from '@audio/denoise-dewind'
 export type { DewowOptions, DewowTrack, DewowAnalysis } from '@audio/denoise-dewow'
 export type { OmlsaOptions } from '@audio/denoise-omlsa'
-export type { RepairRegion, RepairOptions } from '@audio/denoise-repair'
+export type { RepairRegion, RepairOptions, RepairMethod } from '@audio/denoise-repair'
 export type { SpecsubOptions } from '@audio/denoise-spectral'
 export type { WienerOptions } from '@audio/denoise-wiener'
-export type { NoiseProfileOptions, MinStatsOptions, Estimator, ImcraOptions, ImcraEstimator } from '@audio/noise-estimate'
+export type { NoiseProfileOptions, MinStatsOptions, Estimator, ImcraOptions, ImcraEstimator, KnownOptions } from '@audio/noise-estimate'
 export type { SegSnrOptions, LsdOptions, SpectralSimOptions, ModulationDepthOptions } from '@audio/quality'
 export type { VadOptions, VadResult, SppOptions } from '@audio/vad'

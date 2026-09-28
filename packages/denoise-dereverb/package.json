@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-dereverb",
-  "version": "0.1.10",
-  "description": "De-reverb — late-reverb spectral subtraction (Lebart, Boucher & Denbigh 2001)",
+  "version": "0.2.0",
+  "description": "De-reverb: late reverberation off speech by weighted prediction error (WPE, Nakatani et al. 2010), recursive",
   "type": "module",
   "sideEffects": false,
   "main": "dereverb.js",
@@ -23,7 +23,7 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/stft": "^1.0.7"
+    "@audio/stft": "^2.0.0"
   },
   "keywords": [
     "audio",

@@ -222,7 +222,8 @@ test('omlsa — improves segSNR on noisy speech', () => {
 })
 
 // minStats keeps each bin's minimum over the last D frames by monotonic deque; the rescan it replaced is the reference.
-// Windows of 1, 3 and 96 frames, fewer frames than the window, repeated values, minima falling and rising.
+// Windows of 1, 3 and 96 frames, fewer frames than the window, repeated values, minima falling and rising. Frames of
+// digital silence (every 37th frame starts five) are skipped, and the smoother starts at the first frame with sound.
 test('minStats — the D-frame minimum equals a rescan of the last D frames', () => {
   let seed = 5, rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
   for (let [half, D, frames] of [[64, 96, 300], [16, 1, 50], [16, 3, 200], [64, 96, 20]]) {
@@ -230,11 +231,149 @@ test('minStats — the D-frame minimum equals a rescan of the last D frames', ()
     for (let f = 0; f < frames; f++) {
       let mag = Float64Array.from({ length: half + 1 }, () => f % 37 < 5 ? 0 : rnd() < 0.1 ? 1 : rnd() * (1 + (f % 300) / 30))
       est.update(mag)
-      hist.push(Float64Array.from(mag, (m, k) => smoothed[k] = 0.7 * smoothed[k] + (1 - 0.7) * (m * m)))
+      if (f % 37 >= 5) hist.push(Float64Array.from(mag, (m, k) => smoothed[k] = hist.length ? 0.7 * smoothed[k] + (1 - 0.7) * (m * m) : m * m))
       if (hist.length > D) hist.shift()
-      for (let k = 0; k <= half; k++) if (est.psd[k] !== Math.min(...hist.map(p => p[k])) * 1.5) bad++
+      for (let k = 0; k <= half; k++) if (est.psd[k] !== (hist.length ? Math.min(...hist.map(p => p[k])) * est.bias : 0)) bad++
     }
     is(bad, 0, `${half + 1} bins, D ${D}, ${frames} frames`)
+  }
+})
+
+// =================== speech denoisers: references and properties ===================
+
+import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+// scripts/reference.py's signal(): 'speech in noise' at 8 kHz in arithmetic only, so both languages make the same
+// doubles. Park–Miller uniforms summed 12 at a time; noise ×3 from 1.5 s; four syllables of a 125 Hz pulse train
+// through two resonators (formants near 600 Hz and 1.6 kHz).
+function refSignal(n = 20000) {
+  let seed = 1, x = new Float32Array(n), y1 = 0, y2 = 0, z1 = 0, z2 = 0
+  let seg = [[2000, 5000], [7000, 10000], [13000, 15000], [16500, 19000]]
+  for (let i = 0; i < n; i++) {
+    let g = 0
+    for (let j = 0; j < 12; j++) { seed = seed * 16807 % 2147483647; g += seed / 2147483647 }
+    let e = 0
+    for (let [s, t] of seg) if (s <= i && i < t && i % 64 === 0) e = Math.min(1, (i - s) / 400, (t - i) / 400)
+    let y = e + 1.6 * y1 - 0.81 * y2; y2 = y1; y1 = y
+    let z = y + 0.5 * z1 - 0.64 * z2; z2 = z1; z1 = z
+    x[i] = 0.1 * z + (g - 6) * (i < 12000 ? 0.01 : 0.03)
+  }
+  return x
+}
+// white Gaussian (Irwin–Hall) noise, reproducible
+function gauss(n, amp = 1, seed = 7) {
+  let d = new Float32Array(n), rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647
+  for (let i = 0; i < n; i++) { let s = -6; for (let j = 0; j < 12; j++) s += rnd(); d[i] = amp * s }
+  return d
+}
+// the installed @audio/stft's first frame: hop − N over the input's mirror image (2.0.0 on), or 0 before
+function stftFirst(N, hop) {
+  let p0; stftBatch(new Float32Array(N), (mag, phase, s, c) => (p0 ??= c.pos, { mag, phase }), { frameSize: N, hopSize: hop })
+  return p0 ?? 0
+}
+
+// fixtures/reference.json: numpy references written from the papers (scripts/reference.py). Its IMCRA reproduces
+// Cohen's own omlsa.m to the last bit on 16 kHz VoiceBank frames, so these hold the JS to the published algorithms.
+test('imcra, omlsa, wiener, specsub: equal their numpy references (Cohen 2003, Cohen & Berdugo 2001, Ephraim & Malah 1984/85, Berouti 1979, Martin 2001)', () => {
+  let fx = JSON.parse(readFileSync(new URL('./fixtures/reference.json', import.meta.url)))
+  let x = refSignal(), { fs: sr, frameSize: N, hopSize: hop, step, rms: r } = fx
+  let est = imcra(N / 2), f = 0, worst = 0
+  stftAnalyse(x, mag => {
+    est.update(mag)
+    let i = fx.imcra.frames.indexOf(f++)
+    if (i >= 0) fx.imcra.bins.forEach((k, j) => { worst = Math.max(worst, Math.abs(est.psd[k] / fx.imcra.psd[i][j] - 1)) })
+  }, { frameSize: N, hopSize: hop })
+  ok(worst < 1e-6, `imcra: noise track within ${worst.toExponential(1)} of the reference`)
+  let dev = (y, ref) => ref.reduce((m, v, i) => Math.max(m, Math.abs(y[i * step] - v)), 0) / r
+  let o = { fs: sr, frameSize: N, hopSize: hop }, ms = { ...o, estimator: { D: 96 } }, bx = fx.batch[stftFirst(N, hop) < 0 ? 'reflect' : 'zero']
+  for (let [name, y, ref] of [
+    ['omlsa', omlsa(x, { ...o, ...fx.omlsaOpts }), bx.omlsa],
+    ['wiener (LSA rule)', wiener(x, ms), bx.wiener],
+    ['wiener (Wiener rule)', wiener(x, { ...ms, rule: 'wiener' }), bx.wienerRule],
+    ['specsub', specsub(x, ms), bx.specsub],
+  ]) { let d = dev(y, ref); ok(d < 1e-5, `${name}: output within ${d.toExponential(1)} of the RMS`) }
+  for (let [key, v] of Object.entries(fx.biasMin)) {
+    let [D, alpha] = key.split('/').map(Number)
+    almost(minStats(8, { D, alpha }).bias, v, 1e-12, `B_min(${D}, ${alpha}) = ${v.toFixed(3)}, Martin 2001 eq. (17)`)
+  }
+})
+
+test('minStats: unbiased on white noise; starts at the first frame; skips digital silence', () => {
+  // B_min puts the mean estimate within 0.5 dB of the noise power (the constant 1.5 it replaced left it 3.8 dB under)
+  let x = gauss(48000 * 20), est = minStats(1024), f = 0, sum = 0, cnt = 0
+  stftAnalyse(x, mag => { est.update(mag); if (f++ > 200) { for (let k = 10; k < 1000; k++) sum += est.psd[k]; cnt += 990 } }, { frameSize: 2048, hopSize: 512 })
+  let db = 10 * Math.log10(sum / cnt / 768)                        // E|Y|² = σ² Σw² = 768 for unit white noise, Hann 2048
+  ok(Math.abs(db) < 0.5, `mean estimate ${db.toFixed(2)} dB re the noise power`)
+  let e = minStats(8), m = new Float64Array(9).fill(2)
+  e.update(m)
+  almost(e.psd[3], 4 * e.bias, 1e-9, 'first frame: its own power times B_min, no warm-up from zero')
+  e.update(new Float64Array(9)); e.update(new Float64Array(9))
+  almost(e.psd[3], 4 * e.bias, 1e-9, 'digital silence leaves the estimate as it was')
+})
+
+test('imcra: unbiased on white noise; digital silence is skipped; a 12 dB step is followed within two windows', () => {
+  let sr = 16000, N = 512, hop = 128, x = gauss(sr * 8, 0.01)
+  for (let i = sr * 3; i < sr * 3.5; i++) x[i] = 0                  // an edited-out pause
+  for (let i = sr * 5; i < x.length; i++) x[i] *= 4                  // the room gets 12 dB louder
+  let est = imcra(N / 2, { fs: sr, hop }), track = []
+  stftAnalyse(x, mag => { est.update(mag); let s = 0; for (let k = 10; k < 250; k++) s += est.psd[k]; track.push(s / 240) }, { frameSize: N, hopSize: hop })
+  let at = t => 10 * Math.log10(track[Math.round(t * sr / hop)] / (0.01 ** 2 * 3 * N / 8))   // E|Y|² = σ² · 3N/8
+  ok(Math.abs(at(2.9)) < 1, `before the pause: ${at(2.9).toFixed(2)} dB re the noise`)
+  ok(Math.abs(at(3.6)) < 1, `right after the pause: ${at(3.6).toFixed(2)} dB (digital silence learned nothing)`)
+  ok(Math.abs(at(7.9) - 12) < 1, `2.9 s after the step: ${at(7.9).toFixed(2)} dB (+12; IMCRA lags up to two ~1 s minimum windows)`)
+})
+
+// dehum measures before it notches: nothing without hum, the measured series and frequency with it
+test('dehum: speech without hum comes back untouched; 50 and 60 Hz hum with harmonics is measured and removed', async () => {
+  let { measure } = await import('@audio/denoise-dehum')
+  let speech = lena.subarray(0, fs * 4), out = dehum(copy(speech), { fs })
+  ok(out.every((v, i) => v === speech[i]), 'lena, no hum: output equals input')
+  // 12 harmonics at −6 dB per octave, 0.05 Hz off nominal
+  let hum = (f0, n) => { let y = new Float32Array(n); for (let i = 0; i < n; i++) for (let h = 1; h <= 12; h++) y[i] += Math.sin(2 * Math.PI * h * f0 * i / fs + h) / h; return y }
+  for (let f0 of [50.05, 59.95]) {
+    let h = hum(f0, fs * 4), m = measure(add(speech, h.map(v => v * 0.005)), fs)
+    ok(m && Math.abs(m.f0 - f0) < 0.02, `under speech: ${f0} Hz hum measured at ${m?.f0.toFixed(3)} Hz, harmonics ${m?.harmonics}`)
+    let y = dehum(copy(h), { fs }), after1s = a => rms(a.subarray(fs))
+    let db = 20 * Math.log10(after1s(h) / after1s(y))
+    ok(db > 30, `${f0} Hz hum alone: ${db.toFixed(1)} dB down`)
+  }
+})
+
+// Musical noise is isolated spectral peaks left in the residual: a heavier-tailed power distribution. Its measure is
+// the kurtosis ratio of the power spectral values, out over in (Uemura et al., IWAENC 2008; Miyazaki et al., IEEE
+// TASLP 20(7), 2012); a gain that only scales the noise keeps it at 1.
+test('omlsa: stationary noise alone: brought down by G_min, no musical noise', () => {
+  let n = gauss(fs * 6, 0.01), y = omlsa(copy(n), { fs })
+  let stats = x => { let s1 = 0, s2 = 0, c = 0; stftAnalyse(x.subarray(fs * 2), mag => { for (let k = 4; k < 1000; k++) { let p = mag[k] * mag[k]; s1 += p; s2 += p * p; c++ } }, { frameSize: 2048, hopSize: 512 }); return { k: s2 * c / (s1 * s1), p: s1 / c } }
+  let a = stats(n), b = stats(y), lk = Math.log(b.k / a.k), down = 10 * Math.log10(a.p / b.p)
+  ok(Math.abs(lk) < 0.1, `log kurtosis ratio ${lk.toFixed(3)} (2 s on, trackers settled)`)
+  ok(Math.abs(down - 15) < 0.5, `noise down ${down.toFixed(1)} dB, G_min 15 dB`)
+})
+
+// 10 VoiceBank+DEMAND test utterances (Valentini-Botinhao 2017, CC BY 4.0) when ~/.cache/audiojs/data/vbdemand holds
+// them (scripts/speech.mjs says where from); not committed. Guards what scripts/speech.py measured on all 824.
+const VB = path.join(os.homedir(), '.cache', 'audiojs', 'data', 'vbdemand')
+test('omlsa, wiener, specsub: 10 VoiceBank+DEMAND utterances: SI-SDR up from the noisy input, clean speech kept', { skip: !existsSync(path.join(VB, 'clean_testset_wav')), timeout: 300000 }, () => {
+  let read = f => { let b = readFileSync(f), o = 12; while (b.toString('ascii', o, o + 4) !== 'data') o += 8 + b.readUInt32LE(o + 4); let n = b.readUInt32LE(o + 4) / 2, x = new Float32Array(n); for (let i = 0; i < n; i++) x[i] = b.readInt16LE(o + 8 + 2 * i) / 32768; return x }
+  let sisdr = (r, e) => {                                          // Le Roux et al., ICASSP 2019, eq. 3, zero-mean
+    let mr = 0, me = 0, d = 0, rr = 0, t = 0, u = 0
+    for (let i = 0; i < r.length; i++) { mr += r[i] / r.length; me += e[i] / r.length }
+    for (let i = 0; i < r.length; i++) { d += (e[i] - me) * (r[i] - mr); rr += (r[i] - mr) ** 2 }
+    for (let i = 0; i < r.length; i++) { let a = d / rr * (r[i] - mr), b = e[i] - me - a; t += a * a; u += b * b }
+    return 10 * Math.log10(t / u)
+  }
+  let names = readdirSync(path.join(VB, 'clean_testset_wav')).filter(f => f.endsWith('.wav')).sort().filter((_, i) => i % 82 === 0)
+  for (let [name, fn, gain] of [['omlsa', omlsa, 4], ['wiener', wiener, 4], ['specsub', specsub, 3]]) {
+    let up = 0, kept = Infinity
+    for (let f of names) {
+      let c = read(path.join(VB, 'clean_testset_wav', f)), x = read(path.join(VB, 'noisy_testset_wav', f))
+      up += (sisdr(c, fn(x, { fs: 48000 })) - sisdr(c, x)) / names.length
+      kept = Math.min(kept, sisdr(c, fn(c, { fs: 48000 })))
+    }
+    ok(up > gain, `${name}: SI-SDR +${up.toFixed(2)} dB over the noisy input`)
+    ok(kept > 14, `${name}: clean speech through it, worst SI-SDR ${kept.toFixed(1)} dB`)
   }
 })
 
@@ -383,20 +522,47 @@ test('debreath — attenuates non-speech far more than speech', () => {
 
 // =================== dereverb ===================
 
-test('dereverb — reduces the reverberant tail after a burst', () => {
-  // A short 500 Hz burst then silence; the room tail fills the silence with decaying
-  // energy. dereverb must pull the tail (0.2–0.6 s, past predelay) down, not just
-  // "not boost" it — the old +10% bound was satisfied by an identity implementation.
-  let n = fs, t60 = 0.5
-  let dry = new Float32Array(n)
-  for (let i = 0; i < 2000; i++) dry[i] = Math.sin(2 * Math.PI * 500 * i / fs) * Math.exp(-i / 400)
-  let h = new Float32Array(8192)
-  for (let i = 0; i < h.length; i++) h[i] = (i === 0 ? 1 : 0) + (Math.random() * 2 - 1) * 0.5 * Math.exp(-6.9 * i / (t60 * fs))
-  let rev = convolve(dry, h)
-  let clean = dereverb(rev, { fs, t60 })
-  let tail = d => { let s = 0, a = Math.floor(0.2 * fs), b = Math.floor(0.6 * fs); for (let i = a; i < b; i++) s += d[i] * d[i]; return Math.sqrt(s / (b - a)) }
-  ok(tail(clean) < tail(rev) * 0.9, 'late-tail energy reduced ≥10%')
-  ok(clean.every(isFinite), 'finite output')
+// the direct sound plus `mix` of four parallel feedback combs (Schroeder, JAES 10(3), 1962): delays `ds`, gains for a
+// 60 dB decay in t60 s at rate sr; float64 in scripts/reference.py `room`'s order
+function combs(x, { ds = [238, 297, 329, 350], gs, t60, sr = fs, mix = 0.25 } = {}) {
+  gs ??= ds.map(d => 10 ** (-3 * d / (t60 * sr)))
+  let y = new Float64Array(x.length), c = ds.map(() => new Float64Array(x.length))
+  for (let n = 0; n < x.length; n++) {
+    let s = 0
+    for (let j = 0; j < ds.length; j++) { c[j][n] = x[n] + (n >= ds[j] ? gs[j] * c[j][n - ds[j]] : 0); s += c[j][n] }
+    y[n] = x[n] + mix * s
+  }
+  return y
+}
+
+test('dereverb: equals its numpy reference (Nakatani et al. 2010; recursive, Yoshioka & Nakatani 2012)', () => {
+  let fx = JSON.parse(readFileSync(new URL('./fixtures/reference.json', import.meta.url)))
+  let { fs: sr, frameSize: N, hopSize: hop, step, rms: r } = fx
+  let x = Float32Array.from(combs(refSignal(), { gs: [0.598, 0.527, 0.492, 0.470] }))   // reference.py `room`
+  let y = dereverb(x, { fs: sr, frameSize: N, hopSize: hop }), ref = fx.batch[stftFirst(N, hop) < 0 ? 'reflect' : 'zero'].dereverb
+  let d = ref.reduce((m, v, i) => Math.max(m, Math.abs(y[i * step] - v)), 0) / r
+  ok(d < 1e-5, `output within ${d.toExponential(1)} of the RMS`)
+})
+
+test('dereverb: takes the late reverberation off speech, leaves dry speech', () => {
+  // lena through combs of 53 to 79 ms (T60 0.5 s), mixed at half: each comb passes x once, so taking 4 · 0.5 x off
+  // leaves the direct sound x, the target, and the echoes, late reverberation
+  let x = lena.subarray(0, fs * 4), y = Float32Array.from(combs(x, { ds: [2337, 2690, 3131, 3484], t60: 0.5, mix: 0.5 }), (v, i) => v - 2 * x[i])
+  let db = (a, b) => { let s = 0, e = 0; for (let i = fs; i < b.length; i++) { s += (a[i] - b[i]) ** 2; e += b[i] ** 2 } return 10 * Math.log10(s / e) }
+  let before = db(y, x), after = db(dereverb(y, { fs }), x), dry = db(dereverb(x, { fs }), x)
+  ok(after < before - 2, `late reverberation ${before.toFixed(1)} → ${after.toFixed(1)} dB under the direct sound`)
+  ok(dry < -20, `dry speech changed by ${dry.toFixed(1)} dB of itself`)
+})
+
+test('dereverb: the writer equals the batch, look-ahead included, under any chunking', () => {
+  let x = lena.subarray(0, fs), batch = dereverb(x, { fs }), write = dereverb({ fs }), parts = []
+  for (let i = 0, k = 0, sizes = [1000, 37, 4096, 5]; i < x.length; i += sizes[k++ % 4]) parts.push(write(x.subarray(i, i + sizes[k % 4])))
+  parts.push(write())
+  let out = new Float32Array(parts.reduce((n, p) => n + p.length, 0)), o = 0, err = 0
+  for (let p of parts) { out.set(p, o); o += p.length }
+  for (let i = 0; i < x.length; i++) err = Math.max(err, Math.abs(out[i] - batch[i]))
+  is(out.length, x.length, 'as long as the input')
+  ok(err < 1e-6, `max deviation ${err.toExponential(1)}`)
 })
 
 // =================== denoise auto-classifier ===================
@@ -545,6 +711,119 @@ test('repair — requires regions', () => {
 	ok(threw)
 })
 
+// arBridge: the least-squares AR interpolator for one contiguous gap. declick's arInterpolate solves
+// the same problem by Gauss-Seidel for scattered clicks; this one exactly, for runs of any length.
+import { arFit, arBridge } from '@audio/lpc'
+import { plan as repairPlan } from '@audio/denoise-repair'
+
+test('lpc arBridge: equals the dense solve of the least-squares AR normal equations (Godsill & Rayner 1998 §5.2.2)', () => {
+	let a = Float64Array.from([1, -0.5, 0.2, 0.1, -0.05, 0.03]), p = 5, n = 40, from = 15, to = 22
+	let x = Float64Array.from({ length: n }, (_, i) => Math.sin(i * 0.7) + 0.3 * Math.cos(i * 1.9))
+	let y = arBridge(x.slice(), from, to, a)
+	// minimize ‖A·x‖² over x[from..to), A the (n+p)×n full-convolution matrix of a: (AᵤᵀAᵤ)·xᵤ = −AᵤᵀAₖ·xₖ
+	let A = (t, j) => t - j >= 0 && t - j <= p ? a[t - j] : 0, m = to - from
+	let Q = Array.from({ length: m }, () => new Float64Array(m + 1))
+	for (let u = 0; u < m; u++) for (let t = 0; t < n + p; t++) {
+		let e = 0
+		for (let j = 0; j < n; j++) if (j < from || j >= to) e += A(t, j) * x[j]
+		for (let v = 0; v < m; v++) Q[u][v] += A(t, from + u) * A(t, from + v)
+		Q[u][m] -= A(t, from + u) * e
+	}
+	for (let c = 0; c < m; c++) for (let r = c + 1; r < m; r++) { let f = Q[r][c] / Q[c][c]; for (let k = c; k <= m; k++) Q[r][k] -= f * Q[c][k] }
+	let sol = new Float64Array(m), err = 0
+	for (let c = m - 1; c >= 0; c--) { let s = Q[c][m]; for (let k = c + 1; k < m; k++) s -= Q[c][k] * sol[k]; sol[c] = s / Q[c][c] }
+	for (let u = 0; u < m; u++) err = Math.max(err, Math.abs(sol[u] - y[from + u]))
+	ok(err < 1e-12, `max |arBridge − dense| ${err.toExponential(1)}`)
+})
+
+test('lpc arBridge: two Janssen passes match the reference janssen_inp.m (Mokrý & Rajmic, InpaintingAutoregressive)', () => {
+	// reference: janssen_inp.m ('lpc' estimator, p = 32, maxit = 2) ported to numpy, on this signal with x[900..950) lost
+	let x = Float64Array.from({ length: 2000 }, (_, n) => Math.sin(2 * Math.PI * 0.0123 * n) + 0.5 * Math.sin(2 * Math.PI * 0.0371 * n + 1) + 0.25 * Math.sin(2 * Math.PI * 0.0913 * n + 2) + 0.05 * Math.sin(0.001 * n * n))
+	let y = x.slice().fill(0, 900, 950)
+	for (let it = 0; it < 2; it++) arBridge(y, 900, 950, arFit(y, 32).a)
+	let ref = { 900: 0.25182093619744267, 912: 0.7967138380834234, 925: 0.5186479956101665, 937: -0.6165023417226305, 949: -0.6102469873606511 }
+	for (let i in ref) almost(y[i], ref[i], 1e-9, `x[${i}]`)
+})
+
+// a 1.5 s phrase (C4 E4 G4 C5, harmonic 2 at 0.3), exactly periodic: any lost second has copies 1.5 s away
+const phrase = n => Float32Array.from({ length: n }, (_, i) => { let t = i / fs % 1.5, f = [262, 330, 392, 523][Math.floor(t / 0.375)]; return 0.3 * (Math.sin(2 * Math.PI * f * t) + 0.3 * Math.sin(4 * Math.PI * f * t)) })
+
+test('repair: auto routes by length and content', () => {
+	let route = (x, at, duration, band) => repairPlan(x, { fs, regions: [{ at, duration, ...band }] })[0]
+	is(route(lena, 2, 0.02).method, 'ar', '20 ms dropout in speech: AR')
+	let loop = phrase(6 * fs), r = route(loop, 3.2, 1), k = (r.source - 3.2) / 1.5
+	is(r.method, 'similarity', 'lost second of a repeating phrase: similarity')
+	ok(Math.abs(k - Math.round(k)) < 0.001, `source ${r.source.toFixed(4)} s is a repetition`)
+	is(route(loop, 3.2, 0.02).method, 'similarity', '20 ms of it: an exact repetition beats AR too')
+	// an exponential glide, 200 Hz doubling every 2 s, never repeats: nothing to copy
+	let glide = Float32Array.from({ length: 4 * fs }, (_, i) => 0.3 * Math.sin(2 * Math.PI * 200 * (2 ** (i / fs / 2) - 1) * 2 / Math.LN2))
+	is(route(glide, 2, 0.06).method, 'ar', '60 ms of a glide: AR, no passage joins')
+	is(route(glide, 2, 0.3).method, 'sinusoidal', '300 ms of a glide: sinusoidal')
+	is(route(glide, 2, 0.3, { from: 300, to: 3000 }).method, 'sinusoidal', 'a band routes alike')
+})
+
+test('repair: each tier rebuilds its design case', () => {
+	let cut = (x, at, dur) => { let d = copy(x), a = Math.round(at * fs), b = a + Math.round(dur * fs); d.fill(0, a, b); return [d, a, b] }
+	let gapSnr = (x, y, a, b) => { let s = 0, e = 0; for (let i = a; i < b; i++) { s += x[i] ** 2; e += (x[i] - y[i]) ** 2 } return 10 * Math.log10(s / e) }
+	// AR: 20 ms of speech, beyond log-magnitude interpolation's reach
+	let [d, a, b] = cut(lena, 2, 0.02), reg = [{ at: 2, duration: 0.02 }]
+	let ar = gapSnr(lena, repair(d, { fs, regions: reg, method: 'ar' }), a, b), sp = gapSnr(lena, repair(d, { fs, regions: reg, method: 'spectral' }), a, b)
+	ok(ar > 6 && ar > sp + 5, `ar ${ar.toFixed(1)} dB vs spectral ${sp.toFixed(1)} dB`)
+	// sinusoidal: 300 ms of a held tone, phase-locked at both ends
+	let tone = sine(440, 3 * fs, 0.5)
+	;[d, a, b] = cut(tone, 1.5, 0.3)
+	let si = gapSnr(tone, repair(d, { fs, regions: [{ at: 1.5, duration: 0.3 }], method: 'sinusoidal' }), a, b)
+	ok(si > 60, `sinusoidal ${si.toFixed(1)} dB`)
+	// similarity, stereo: one plan from the mix, the same passage transplanted in each channel
+	let loop = phrase(6 * fs)
+	;[d, a, b] = cut(loop, 3.2, 1)
+	let right = d.map(v => 0.5 * v), opts = { fs, regions: [{ at: 3.2, duration: 1 }] }, p = repairPlan(d.map((v, i) => (v + right[i]) / 2), opts)
+	let L = repair(d, { ...opts, regions: p }), R = repair(right, { ...opts, regions: p }), sim = gapSnr(loop, L, a, b)
+	ok(sim > 40, `similarity ${sim.toFixed(1)} dB`)
+	let dev = 0
+	for (let i = a; i < b; i++) dev = Math.max(dev, Math.abs(R[i] - 0.5 * L[i]))
+	ok(dev < 1e-6, 'right channel repaired from the same source')
+})
+
+// The measurement behind 'auto' in miniature (scripts/repair.js runs it on recordings too): gaps of
+// 5 ms to 1 s in a sine, a chord, a vibrato tone, speech and a repeating song; SNR over the lost
+// samples (the audio-inpainting convention, Adler et al. 2012), LSD over the frames overlapping them.
+// 'auto' must land within 1 dB LSD of the best tier (~1 dB: transparent, per @audio/quality), or at
+// a transparent SNR of 30 dB and more.
+test('repair: every tier on gaps of 5 ms to 1 s against the original; auto picks the best or near it', () => {
+	let n = 8 * fs, sig = f => Float32Array.from({ length: n }, (_, i) => f(i / fs))
+	let tri = [261.63, 329.63, 392], chord = sig(t => tri.reduce((s, f) => s + [1, 2, 3, 4, 5, 6].reduce((u, k) => u + Math.sin(2 * Math.PI * f * k * t) / k, 0), 0) / 12)
+	let ph = 0, vib = sig(t => (ph += 2 * Math.PI * 440 * 2 ** (0.5 / 12 * Math.sin(2 * Math.PI * 5.5 * t)) / fs, 0.3 * (Math.sin(ph) + Math.sin(2 * ph) / 2 + Math.sin(3 * ph) / 3)))   // ±50 cents at 5.5 Hz
+	// a 2 s bar of kick, snare, hats (fresh noise every hit) and bass under a 4-bar melody, twice: every passage recurs 8 s away
+	let r = (s => () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296)(7), mel = Array.from({ length: 32 }, () => [0, 2, 4, 7, 9, 12][Math.floor(r() * 6)])
+	let song = new Float32Array(2 * n), hat = Float32Array.from({ length: 2 * n }, () => r() * 2 - 1)
+	for (let i = 0; i < 2 * n; i++) {
+		let t = i / fs, e = t % 0.25, q = t % 0.5, bar = Math.floor(t / 2) % 4, f = 261.63 * 2 ** (mel[bar * 8 + Math.floor(t % 2 / 0.25)] / 12)
+		song[i] = 0.4 * Math.sin(2 * Math.PI * 50 * q) * Math.exp(-q / 0.1) * (Math.floor(t / 0.5) % 2 ? 0 : 1) + 0.1 * hat[i] * Math.exp(-e / 0.02)
+			+ 0.15 * (2 * (65.41 * [1, 1.68, 1.33, 1.5][bar] * e % 1) - 1) + 0.2 * Math.sin(2 * Math.PI * f * e) * Math.exp(-e / 0.2)
+	}
+	let signals = { sine: sine(440, n, 0.5), chord, vibrato: vib, speech: lena, song }, METHODS = ['ar', 'sinusoidal', 'similarity', 'spectral']
+	let gapSnr = (x, y, a, b) => { let s = 0, e = 0; for (let i = a; i < b; i++) { s += x[i] ** 2; e += (x[i] - y[i]) ** 2 } return Math.min(99, 10 * Math.log10(s / e)) }
+	let table = ['| signal | gap | ' + [...METHODS, 'auto'].join(' | ') + ' | picked |', '|---|---|' + '---:|'.repeat(5) + '---|']
+	// speech changes from gap to gap: its cells average three of them; the synthetic signals are alike anywhere
+	for (let [name, x] of Object.entries(signals)) for (let ms of [5, 20, 100, 300, 1000]) {
+		let res = {}, picks = []
+		for (let at of name === 'speech' ? [2, 5.5, 9] : [4]) {
+			let a = Math.round(at * fs), b = a + Math.round(ms / 1000 * fs), d = copy(x).fill(0, a, b), regions = [{ at, duration: (b - a) / fs }], k = name === 'speech' ? 3 : 1
+			picks.push(repairPlan(d, { fs, regions })[0].method)
+			for (let m of [...METHODS, 'auto']) {
+				if (m === 'ar' && ms > 300) continue   // O(m²) per pass: AR on 1 s gaps is in scripts/repair.js
+				let y = repair(d, { fs, regions, method: m }), q = res[m] ??= [0, 0]
+				q[0] += gapSnr(x, y, a, b) / k; q[1] += lsd(x.subarray(a - 768, b + 768), y.subarray(a - 768, b + 768), { frameSize: 1024, hopSize: 256 }) / k
+			}
+		}
+		let best = Math.min(...METHODS.filter(m => res[m]).map(m => res[m][1])), [s, l] = res.auto
+		ok(l <= best + 1 || s >= 30, `${name} ${ms} ms: auto (${picks}) ${s.toFixed(1)} dB / ${l.toFixed(2)} dB LSD, best LSD ${best.toFixed(2)}`)
+		table.push(`| ${name} | ${ms} ms | ` + [...METHODS, 'auto'].map(m => res[m] ? `${res[m][0].toFixed(1)} / ${res[m][1].toFixed(2)}` : 'n/a').join(' | ') + ` | ${picks} |`)
+	}
+	console.log('SNR / LSD (dB)\n' + table.join('\n'))
+})
+
 test('stft stream — long-run ring compaction preserves OLA tails (regression)', () => {
 	// >N·8 samples through take() triggers ring compaction; the old fill(0, pos) erased
 	// the last frame's partial overlap-add tail → sample-level corruption mid-stream
@@ -636,8 +915,9 @@ import dereverbKernel from '@audio/denoise-dereverb'
 import omlsaKernel from '@audio/denoise-omlsa'
 import wienerKernel from '@audio/denoise-wiener'
 
+const defaults = atom => Object.fromEntries(Object.entries(atom.params).map(([k, s]) => [k, s.type === 'number' ? Float32Array.of(s.default) : s.default]))
 function hostRun(atom, x, block) {
-  let params = Object.fromEntries(Object.entries(atom.params).map(([k, s]) => [k, s.type === 'number' ? Float32Array.of(s.default) : s.default]))
+  let params = defaults(atom)
   let process = atom({ sampleRate: fs, maxBlockSize: block, maxChannels: 1, params }), out = new Float32Array(x.length)
   for (let i = 0; i < x.length; i += block) {
     let n = Math.min(block, x.length - i), o = new Float32Array(n)
@@ -651,14 +931,17 @@ test('STFT manifests — output is the kernel stream delayed by exactly the decl
   // dry during warm-up and zero-filled, so where the signal landed depended on the block size
   let x = add(sine(440, fs, 0.3), noise(fs, 0.05))
   let f = Math.fround   // hosts carry params as Float32Array
+  // specsub, omlsa and wiener frame by the rate (the power of two nearest 32 ms: 1024 at 44.1 kHz), dereverb by 40 ms
+  // and adds its look-ahead, and declare their latency per rate; their kernels left to their own framing must land
+  // where the manifests say
   let cases = [
-    [specsubAtom, () => specsubKernel({ alpha: 2, beta: f(0.02), frameSize: 2048, hopSize: 512, fs })],
-    [dereverbAtom, () => dereverbKernel({ t60: 0.5, alpha: 1.5, beta: f(0.05), predelay: f(0.04), frameSize: 2048, hopSize: 512, fs })],
-    [omlsaAtom, () => omlsaKernel({ alphaDD: f(0.92), xiMin: 10 ** (-15 / 10), qPrior: f(0.3), gMin: -20, frameSize: 2048, hopSize: 512, fs })],
-    [wienerAtom, () => wienerKernel({ rule: 'mmse-lsa', alphaDD: f(0.98), xiMin: 10 ** (-15 / 10), frameSize: 2048, hopSize: 512, fs })],
+    [specsubAtom, () => specsubKernel({ alpha: 0, beta: f(0.05), fs })],
+    [dereverbAtom, () => dereverbKernel({ lookahead: f(0.25), fs })],
+    [omlsaAtom, () => omlsaKernel({ alphaDD: f(0.98), xiMin: 10 ** (-25 / 10), qPrior: 0, gMin: -15, fs })],
+    [wienerAtom, () => wienerKernel({ rule: 'mmse-lsa', alphaDD: f(0.98), xiMin: 10 ** (-15 / 10), fs })],
   ]
   for (let [atom, kernel] of cases) {
-    let write = kernel(), parts = [], L = atom.latency
+    let write = kernel(), parts = [], L = typeof atom.latency === 'function' ? atom.latency({ sampleRate: fs, params: defaults(atom) }) : atom.latency
     for (let i = 0; i < x.length; i += 333) parts.push(write(x.subarray(i, i + 333)))
     let ref = new Float32Array(x.length), o = 0
     for (let p of parts) { ref.set(p.subarray(0, x.length - o), o); o += p.length }
@@ -669,4 +952,9 @@ test('STFT manifests — output is the kernel stream delayed by exactly the decl
       ok(err === 0, `${atom.name}: block ${block}, latency ${L}: max deviation ${err}`)
     }
   }
+})
+
+test('specsub, omlsa, wiener: frame of the power of two nearest 32 ms at each rate, latency declared to match', () => {
+  for (let atom of [specsubAtom, omlsaAtom, wienerAtom])
+    is([16000, 22050, 44100, 48000].map(sampleRate => atom.latency({ sampleRate }) + 1).join(), '512,512,1024,2048', atom.name)
 })

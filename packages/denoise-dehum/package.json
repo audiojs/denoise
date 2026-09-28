@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-dehum",
-  "version": "0.1.7",
-  "description": "Mains hum / tonal noise removal via cascaded high-Q biquad notches",
+  "version": "0.2.0",
+  "description": "Mains hum removal: measured, then notched; no hum, no change",
   "type": "module",
   "sideEffects": false,
   "main": "dehum.js",

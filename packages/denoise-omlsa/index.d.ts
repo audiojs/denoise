@@ -1,26 +1,42 @@
-/** OM-LSA with IMCRA noise tracking. */
+/** OM-LSA (Cohen & Berdugo 2001) with IMCRA noise tracking (Cohen 2003), or a noise learned where it plays alone. */
 export interface OmlsaOptions {
-  /** floor for non-speech bins (dB, alias gMin), default -20 */
+  /** what noise-only bins keep, dB (alias gMin), default -15 */
   gMinDb?: number
-  /** floor for non-speech bins (dB), default -20 */
+  /** what noise-only bins keep, dB, default -15 */
   gMin?: number
-  /** decision-directed smoothing (alias alphaDD), default 0.92 */
+  /** decision-directed smoothing (alias alphaDD), default 0.98 */
   alpha?: number
-  /** decision-directed smoothing, default 0.92 */
+  /** decision-directed smoothing, default 0.98 */
   alphaDD?: number
-  /** a-priori SNR floor, default 0.0316 */
+  /** a-priori SNR floor, linear, default 10^-2.5 (−25 dB) */
   xiMin?: number
-  /** a-priori speech absence, default 0.3 */
+  /** a fixed a-priori speech absence; omitted or 0: estimated from ξ's spread (Cohen & Berdugo 2001 §4) */
   qPrior?: number
-  /** STFT frame, default 2048 */
+  /** STFT frame, default `frame(fs)`: the power of two nearest 32 ms */
   frameSize?: number
   /** OLA hop, default frameSize/4 */
   hopSize?: number
   /** sample rate, default 44100 */
   fs?: number
+  /** IMCRA options (see @audio/noise-estimate `imcra`) */
+  estimator?: Record<string, number>
+  /** a known noise PSD, `frameSize/2+1` bins (noise-estimate's `noiseProfile` of a noise-only stretch): held, not tracked;
+   *  speech presence then read from γ at a fixed a priori SNR of 15 dB (Gerkmann & Hendriks 2012) */
+  profile?: ArrayLike<number>
+  /** batch: the first noise-only frames, to learn the profile from */
+  noiseFrames?: number
+  /** batch: start of a noise-only stretch to learn the profile from (samples) */
+  profileFrom?: number
+  /** batch: its end (samples) */
+  profileTo?: number
 }
 
 /** Process a whole buffer. Returns a new Float32Array of the same length. */
 export default function omlsa(data: Float32Array | Float64Array, options?: OmlsaOptions): Float32Array
 /** Streaming form: returns a writer — call with chunks, call with no argument to flush. */
 export default function omlsa(options?: OmlsaOptions): (chunk?: Float32Array) => Float32Array
+/** The default frame at a rate: the power of two nearest 32 ms (512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48). */
+export function frame(fs: number): number
+/** The gain as an @audio/stft frame process, for a host that runs its own frames (Hann, hop frameSize/4). It keeps state
+ *  across frames: one per channel. */
+export function processor(options?: OmlsaOptions): (mag: Float64Array, phase: Float64Array) => { mag: Float64Array, phase: Float64Array }

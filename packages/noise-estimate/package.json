@@ -1,6 +1,6 @@
 {
   "name": "@audio/noise-estimate",
-  "version": "1.0.2",
+  "version": "2.0.0",
   "description": "Noise PSD estimation — minimum statistics (Martin 2001), IMCRA (Cohen 2003), and quiet-segment profiling for spectral denoisers",
   "type": "module",
   "sideEffects": false,
@@ -15,7 +15,7 @@
   ],
   "types": "index.d.ts",
   "dependencies": {
-    "@audio/stft": "^1.0.2"
+    "@audio/stft": "^2.0.0"
   },
   "keywords": [
     "audio",

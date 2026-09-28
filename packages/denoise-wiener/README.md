@@ -10,20 +10,23 @@ npm install @audio/denoise-wiener
 import wiener from '@audio/denoise-wiener'
 ```
 
-MMSE Wiener / log-MMSE (Ephraim-Malah 1984/1985) with decision-directed a-priori SNR.
+MMSE log-spectral amplitude (Ephraim & Malah 1985) or Wiener (Scalart & Filho 1996) gain on the decision-directed a priori SNR ξ = α·Â²(l−1)/λ(l−1) + (1−α)·max(γ−1, 0) (Ephraim & Malah 1984, eq. 51). The noise PSD λ is tracked by minimum statistics (Martin 2001) over a 1.5 s window, in batch and stream alike, unless a profile or a noise-only stretch is given.
 
 ```js
-wiener(data, { rule: 'wiener' })                              // pure Wiener gain
-wiener(data)                                                   // defaults: 'mmse-lsa' rule
+wiener(data, { fs })                                           // LSA gain, noise tracked
+wiener(data, { fs, rule: 'wiener' })                           // Wiener gain
+wiener(data, { fs, noiseFrames: 6 })                           // noise from the first 6 frames
 ```
 
 | Param | Default | |
 |---|---|---|
 | `rule` | `'mmse-lsa'` | `'wiener'` or `'mmse-lsa'` (log-spectral, less musical noise) |
 | `alpha` | `0.98` | Decision-directed smoothing (alias of `alphaDD`) |
-| `frameSize` | `2048` | STFT frame |
+| `xiMin` | `10^−1.5` | A priori SNR floor (−15 dB) |
+| `frameSize` | power of two nearest 32 ms | STFT frame: 512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48 (`frame(fs)`) |
 | `hopSize` | `frameSize/4` | OLA hop |
-| `noiseFrames` | first 4 frames | Leading noise-only frames for PSD bootstrap |
+| `profile` | tracked | Noise PSD (`Float64Array`, `frameSize/2+1` bins) |
+| `noiseFrames` / `profileFrom` / `profileTo` | | A noise-only stretch to average for the profile |
 
 **Use when:** transparent broadband denoise; the "safe default" for stationary noise.
 

@@ -10,14 +10,8 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 
 /** Chainable-host options for 'dereverb' */
 export interface DereverbOptions {
-  /** 0.1..3 s (default 0.5) */
-  "t60"?: Auto
-  /** 0..4 (default 1.5) */
-  "alpha"?: Auto
-  /** 0..0.5 (default 0.05) */
-  "beta"?: Auto
-  /** 0..0.5 s (default 0.04) */
-  "predelay"?: Auto
+  /** 0..1 s (default 0.25) */
+  "lookahead"?: Auto
   at?: number | string
   duration?: number | string
 }
@@ -25,16 +19,10 @@ export interface DereverbOptions {
 export declare const dereverb: {
   (ctx: Ctx): Process
   channels: "any"
-  latency: 3072
+  latency: (ctx: { sampleRate: number, params: Live }) => number
   tail: 0
   params: {
-    /** 0.1..3 s (default 0.5) [restart] */
-    "t60": { type: "number", default: 0.5 }
-    /** 0..4 (default 1.5) [restart] */
-    "alpha": { type: "number", default: 1.5 }
-    /** 0..0.5 (default 0.05) [restart] */
-    "beta": { type: "number", default: 0.05 }
-    /** 0..0.5 s (default 0.04) [restart] */
-    "predelay": { type: "number", default: 0.04 }
+    /** 0..1 s (default 0.25) [restart] */
+    "lookahead": { type: "number", default: 0.25 }
   }
 }

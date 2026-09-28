@@ -21,7 +21,7 @@ export { default as dewow, analyze as wowFlutter } from '@audio/denoise-dewow'
 
 export { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/quality'
 export { vad, spp, ddSnr } from '@audio/vad'
-export { noiseProfile, minStats, imcra } from '@audio/noise-estimate'
+export { noiseProfile, minStats, imcra, known } from '@audio/noise-estimate'
 export { stftBatch, stftStream, stftAnalyse } from '@audio/stft'
 
 // gate — @audio/dynamics-gate behind this family's seconds-based, in-place API

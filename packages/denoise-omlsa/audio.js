@@ -5,18 +5,17 @@
 // there is no scalarization question here, only live-vs-restart. alphaDD/qPrior/gMin/
 // xiFloor are baked into the per-frame gain closure once at construction (makeProcess
 // reads opts.* once, not per call), so all carry flags:['restart']. xiFloor mirrors
-// denoise-wiener's dB-exposed floor (xiMin = 10**(xiFloor/10)); qPrior is clamped away
-// from 0/1 (the kernel divides by 1-qPrior).
+// denoise-wiener's dB-exposed floor (xiMin = 10**(xiFloor/10)). qPrior 0 (the default)
+// leaves the a priori speech absence to the kernel's estimate (Cohen & Berdugo 2001 §4);
+// a value above 0 fixes it (at 0.9 and over, no bin counts as speech).
 //
-// Same primed FIFO as denoise-spectral (see its audio.js header): a constant FRAME − 1
-// delay under any block size.
+// Same primed FIFO as denoise-spectral (see its audio.js header): a constant frame − 1
+// delay under any block size. The frame follows the rate (omlsa.js `frame`: the power of
+// two nearest 32 ms), so the latency is declared per rate.
 
-import omlsa_ from './omlsa.js'
+import omlsa_, { frame } from './omlsa.js'
 
-const FRAME = 2048, HOP = 512
-const LATENCY = FRAME - 1
-
-function makeFifo() { return { buf: new Float32Array(1 << 14), len: LATENCY } }   // primed with zeros
+function makeFifo(L) { return { buf: new Float32Array(1 << 14), len: L } }   // primed with zeros
 function fifoPush(f, chunk) {
 	if (!chunk.length) return
 	let need = f.len + chunk.length
@@ -33,17 +32,17 @@ function fifoPull(f, out) {
 }
 
 export const omlsa = (ctx) => {
-	const chans = []
-	for (let c = 0, N = ctx.maxChannels ?? 8; c < N; c++) {
+	const chans = [], N = frame(ctx.sampleRate)
+	for (let c = 0, C = ctx.maxChannels ?? 8; c < C; c++) {
 		chans.push({
 			write: omlsa_({
 				alphaDD: ctx.params.alphaDD[0],
 				xiMin: 10 ** (ctx.params.xiFloor[0] / 10),
 				qPrior: ctx.params.qPrior[0],
 				gMin: ctx.params.gMin[0],
-				frameSize: FRAME, hopSize: HOP, fs: ctx.sampleRate
+				frameSize: N, hopSize: N >> 2, fs: ctx.sampleRate
 			}),
-			fifo: makeFifo()
+			fifo: makeFifo(N - 1)
 		})
 	}
 	return (inputs, outputs) => {
@@ -57,11 +56,11 @@ export const omlsa = (ctx) => {
 	}
 }
 omlsa.channels = 'any'
-omlsa.latency = LATENCY
+omlsa.latency = ({ sampleRate }) => frame(sampleRate) - 1
 omlsa.tail = 0
 omlsa.params = {
-	alphaDD: { type: 'number', min: 0.8, max: 0.999, default: 0.92, flags: ['restart'] },
-	qPrior:  { type: 'number', min: 0.05, max: 0.95, default: 0.3, flags: ['restart'] },  // a-priori speech absence
-	gMin:    { type: 'number', min: -40, max: 0, default: -20, unit: 'dB', flags: ['restart'] },
-	xiFloor: { type: 'number', min: -30, max: 0, default: -15, unit: 'dB', flags: ['restart'] },
+	alphaDD: { type: 'number', min: 0.8, max: 0.999, default: 0.98, flags: ['restart'] },
+	qPrior:  { type: 'number', min: 0, max: 0.95, default: 0, flags: ['restart'] },       // a-priori speech absence; 0: estimated
+	gMin:    { type: 'number', min: -40, max: 0, default: -15, unit: 'dB', flags: ['restart'] },
+	xiFloor: { type: 'number', min: -30, max: 0, default: -25, unit: 'dB', flags: ['restart'] },
 }

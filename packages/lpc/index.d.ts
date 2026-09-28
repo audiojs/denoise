@@ -27,3 +27,6 @@ export function arExtrapolate(context: Float32Array | Float64Array, a: Float64Ar
 
 /** Least-squares fill of missing indices `gap` (sorted) inside `x`, in place, under model `a`. Returns `x`. */
 export function arInterpolate<T extends Float32Array | Float64Array>(x: T, gap: number[], a: Float64Array): T
+
+/** Exact least-squares fill of the contiguous gap x[from..to), in place, under model `a` (Toeplitz normal equations, Levinson, O(m²)). Returns `x`. */
+export function arBridge<T extends Float32Array | Float64Array>(x: T, from: number, to: number, a: Float64Array): T

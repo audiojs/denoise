@@ -1,22 +1,15 @@
-// atom manifest — wraps the late-reverb spectral-subtraction kernel per
-// @audio/compile CONTRACT. Same streaming shape as denoise-spectral: dereverb.js's
-// opts-only call returns a writer(stftStream(...)) function. There is no noise-profile
-// argument at all here — the late-reverb tail model is driven entirely by t60 (assumed
-// decay time) plus a rolling history of recent frame power, both online/causal by
-// construction — so nothing to auto-profile or skip. t60/alpha/beta/predelay are baked
-// into the per-frame closure once at construction (makeProcess reads opts.* once, not
-// per call — predelay in particular sizes state.history's ring length), so all four
-// carry flags:['restart'].
+// atom manifest: wraps the recursive WPE kernel per @audio/compile CONTRACT. Same streaming shape as
+// denoise-spectral: dereverb.js's opts-only call returns a writer over stftStream, whose output equals the batch
+// (the look-ahead's delay dropped at the start, run out at the end). The prediction adapts to the room by itself:
+// nothing to set but how far it looks ahead, which sizes the kernel's ring and the latency, so it carries
+// flags:['restart'].
 //
-// Same primed FIFO as denoise-spectral (see its audio.js header): a constant FRAME − 1
-// delay under any block size.
+// Same primed FIFO as denoise-spectral (see its audio.js header): a constant delay under any block size, here the
+// STFT's frame − 1 plus the look-ahead, L·hop, declared per rate and look-ahead.
 
-import dereverb_ from './dereverb.js'
+import dereverb_, { framing } from './dereverb.js'
 
-const FRAME = 2048, HOP = 512
-const LATENCY = FRAME - 1
-
-function makeFifo() { return { buf: new Float32Array(1 << 14), len: LATENCY } }   // primed with zeros
+function makeFifo(L) { return { buf: new Float32Array(1 << 14), len: L } }   // primed with zeros
 function fifoPush(f, chunk) {
 	if (!chunk.length) return
 	let need = f.len + chunk.length
@@ -33,17 +26,8 @@ function fifoPull(f, out) {
 }
 
 export const dereverb = (ctx) => {
-	const chans = []
-	for (let c = 0, N = ctx.maxChannels ?? 8; c < N; c++) {
-		chans.push({
-			write: dereverb_({
-				t60: ctx.params.t60[0], alpha: ctx.params.alpha[0],
-				beta: ctx.params.beta[0], predelay: ctx.params.predelay[0],
-				frameSize: FRAME, hopSize: HOP, fs: ctx.sampleRate
-			}),
-			fifo: makeFifo()
-		})
-	}
+	const chans = [], opts = { fs: ctx.sampleRate, lookahead: ctx.params.lookahead[0] }, L = dereverb.latency(ctx)
+	for (let c = 0, C = ctx.maxChannels ?? 8; c < C; c++) chans.push({ write: dereverb_(opts), fifo: makeFifo(L) })
 	return (inputs, outputs) => {
 		const inp = inputs[0], out = outputs[0]
 		if (!inp || !inp.length) return
@@ -55,11 +39,11 @@ export const dereverb = (ctx) => {
 	}
 }
 dereverb.channels = 'any'
-dereverb.latency = LATENCY
+dereverb.latency = ({ sampleRate, params }) => {
+	let o = framing({ fs: sampleRate, lookahead: params.lookahead[0] })
+	return o.frameSize - 1 + o.L * o.hopSize
+}
 dereverb.tail = 0
 dereverb.params = {
-	t60:      { type: 'number', min: 0.1, max: 3, default: 0.5, unit: 's', flags: ['restart'] },
-	alpha:    { type: 'number', min: 0, max: 4, default: 1.5, flags: ['restart'] },
-	beta:     { type: 'number', min: 0, max: 0.5, default: 0.05, flags: ['restart'] },
-	predelay: { type: 'number', min: 0, max: 0.5, default: 0.04, unit: 's', flags: ['restart'] },
+	lookahead: { type: 'number', min: 0, max: 1, default: 0.25, unit: 's', flags: ['restart'] },   // 0: the frame's latency alone
 }

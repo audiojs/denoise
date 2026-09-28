@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-omlsa",
-  "version": "0.1.10",
-  "description": "OM-LSA — Optimally Modified Log-Spectral Amplitude (Cohen 2002), with IMCRA noise",
+  "version": "0.2.0",
+  "description": "OM-LSA: Optimally Modified Log-Spectral Amplitude (Cohen & Berdugo 2001), with IMCRA noise (Cohen 2003) or a noise learned where it plays alone",
   "type": "module",
   "sideEffects": false,
   "main": "omlsa.js",
@@ -23,8 +23,15 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/noise-estimate": "^1.0.0",
-    "@audio/stft": "^1.0.7"
+    "@audio/noise-estimate": "^2.0.0",
+    "@audio/stft": "^2.0.0"
+  },
+  "devDependencies": {
+    "audio-lena": "^3.0.1",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
   },
   "keywords": [
     "audio",

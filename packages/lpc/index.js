@@ -1,7 +1,8 @@
 // Linear predictive coding — autoregressive modelling of audio.
 //   - autocorr + levinson (Levinson-Durbin) → AR(p) / LPC coefficients from a window
 //   - arPredict / arExtrapolate → forward prediction (de-clip projection)
-//   - arInterpolate → least-squares gap fill (de-click / de-crackle)
+//   - arInterpolate → least-squares fill of scattered samples (de-click / de-crackle)
+//   - arBridge → exact least-squares fill of one contiguous gap, any length (repair)
 //
 // `lpc(x, p)` is the standard entry point (alias of arFit): coefficients a[] + residual e.
 // References: Markel & Gray (1976); Godsill & Rayner (1998), "Digital Audio Restoration" §5.
@@ -130,6 +131,70 @@ export function arInterpolate(x, gap, a) {
       }
       x[g] = num / mdiag[i]
     }
+  }
+  return x
+}
+
+// Least-squares interpolation of the contiguous gap x[from..to), in place, under model `a`
+// (Janssen, Veldhuis & Vries 1986; Godsill & Rayner 1998 §5.2.2): the unknowns minimize the
+// total prediction error of the full convolution a∗x. Its normal equations are Toeplitz in the
+// autocorrelation of `a`, so Levinson recursion solves them exactly in O(m²) at any order:
+// the same solve as the Audio Inpainting Toolbox's Janssen step (Adler et al. 2012). This is
+// arInterpolate's problem for one run (declick's interpolator iterates Gauss-Seidel over
+// scattered indices, too slow to converge on runs of hundreds of samples at order ~p).
+export function arBridge(x, from, to, a) {
+  let p = a.length - 1, n = x.length, m = to - from
+  if (m <= 0) return x
+  let r = new Float64Array(p + 1)
+  for (let k = 0; k <= p; k++) {
+    let s = 0
+    for (let i = 0; i + k <= p; i++) s += a[i] * a[i + k]
+    r[k] = s
+  }
+  // right side: −Σ r[|g−j|]·x[j] over the known samples within p of each unknown g
+  let b = new Float64Array(m)
+  for (let i = 0; i < m; i++) {
+    let g = from + i, s = 0
+    for (let j = Math.max(0, g - p); j < from; j++) s += r[g - j] * x[j]
+    for (let j = to, e = Math.min(n - 1, g + p); j <= e; j++) s += r[j - g] * x[j]
+    b[i] = -s
+  }
+  let u = toeplitz(r.subarray(0, Math.min(m, p + 1)), b)
+  if (u) for (let i = 0; i < m; i++) x[from + i] = u[i]
+  return x
+}
+
+// Solve T·x = b for symmetric positive-definite Toeplitz T (first column t, zero past t.length):
+// Levinson's algorithm (Golub & Van Loan, Matrix Computations, Alg. 4.7.2); the inner products stop
+// at the band. null if T is not numerically positive definite.
+function toeplitz(t, b) {
+  let m = b.length, t0 = t[0], q = t.length - 1
+  if (!(t0 > 0)) return null
+  let r = new Float64Array(m + 1)
+  for (let k = 1; k <= Math.min(q, m); k++) r[k] = t[k] / t0
+  let x = new Float64Array(m), y = new Float64Array(m)
+  x[0] = b[0] / t0
+  if (m === 1) return x
+  let beta = 1, alpha = -r[1]
+  y[0] = alpha
+  for (let k = 1; k < m; k++) {
+    beta *= 1 - alpha * alpha
+    if (!(beta > 0)) return null
+    let s = b[k] / t0, e = Math.min(k, q)
+    for (let i = 0; i < e; i++) s -= r[i + 1] * x[k - 1 - i]
+    let mu = s / beta
+    for (let i = 0; i < k; i++) x[i] += mu * y[k - 1 - i]
+    x[k] = mu
+    if (k === m - 1) break
+    s = r[k + 1]
+    for (let i = 0; i < e; i++) s += r[i + 1] * y[k - 1 - i]
+    alpha = -s / beta
+    for (let i = 0, j = k - 1; i <= j; i++, j--) {
+      let yi = y[i], yj = y[j]
+      y[i] = yi + alpha * yj
+      if (i !== j) y[j] = yj + alpha * yi
+    }
+    y[k] = alpha
   }
   return x
 }

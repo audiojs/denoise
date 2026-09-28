@@ -31,6 +31,16 @@ Project `m` samples forward from `context` under model `a`. Used to reconstruct 
 
 Least-squares fill of missing indices `gap` (sorted) inside `x`, in place, under model `a` — the interpolator behind de-click / de-crackle. Gauss-Seidel, converges well past audible accuracy for short bursts.
 
+## `arBridge(x, from, to, a)`
+
+The same least-squares fill for one contiguous gap `x[from..to)`, in place, solved exactly: the normal equations are Toeplitz in the autocorrelation of `a`, so Levinson recursion takes O(m²) for `m` missing samples at any order (Janssen, Veldhuis & Vries 1986; the solve of the Audio Inpainting Toolbox's Janssen step, Adler et al. 2012). Where `arInterpolate` suits scattered clicks at order ~60, this suits a dropout of hundreds or thousands of samples at order ~1000: the interpolator behind [`denoise-repair`](https://github.com/audiojs/denoise/tree/main/packages/denoise-repair)'s AR tier.
+
+```js
+segment.fill(0, 4096, 4096 + 882)         // a 20 ms dropout at 44.1 kHz, zeroed
+let { a } = lpc(segment, 1024)            // AR fit on its surroundings
+arBridge(segment, 4096, 4096 + 882, a)    // least-squares fill, in place; refit and refill once more for Janssen's method
+```
+
 ## Notes
 
-Foundation for LPC vocoders and formant tracking (Markel & Gray 1976); restoration methods follow Godsill & Rayner (1998). Used by [`@audio/denoise`](https://github.com/audiojs/denoise)'s declick/decrackle/declip. MIT.
+Foundation for LPC vocoders and formant tracking (Markel & Gray 1976); restoration methods follow Godsill & Rayner (1998). Used by [`@audio/denoise`](https://github.com/audiojs/denoise)'s declick/decrackle/declip/repair. MIT.

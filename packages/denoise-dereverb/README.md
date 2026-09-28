@@ -1,6 +1,6 @@
 # @audio/denoise-dereverb [![npm](https://img.shields.io/npm/v/@audio/denoise-dereverb)](https://www.npmjs.com/package/@audio/denoise-dereverb) [![MIT](https://img.shields.io/badge/MIT-%E0%A5%90-white)](https://github.com/krishnized/license)
 
-De-reverb — late-reverb spectral subtraction (Lebart, Boucher & Denbigh 2001)
+De-reverb: late reverberation off speech by weighted prediction error (WPE, Nakatani et al. 2010), recursive
 
 ```
 npm install @audio/denoise-dereverb
@@ -10,22 +10,18 @@ npm install @audio/denoise-dereverb
 import dereverb from '@audio/denoise-dereverb'
 ```
 
-Late-reverb suppression (Lebart, Boucher & Denbigh 2001 estimate, Habets-class gain). Models the late tail as a decaying sum of past frames' power, then applies a decision-directed Wiener gain on the signal-to-reverb ratio — the cross-frame smoothing suppresses the musical noise hard subtraction produces.
+Late reverberation off speech by weighted prediction error, WPE (Nakatani et al. 2010), in its recursive form (Yoshioka & Nakatani 2012). In each STFT bin, what the frames 30 to 130 ms back predict of the current one is the room's tail, and is subtracted. The prediction is fitted with each frame weighted by its inverse power, so it takes what the room adds, not the speech's own correlation. A linear filter per bin: no decay time to estimate, no gain floor, no musical noise. It adapts within about a second; each frame leaves through the filter a quarter second later has learned (`lookahead`), so a take's first words are cleaned too.
 
 ```js
-dereverb(data, { t60: 0.6, predelay: 0.04 })
+dereverb(data, { fs: 48000 })
 ```
 
 | Param | Default | |
 |---|---|---|
-| `t60` | `0.5` | Assumed reverberation time (s) |
-| `predelay` | `0.04` | Direct-sound passthrough (s) |
-| `alpha` | `1.5` | Reverb-PSD over-estimation factor |
-| `alphaDD` | `0.98` | Decision-directed SIR smoothing |
-| `gMin` | `0.05` | Gain floor for reverb-dominated bins |
+| `lookahead` | `0.25` | s the filter learns past each frame before it leaves; the latency grows by it (0: the frame's alone, 32 to 46 ms) |
 
-**Use when:** moderate room reverb (RT60 ≤ 1 s) on a single channel.<br>
-**Not for:** heavy reverb or convolutive distortion — use multi-channel WPE (out of scope).
+**Use when:** speech in a room, one microphone.<br>
+**Not for:** music or anything holding a steady pitch: a steady tone is predictable, and taken (a held note with vibrato loses 13 dB). Noise: denoise first.
 
 ---
 
