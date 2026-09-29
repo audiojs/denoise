@@ -14,7 +14,8 @@
 #             2001: eqs. (9), (15), (16), (18), (23)-(28), Table 1; P_min and the frame term's bookkeeping from omlsa.m.
 #   dd_gain   Ephraim & Malah, IEEE TASSP 32(6), 1984, eq. (51): decision-directed a priori SNR; gains: Wiener
 #             ξ/(1+ξ) (Scalart & Filho, ICASSP 1996), LSA (Ephraim & Malah, IEEE TASSP 33(2), 1985, eq. (20)).
-#   minstats  Martin, IEEE TSAP 9(5), 2001: minimum of the smoothed periodogram over D frames times B_min, eq. (17).
+#   minstats  Martin, IEEE TSAP 9(5), 2001: minimum of the smoothed periodogram over D frames times B_min, eq. (17),
+#             capped at the window's mean.
 #   specsub   Berouti, Schwartz & Makhoul, ICASSP 1979: power subtraction, over-subtraction α(SNR), floor β.
 #   wpe       Nakatani, Yoshioka, Kinoshita, Miyoshi & Juang, IEEE TASLP 18(7), 2010: variance-normalized delayed
 #             linear prediction, one channel; recursive least squares as in Yoshioka & Nakatani, IEEE TASLP 20(10),
@@ -183,7 +184,8 @@ def bias_min(D, alpha):
     return 1 + 2 * (D - 1) * (1 - m) / (q - 2 * m)
 
 def minstats(P, D=96, alpha=0.7, bias=None):
-    """Minimum of the smoothed periodogram over the last D non-silent frames, times B_min; the smoother starts at the
+    """Minimum of the smoothed periodogram over the last D non-silent frames, times B_min, and once there are D of them
+    no more than their mean (a steady line's minimum is its mean: B_min would put it over); the smoother starts at the
     first frame."""
     bias = bias_min(D, alpha) if bias is None else bias
     out = np.zeros_like(P); S = None; hist = []; last = np.zeros(P.shape[1])
@@ -191,6 +193,7 @@ def minstats(P, D=96, alpha=0.7, bias=None):
         if p.any():
             S = p.copy() if S is None else alpha * S + (1 - alpha) * p
             hist = (hist + [S])[-D:]; last = np.min(hist, 0) * bias
+            if len(hist) == D: last = np.minimum(last, np.mean(hist, 0))
         out[l] = last
     return out
 

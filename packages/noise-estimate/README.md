@@ -15,9 +15,11 @@ let noisePsd = est.psd                        // drive Wiener / MMSE / OM-LSA ga
 
 ## `minStats(half, opts?)`
 
-Minimum Statistics (Martin 2001): the minimum of the recursively smoothed periodogram over the last `D` frames, times the bias compensation B<sub>min</sub> that makes it estimate the noise power rather than its lower tail. `opts`: `D` (window frames, default 96: 1.1 s at hop 512, 44.1 kHz), `alpha` (smoothing, 0.7), `bias` (default B<sub>min</sub>(D, α), Martin 2001 eq. 17: 3.44 for the defaults). Returns `{ psd, bias, update(mag) }`.
+Minimum Statistics (Martin 2001): the minimum of the recursively smoothed periodogram over the last `D` frames, times the bias compensation B<sub>min</sub> that makes it estimate the noise power rather than its lower tail. `opts`: `D` (window frames, default 96: 1.1 s at hop 512, 44.1 kHz), `alpha` (smoothing, 0.7), `bias` (default B<sub>min</sub>(D, α), Martin 2001 eq. 17: 3.44 for the defaults; the window's mean caps it either way). Returns `{ psd, bias, update(mag) }`.
 
-The smoother starts at the first frame, and frames of digital silence are skipped: neither a warm-up from zero nor an edited-out pause becomes the window's minimum. On white Gaussian noise through 2048/512 Hann frames the estimate's mean is within 0.4 dB of the noise power for D 48–96 and α 0.7–0.95.
+Once the window holds `D` frames, the estimate never exceeds their mean. B<sub>min</sub> is Gaussian noise's ratio of mean to minimum; a steady line (a whine, a pilot tone, a carrier) hardly swings, its minimum is its mean, and B<sub>min</sub> put it 5–7 dB over (6.5 dB in `@audio/denoise-wiener`'s 1.5 s window at 44.1 kHz, where the line then came through 6 dB louder than on its learned profile). The noise holds no more power than its bin: the window's mean caps it, and where the bin swings as noise or speech does, the minimum governs. Before the window is full the minimum alone counts: over fewer frames B<sub>min</sub>(D) runs over the Gaussian bias of that window, and the mean would undercut it everywhere.
+
+The smoother starts at the first frame, and frames of digital silence are skipped: neither a warm-up from zero nor an edited-out pause becomes the window's minimum. On white Gaussian noise through 2048/512 Hann frames the estimate's mean is 0.4–0.7 dB under the noise power for D 48–96 and α 0.7–0.95 (the cap takes 0.03–0.35 dB of it, where P<sub>min</sub>·B<sub>min</sub> spreads over the mean).
 
 ## `imcra(half, opts?)`
 

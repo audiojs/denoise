@@ -19,7 +19,7 @@ export interface MinStatsOptions {
   D?: number
   /** PSD smoothing, default 0.7 */
   alpha?: number
-  /** bias compensation, default B_min(D, alpha) (Martin 2001 eq. 17): 3.44 for the defaults */
+  /** bias compensation, default B_min(D, alpha) (Martin 2001 eq. 17): 3.44 for the defaults; a full window's mean caps the estimate */
   bias?: number
 }
 

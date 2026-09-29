@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-detect",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "denoise — content-aware auto-selector that classifies the dominant noise type",
   "type": "module",
   "sideEffects": false,
@@ -18,7 +18,7 @@
   ],
   "types": "index.d.ts",
   "dependencies": {
-    "@audio/denoise-wiener": "^0.2.0",
+    "@audio/denoise-wiener": "^0.2.1",
     "@audio/denoise-omlsa": "^0.2.0",
     "@audio/denoise-dehum": "^0.2.0",
     "@audio/denoise-declick": "^0.1.0",

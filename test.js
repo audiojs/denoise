@@ -221,9 +221,10 @@ test('omlsa — improves segSNR on noisy speech', () => {
   ok(segSnr(clean, speech) > segSnr(dirty, speech), 'segSNR improved')
 })
 
-// minStats keeps each bin's minimum over the last D frames by monotonic deque; the rescan it replaced is the reference.
-// Windows of 1, 3 and 96 frames, fewer frames than the window, repeated values, minima falling and rising. Frames of
-// digital silence (every 37th frame starts five) are skipped, and the smoother starts at the first frame with sound.
+// minStats keeps each bin's minimum over the last D frames by monotonic deque; the rescan it replaced is the reference,
+// and once the window is full its mean the cap (a running sum, re-added once a window). Windows of 1, 3 and 96 frames,
+// fewer frames than the window, repeated values, minima falling and rising. Frames of digital silence (every 37th
+// frame starts five) are skipped, and the smoother starts at the first frame with sound.
 test('minStats — the D-frame minimum equals a rescan of the last D frames', () => {
   let seed = 5, rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
   for (let [half, D, frames] of [[64, 96, 300], [16, 1, 50], [16, 3, 200], [64, 96, 20]]) {
@@ -233,7 +234,11 @@ test('minStats — the D-frame minimum equals a rescan of the last D frames', ()
       est.update(mag)
       if (f % 37 >= 5) hist.push(Float64Array.from(mag, (m, k) => smoothed[k] = hist.length ? 0.7 * smoothed[k] + (1 - 0.7) * (m * m) : m * m))
       if (hist.length > D) hist.shift()
-      for (let k = 0; k <= half; k++) if (est.psd[k] !== (hist.length ? Math.min(...hist.map(p => p[k])) * est.bias : 0)) bad++
+      for (let k = 0; k <= half; k++) {
+        let m = hist.length ? Math.min(...hist.map(p => p[k])) * est.bias : 0, mean = hist.reduce((a, p) => a + p[k], 0) / D
+        let ref = hist.length === D ? Math.min(m, mean) : m                  // a full window caps it at its mean
+        if (Math.abs(est.psd[k] - ref) > 1e-12 * ref) bad++
+      }
     }
     is(bad, 0, `${half + 1} bins, D ${D}, ${frames} frames`)
   }
@@ -301,16 +306,36 @@ test('imcra, omlsa, wiener, specsub: equal their numpy references (Cohen 2003, C
 })
 
 test('minStats: unbiased on white noise; starts at the first frame; skips digital silence', () => {
-  // B_min puts the mean estimate within 0.5 dB of the noise power (the constant 1.5 it replaced left it 3.8 dB under)
+  // B_min puts the mean estimate 0.2 dB under the noise power (the constant 1.5 it replaced left it 3.8 dB under); the cap
+  // at the window's mean takes 0.35 dB more, where P_min·B_min spreads over the mean
   let x = gauss(48000 * 20), est = minStats(1024), f = 0, sum = 0, cnt = 0
   stftAnalyse(x, mag => { est.update(mag); if (f++ > 200) { for (let k = 10; k < 1000; k++) sum += est.psd[k]; cnt += 990 } }, { frameSize: 2048, hopSize: 512 })
   let db = 10 * Math.log10(sum / cnt / 768)                        // E|Y|² = σ² Σw² = 768 for unit white noise, Hann 2048
-  ok(Math.abs(db) < 0.5, `mean estimate ${db.toFixed(2)} dB re the noise power`)
+  ok(Math.abs(db) < 0.7, `mean estimate ${db.toFixed(2)} dB re the noise power`)
   let e = minStats(8), m = new Float64Array(9).fill(2)
   e.update(m)
   almost(e.psd[3], 4 * e.bias, 1e-9, 'first frame: its own power times B_min, no warm-up from zero')
   e.update(new Float64Array(9)); e.update(new Float64Array(9))
   almost(e.psd[3], 4 * e.bias, 1e-9, 'digital silence leaves the estimate as it was')
+})
+
+// A steady line (a whine, a pilot tone) hardly swings: its minimum is its mean, and B_min put it 6.5 dB over in
+// wiener's window (1024/256 frames at 44.1 kHz, D 258). The LSA gain's floor passes √(ξ_min λ), so the line came
+// through 6 dB louder than on its learned profile, and denoise() on speech + 7 kHz line + white noise fell from
+// 13.3 dB SNR (wiener 0.1's learned profile) to 7.8. The window's mean caps the estimate: the line as if learned.
+test('minStats: a steady line is estimated at its power, not B_min over it; wiener takes it down as if learned', () => {
+  let N = 1024, hop = 256, D = Math.round(1.5 * fs / hop), n = fs * 4, k0 = Math.round(7000 * N / fs), o = { frameSize: N, hopSize: hop }
+  let speech = lena.subarray(0, n), line = sine(7000, n, 0.3), x = add(speech, line, gauss(n, 0.01))
+  let psd = y => { let p = new Float64Array(N / 2 + 1), c = 0; stftAnalyse(y, m => { for (let k = 0; k <= N / 2; k++) p[k] += m[k] ** 2; c++ }, o); return p.map(v => v / c) }
+  let est = minStats(N / 2, { D }), p = psd(line), worst = 0
+  stftAnalyse(x, m => est.update(m), o)
+  for (let k = k0 - 2; k <= k0 + 2; k++) worst = Math.max(worst, Math.abs(10 * Math.log10(est.psd[k] / p[k])))
+  ok(worst < 0.5, `the line's 5 bins within ${worst.toFixed(2)} dB of its power (B_min put them 6.5 over)`)
+  let amp = y => { let re = 0, im = 0; for (let i = 2 * fs; i < n; i++) { re += y[i] * Math.cos(2 * Math.PI * 7000 * i / fs); im += y[i] * Math.sin(2 * Math.PI * 7000 * i / fs) } return 20 * Math.log10(2 * Math.hypot(re, im) / (n - 2 * fs)) }
+  let tracked = amp(wiener(copy(x), { fs })), learned = amp(wiener(copy(x), { fs, profile: psd(add(line, gauss(n, 0.01, 99))) }))
+  ok(Math.abs(tracked - learned) < 0.5, `line left ${tracked.toFixed(1)} dBFS tracked, ${learned.toFixed(1)} on its learned profile (was 6 dB over)`)
+  let { out, plan } = denoise(copy(x), { fs, returnPlan: true }), s = snr(speech, out)
+  ok(plan.method === 'wiener' && s > 10, `denoise() routes it to wiener: SNR ${s.toFixed(1)} dB (7.8 before)`)
 })
 
 test('imcra: unbiased on white noise; digital silence is skipped; a 12 dB step is followed within two windows', () => {

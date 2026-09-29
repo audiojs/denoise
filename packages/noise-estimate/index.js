@@ -29,7 +29,18 @@ export function noiseProfile(data, opts = {}) {
 
 // Minimum Statistics (Martin 2001) — frame-by-frame online updater.
 // Keeps a rolling D-frame minimum of the smoothed PSD per bin, times the bias compensation B_min that makes the
-// minimum estimate E{|N|²} rather than its lower tail.
+// minimum estimate E{|N|²} rather than its lower tail; once the window holds D frames, never above their mean.
+//
+// B_min is E{P}/E{P_min} for Gaussian noise, a periodogram swinging over 2 degrees of freedom. A steady line (a whine,
+// a pilot tone, a carrier) hardly swings: its minimum is its mean, and B_min puts it that much over (6.5 dB in
+// wiener's 1.5 s window at 44.1 kHz; the LSA gain's floor passes √(ξ_min λ), so the line came through 6 dB louder).
+// The noise holds no more power than the bin it is in: the window's mean caps the estimate. Where the bin swings as
+// noise or speech does, the mean lies over P_min·B_min and the minimum governs. The cap waits for a full window: over
+// fewer frames B_min(D) exceeds the Gaussian bias of that window, the mean would undercut it in every bin, and the
+// estimate would become the running mean, speech and all. Its cost on Gaussian noise: the mean estimate up to 0.4 dB
+// lower (0.35 at the defaults), where P_min·B_min spreads over the mean. Martin's per-bin B_min from the variance of
+// P (2001 §IV-B) put Gaussian noise 2-4 dB under with this fixed α (the variance, smoothed over ~2 frames of a
+// 3-frame smoother, runs low).
 //
 // Usage:
 //   let est = minStats(half, { D: 96 })
@@ -48,6 +59,8 @@ export function minStats(half, opts = {}) {
   // values rising from head to tail (O(1) amortized per bin per frame, not a rescan of D frames)
   let val = new Float64Array(bins * D), at = new Int32Array(bins * D)
   let head = new Int32Array(bins), size = new Int32Array(bins), frame = 0
+  // the last D smoothed values per bin (a ring) and their sum, for the window's mean
+  let win = new Float64Array(bins * D), sum = new Float64Array(bins)
 
   return {
     psd,
@@ -56,6 +69,7 @@ export function minStats(half, opts = {}) {
       let silent = true
       for (let k = 0; k <= half; k++) if (mag[k]) { silent = false; break }
       if (silent) return                         // digital silence holds no noise to learn: a zero would stay D frames
+      let i = frame % D
       for (let k = 0, o = 0; k <= half; k++, o += D) {
         let pk = mag[k] * mag[k]
         // the smoother starts at the first frame, not at 0: a warm-up from 0 would be the window's minimum for D frames
@@ -66,7 +80,9 @@ export function minStats(half, opts = {}) {
         t = h + n >= D ? h + n - D : h + n
         val[o + t] = v; at[o + t] = frame; n++
         head[k] = h; size[k] = n
-        psd[k] = val[o + h] * bias
+        sum[k] += v - win[o + i]; win[o + i] = v
+        if (i === D - 1) { let s = 0; for (let j = o; j < o + D; j++) s += win[j]; sum[k] = s }  // once a window: no drift
+        psd[k] = frame < D - 1 ? val[o + h] * bias : Math.min(val[o + h] * bias, sum[k] / D)
       }
       frame++
     }
