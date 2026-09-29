@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-desilence",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "De-silence — VAD-driven silence handling for speech: remove, shorten (Smart Speed), split, trim",
   "type": "module",
   "sideEffects": false,
@@ -24,7 +24,7 @@
   ],
   "dependencies": {
     "@audio/vad": "^1.0.0",
-    "@audio/stft": "^1.0.2"
+    "@audio/stft": "^2.0.0"
   },
   "keywords": [
     "audio",
@@ -55,5 +55,8 @@
   },
   "types": "index.d.ts",
   "audio": "./audio.js",
-  "funding": "https://github.com/sponsors/audiojs"
+  "funding": "https://github.com/sponsors/audiojs",
+  "scripts": {
+    "test": "node test.js"
+  }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@audio/vad",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Voice activity detection — frame-level speech/non-speech decision (energy + spectral flatness) plus per-bin speech-presence probability and decision-directed a-priori SNR",
   "type": "module",
   "sideEffects": false,
@@ -18,7 +18,7 @@
   ],
   "types": "index.d.ts",
   "dependencies": {
-    "@audio/stft": "^1.0.2"
+    "@audio/stft": "^2.0.0"
   },
   "keywords": [
     "audio",

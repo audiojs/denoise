@@ -635,6 +635,13 @@ test('denoise — force overrides classifier', () => {
   is(plan.method, 'wiener')
 })
 
+// Forced, no classify ran to name the series: dehum measures it (a fixed 50 Hz left 60 Hz mains in place)
+test('denoise — forced dehum finds 60 Hz mains', () => {
+  let speech = lena.subarray(0, fs * 4), x = add(speech, sine(60, speech.length, 0.05), sine(120, speech.length, 0.03))
+  let y = denoise(copy(x), { fs, force: 'dehum' }).subarray(fs / 2)
+  ok(narrowEnergy(y, 60) < 0.05 / 30, `60 Hz at ${(20 * Math.log10(narrowEnergy(y, 60) / 0.05)).toFixed(1)} dB of the hum`)
+})
+
 // =================== streaming dual-API ===================
 
 for (let [name, fn] of [['dehum', dehum], ['specsub', specsub], ['wiener', wiener], ['omlsa', omlsa], ['dereverb', dereverb]]) {

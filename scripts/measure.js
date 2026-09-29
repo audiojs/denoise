@@ -154,7 +154,7 @@ measure('Sibilance', [
 
 measure('Reverb (T60 ≈ 0.6 s)', [
   { label: 'reverb', dirty: reverbSig, methods: [
-    { name: 'dereverb', fn: dereverb, opts: { t60: 0.6 } },
+    { name: 'dereverb', fn: dereverb, opts: {} },
   ]},
 ])
 

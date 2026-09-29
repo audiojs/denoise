@@ -6,7 +6,7 @@ export interface ClassifyScores {
   hum: number
   /** 50 or 60 */
   humFreq: number
-  /** peak excess kurtosis of AR residual across scanned windows */
+  /** impulses per second standing out of the AR(30) residual; declick above `CLICK_RATE` */
   click: number
   /** low/mid band power ratio */
   lf: number
@@ -46,6 +46,9 @@ export default function denoise(data: Float32Array, params: DenoiseOptions & { r
 
 /** Run the classification sweep only (no cleaning). */
 export function classify(data: Float32Array, fs?: number): Plan
+
+/** Impulses per second above which classify() routes to declick. */
+export const CLICK_RATE: number
 
 export interface DeesserOptions {
   /** sample rate (Hz), default 44100 */

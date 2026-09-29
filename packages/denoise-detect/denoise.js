@@ -48,7 +48,9 @@ export default function denoise(data, params = {}) {
   let opts = { fs, ...params }
   let out
   switch (plan.method) {
-    case 'dehum':   out = dehum(new Float32Array(data), { ...opts, freq: plan.humFreq || 50 }); break
+    // the series classify heard; dehum measures its exact frequency and harmonics. Forced without `freq`,
+    // dehum measures 50 and 60 Hz itself (a fixed 50 missed 60 Hz mains)
+    case 'dehum':   out = dehum(new Float32Array(data), { ...opts, freq: params.freq ?? plan.humFreq }); break
     case 'declick': out = declick(new Float32Array(data), opts); break
     case 'dewind':  out = dewind(new Float32Array(data), opts); break
     case 'deesser': out = deesser(new Float32Array(data), opts); break
