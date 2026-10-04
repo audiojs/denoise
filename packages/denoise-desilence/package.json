@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-desilence",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "De-silence — VAD-driven silence handling for speech: remove, shorten (Smart Speed), split, trim",
   "type": "module",
   "sideEffects": false,
@@ -23,7 +23,7 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/vad": "^2.0.0",
+    "@audio/vad": "^2.0.1",
     "@audio/stft": "^2.0.0"
   },
   "keywords": [

@@ -1,14 +1,16 @@
-// The node side of scripts/vad.py: desilence (shorten, defaults) and debreath (defaults) over mono f32 files.
-//   node scripts/vad.mjs FS LIST.json OUT.json [DESILENCE_JS DEBREATH_JS]
-// LIST: the input paths. OUT: per file, the spans desilence keeps (s) and debreath's gain per 10 ms frame (dB). The
-// kernels are the workspace's packages unless other paths are given: another version, to measure the change.
+// The node side of scripts/vad.py: desilence (shorten, defaults), debreath (defaults) and vad over mono f32 files.
+//   node scripts/vad.mjs FS LIST.json OUT.json [DESILENCE_JS DEBREATH_JS VAD_JS]
+// LIST: the input paths. OUT: per file, the spans desilence keeps (s), debreath's gain per 10 ms frame (dB) and the
+// share of frames vad calls speech. The kernels are the workspace's packages unless other paths are given: another
+// version, to measure the change.
 import { readFileSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
-let [fs, list, out, ds, db] = process.argv.slice(2)
+let [fs, list, out, ds, db, vd] = process.argv.slice(2)
 fs = +fs
-let load = (p, name) => import(p ? pathToFileURL(p).href : name).then(m => m.default)
-let desilence = await load(ds, '@audio/denoise-desilence'), debreath = await load(db, '@audio/denoise-debreath')
+let load = (p, name) => import(p ? pathToFileURL(p).href : name)
+let desilence = (await load(ds, '@audio/denoise-desilence')).default, debreath = (await load(db, '@audio/denoise-debreath')).default
+let { vad } = await load(vd, '@audio/vad')
 let n = fs / 100
 let res = JSON.parse(readFileSync(list)).map(p => {
   let b = readFileSync(p), x = Float32Array.from(new Float32Array(b.buffer, b.byteOffset, b.byteLength >> 2))
@@ -19,6 +21,7 @@ let res = JSON.parse(readFileSync(list)).map(p => {
     for (let i = k * n; i < (k + 1) * n; i++) { a += x[i] * x[i]; c += y[i] * y[i] }
     gain.push(Math.round(1000 * Math.log10(c / a)) / 100)
   }
-  return { kept, gain }
+  let { active } = vad(x, { fs }), speech = active.length ? active.reduce((a, b) => a + b, 0) / active.length : 0
+  return { kept, gain, speech }
 })
 writeFileSync(out, JSON.stringify(res))

@@ -13,7 +13,9 @@ const BAND = [60, 8000]              // where speech is looked for, Hz
 const VBAND = [60, 4000]             // where voicing is, Hz: higher harmonics lose their period to jitter
 const FLOOR = 1.5                    // s, the minimum-statistics window (Martin 2001)
 const ETA = 0.1                      // likelihood-ratio threshold: under 0.1 % of frames of stationary noise pass it
-const VOICING = 0.45                 // normalized autocorrelation that counts as voiced (Praat's voicing threshold)
+const VOICING = 0.4                  // autocorrelation of the frame over its floor that is voiced (Praat's 0.45 lost more)
+const FLAT = 0.25                    // and over its envelope: noise peaks there at 0.23, voiced speech at 0.43-0.54
+const ENVELOPE = 300                 // Hz either side: wider than a voice's harmonics lie apart, narrower than its formants
 const TONE = 0.8                     // so periodic a frame is a tone: the noise floor does not learn it (AMR's VAD)
 const MARGIN = 30                    // dB under the voiced frames' mean power that still counts as speech
 const VOWEL = 0.03                   // s of voicing within ±50 ms that make a vowel
@@ -23,15 +25,22 @@ const CLOSURE = 0.15                 // s: a stop's closure lasts up to this; ga
 // Returns { active, voiced: Uint8Array(frames), times: Float32Array(frames) of frame-start s, hop, frameSize }.
 //
 // A frame is speech when it holds voicing, or sound over the noise floor near voicing:
-//   1. noise floor λ_k: minimum statistics (Martin 2001, @audio/noise-estimate) over FLOOR s centred on the frame, so
-//      a level that moves through the recording is followed, and a recording that starts on speech is not misread.
-//      A frame so periodic it is a tone (TONE) is kept out of it, as AMR's VAD keeps tones out of its background
-//      estimate (3GPP TS 26.094): a note or a vowel held longer than the window is not the room
+//   1. noise floor λ_k: minimum statistics (Martin 2001, @audio/noise-estimate) over the FLOOR s before the frame
+//      and over the FLOOR s after it, the larger of the two. A level that steps up or down (a fan switched on, the
+//      room after a cut) reads low on one side only; where only one side is whole (the first and last FLOOR s) it
+//      alone counts. A frame so periodic it is a tone (TONE) is kept out of it, as AMR's VAD keeps tones out of its
+//      background estimate (3GPP TS 26.094): a note or a vowel held longer than the window is not the room
 //   2. sound present: Sohn's likelihood ratio, the mean over the band of log Λ_k = γ_k ξ_k/(1+ξ_k) − log(1+ξ_k)
 //      (Sohn, Kim & Sung 1999 eq. 3-4), γ = |Y|²/λ, ξ decision-directed (Ephraim & Malah 1984), over ETA
-//   3. voiced: present, and the normalized autocorrelation r(τ)/r_w(τ) (Boersma 1993 eq. 9) of the frame's Wiener
-//      estimate ξ/(1+ξ)·|Y| peaks at VOICING or more over the pitch lags. On the estimate, not the frame: a hum in
-//      the floor is not voicing
+//   3. voiced: present, and periodic twice over: the normalized autocorrelation r(τ)/r_w(τ) (Boersma 1993 eq. 9),
+//      peaked over the pitch lags, of the frame whitened by its floor, γ_k (VOICING), and of the frame whitened by its
+//      own envelope, its power averaged over ±ENVELOPE (FLAT). Whitened, a noise's colour, a hum or an engine in the
+//      floor carries no period. Unwhitened it does: over the six VoiceBank+DEMAND training noises that are no crowd
+//      (car, kitchen, metro, station, traffic, speech-shaped), the raw frame's autocorrelation peaks at 0.40 (median), the
+//      Wiener estimate ξ/(1+ξ)·|Y| (2.0.0's) at 0.80, a few random bins left standing, a sparse spectrum; whitened by
+//      the floor 0.22, by the envelope 0.23. The envelope keeps it where the floor read low (a level step at an edge
+//      of the input leaves the noise's tilt in γ); it is narrower than a vowel's or a breath's formants lie apart, so
+//      their resonances, about 1 kHz apart, are no period either
 //   4. level: nothing MARGIN dB under the voiced frames' mean power is speech: the weakest phoneme lies some 28 dB
 //      under the strongest (Fletcher 1953); quieter is a breath, a click, the room
 //   5. speech: vowels (VOWEL s of voicing), grown outward through present sound up to REACH from the vowel, across
@@ -53,9 +62,9 @@ export function vad(data, opts = {}) {
   let bin = f => Math.min(half, Math.max(1, Math.round(f * N / fs)))
   let k0 = bin(BAND[0]), K = bin(BAND[1]) - k0 + 1, v1 = Math.min(bin(VBAND[1]), k0 + K - 1)
   let t0 = Math.max(2, Math.floor(fs / F0[1])), t1 = Math.min(half - 1, Math.ceil(fs / F0[0]))
-  let { present, level, per } = frameStats(data, { fs, N, hop, frames, k0, K, v0: bin(VBAND[0]), v1, t0, t1 })
+  let { present, level, per, flat } = frameStats(data, { fs, N, hop, frames, k0, K, v0: bin(VBAND[0]), v1, t0, t1 })
 
-  for (let f = 0; f < frames; f++) voiced[f] = present[f] && per[f] >= VOICING ? 1 : 0
+  for (let f = 0; f < frames; f++) voiced[f] = present[f] && per[f] >= VOICING && flat[f] >= FLAT ? 1 : 0
   let s = 0, n = 0
   for (let f = 0; f < frames; f++) if (voiced[f]) { s += level[f]; n++ }
   let quiet = n ? s / n * 10 ** (-MARGIN / 10) : Infinity
@@ -72,13 +81,14 @@ export function vad(data, opts = {}) {
   return res
 }
 
-// Per frame: present (likelihood ratio over ETA), level (band power), per (voicing: the normalized autocorrelation
-// peak). The noise floor is read FLOOR/2 s late, so it spans FLOOR s centred on the frame decided; tones stay out of it.
+// Per frame: present (likelihood ratio over ETA), level (band power), per (periodicity over the floor) and flat
+// (periodicity over the frame's own envelope). Frame f is decided once the FLOOR s after it are in.
 function frameStats(data, { fs, N, hop, frames, k0, K, v0, v1, t0, t1 }) {
-  let present = new Uint8Array(frames), level = new Float64Array(frames), per = new Float32Array(frames), tone = new Uint8Array(frames)
-  let lag = Math.max(1, Math.round(FLOOR * fs / hop) >> 1), R = lag + 1
-  let est = minStats(K - 1, { D: 2 * lag })
-  let ring = Array.from({ length: R }, () => new Float64Array(K)), mag = new Float64Array(K)
+  let present = new Uint8Array(frames), level = new Float64Array(frames), per = new Float32Array(frames)
+  let flat = new Float32Array(frames)
+  let D = Math.max(2, Math.round(FLOOR * fs / hop)), est = minStats(K - 1, { D })
+  let ring = Array.from({ length: D }, () => new Float64Array(K)), past = Array.from({ length: D }, () => new Float64Array(K))
+  let mag = new Float64Array(K), lam = new Float64Array(K), w = new Float64Array(K), env = new Float64Array(K + 1)
   // the autocorrelation of the voicing band needs no more bins than the band: an inverse transform of M ≥ 2·v1 points
   // gives it exactly, at every N/M-th lag
   let M = 2 ** Math.ceil(Math.log2(2 * v1)), d = N / M, u0 = Math.max(1, Math.floor(t0 / d)), u1 = Math.min((M >> 1) - 1, Math.ceil(t1 / d))
@@ -87,9 +97,9 @@ function frameStats(data, { fs, N, hop, frames, k0, K, v0, v1, t0, t1 }) {
   for (let t = 0; t <= u1 + 1; t++) { let s = 0; for (let i = 0; i < N; i++) s += win[i] * win[(i + t * d) % N]; rw[t] = s }
   for (let t = u1 + 1; t >= 0; t--) rw[t] /= rw[0]
   // decision-directed ξ: α 0.98 per 10 ms (Ephraim & Malah 1984), floored at -15 dB as ddSnr below
-  let alpha = 0.98 ** (hop / fs / 0.01), xiMin = 0.0316, prev = new Float64Array(K).fill(1), g2 = new Float64Array(K)
+  let alpha = 0.98 ** (hop / fs / 0.01), xiMin = 0.0316, prev = new Float64Array(K).fill(1), hw = Math.round(ENVELOPE * N / fs)
 
-  // the normalized autocorrelation peak over the pitch lags of the band power w(k)·p_k (Boersma 1993 eq. 9)
+  // the normalized autocorrelation peak over the pitch lags of the band power p_k·w_k (Boersma 1993 eq. 9)
   const periodicity = (p, w) => {
     re.fill(0); im.fill(0)
     for (let k = v0; k <= v1; k++) re[k] = (w ? w[k - k0] : 1) * p[k - k0]
@@ -101,38 +111,39 @@ function frameStats(data, { fs, N, hop, frames, k0, K, v0, v1, t0, t1 }) {
     }
     return best
   }
-  const feed = p => { for (let k = 0; k < K; k++) mag[k] = Math.sqrt(p[k]); est.update(mag) }
-  // the window centred on each frame: the first `lag` frames that are no tone go in before the first decision
-  let primed = false
-  const prime = (a0, a1) => {
-    for (let j = a0; j <= a1; j++) if (!tone[j]) { feed(ring[j % R]); primed = true }
+  // 1 / the frame's envelope: its power averaged over ±ENVELOPE
+  const envelope = p => {
+    for (let k = 0; k < K; k++) env[k + 1] = env[k] + p[k]
+    for (let k = 0; k < K; k++) { let a = Math.max(0, k - hw), b = Math.min(K, k + hw + 1), e = env[b] - env[a]; w[k] = e > 0 ? (b - a) / e : 0 }
+    return w
   }
-  const decide = (f, p) => {
-    let lam = est.psd, s = 0, e = 0
+  const decide = (f, p, before, after) => {
+    for (let k = 0; k < K; k++) lam[k] = Math.max(before ? before[k] : 0, after ? after[k] : 0)
+    let s = 0, e = 0
     for (let k = 0; k < K; k++) {
-      let g = Math.min(p[k] / Math.max(lam[k], 1e-30), 1000)              // γ, capped at 30 dB as VOICEBOX's vadsohn
+      let l = Math.max(lam[k], 1e-30), g = Math.min(p[k] / l, 1000)    // γ, capped at 30 dB as VOICEBOX's vadsohn
       let xi = Math.max(alpha * prev[k] + (1 - alpha) * Math.max(g - 1, 0), xiMin), G = xi / (1 + xi)
       s += g * G - Math.log(1 + xi); e += p[k]
-      prev[k] = G * G * g; g2[k] = G * G
+      prev[k] = G * G * g; w[k] = 1 / l
     }
     present[f] = s / K > ETA ? 1 : 0
     level[f] = e
-    per[f] = periodicity(p, g2)
+    per[f] = periodicity(p, w)
   }
 
   for (let i = 0; i < frames; i++) {
     for (let j = 0, pos = i * hop; j < N; j++) x[j] = data[pos + j] * win[j]
-    let [xr, xi] = fft(x), b = ring[i % R]
+    let [xr, xi] = fft(x), b = ring[i % D]
     for (let k = 0; k < K; k++) b[k] = xr[k + k0] * xr[k + k0] + xi[k + k0] * xi[k + k0]
-    tone[i] = periodicity(b) >= TONE ? 1 : 0
-    if (i < lag) continue
-    if (!primed) prime(i - lag, i)
-    else if (!tone[i]) feed(b)
-    decide(i - lag, ring[(i - lag) % R])
+    flat[i] = periodicity(b, envelope(b))
+    if (periodicity(b) < TONE) { for (let k = 0; k < K; k++) mag[k] = Math.sqrt(b[k]); est.update(mag) }
+    past[i % D].set(est.psd)                                     // the floor over the D frames up to i
+    let f = i - D + 1                                            // est.psd now: the floor over the D frames from f
+    if (f >= 0) decide(f, ring[f % D], f >= D - 1 ? past[f % D] : null, est.psd)
   }
-  if (frames < R) { prime(0, frames - 1); for (let f = 0; f < frames; f++) decide(f, ring[f]) }
-  else for (let f = frames - lag; f < frames; f++) decide(f, ring[f % R])
-  return { present, level, per }
+  // the last D - 1 frames have no whole window after them: the one before, or the whole input where that is short too
+  for (let f = Math.max(0, frames - D + 1); f < frames; f++) decide(f, ring[f % D], f >= D - 1 ? past[f % D] : null, f >= D - 1 ? null : est.psd)
+  return { present, level, per, flat }
 }
 
 // Speech from the vowels outward, both ways: present frames up to `reach` frames from the vowel, across gaps of up to

@@ -131,6 +131,26 @@ test('vad — speech under noise is speech, the noise alone is not', () => {
   is(quiet.reduce((a, b) => a + b, 0), 0, 'pink noise alone: no speech')
 })
 
+test('vad — noise alone is no speech: white, pink, brown, steady or stepping, at 16, 44.1 and 48 kHz', () => {
+  // 2.0.0 took voicing from the Wiener estimate: on noise it keeps a few random bins, a sparse spectrum whose
+  // autocorrelation peaks high (median 0.8). Where a level step left the floor low, the noise was present, voiced,
+  // speech: on the loud side of each step down, 6-8 % of those clips
+  let s = 21, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296
+  let kinds = {
+    white: n => Float32Array.from({ length: n }, () => r() * 2 - 1),
+    pink: n => pinkNoise(n, s++),
+    brown: n => { let x = new Float32Array(n), y = 0; for (let i = 0; i < n; i++) x[i] = y = 0.998 * y + (r() * 2 - 1) * 0.05; return x }
+  }, bad = []
+  for (let sr of [16000, 44100, 48000]) for (let [kind, make] of Object.entries(kinds)) for (let [a, b] of [[0.02, 0.02], [0.2, 0.2], [0.002, 0.002], [0.02, 0.002], [0.002, 0.02]]) {
+    let n = 2 * sr, x = make(2 * n), p = 0
+    for (let i = 0; i < x.length; i++) p = Math.max(p, Math.abs(x[i]))
+    for (let i = 0; i < x.length; i++) x[i] *= (i < n ? a : b) / p
+    let on = vad(x, { fs: sr }).active.reduce((u, v) => u + v, 0)
+    if (on) bad.push(`${kind} ${a} → ${b} at ${sr}: ${on} frames`)
+  }
+  is(bad, [], 'no frame of noise is speech')
+})
+
 test('vad — a note held past the floor window is not the floor', () => {
   // the floor is a minimum over 1.5 s: a steady sound longer than that is its own minimum, unless tones stay out of it
   let x = pinkNoise(fs * 4, 5).map(v => 0.0003 * v)
@@ -1038,6 +1058,19 @@ test('debreath — attenuates non-speech far more than speech', () => {
   ok(retSpeech > retNoise * 1.5, 'speech retained far more than noise')
 })
 
+test('debreath — noise after speech goes down', () => {
+  // the host's case: 1.5 s of lena, then 1.5 s of noise at 0.02. 2.0.0 heard the noise as voiced speech and kept it
+  // whole (its floor, read before the noise, lay under it; its voicing, on the Wiener estimate, peaks on noise)
+  let s = 5, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296
+  for (let [kind, make] of [['white', n => Float32Array.from({ length: n }, () => r() * 2 - 1)], ['pink', n => pinkNoise(n, 9).map(v => v / 4)]]) {
+    let sp = lena.subarray(0, Math.round(1.5 * fs)), x = new Float32Array(2 * sp.length), z = make(sp.length)
+    x.set(sp); for (let i = 0; i < z.length; i++) x[sp.length + i] = 0.02 * z[i]
+    let y = debreath(copy(x), { fs }), e = (d, a, b) => rms(d.subarray(a, b))
+    ok(e(y, sp.length + 4096, x.length) < 0.6 * e(x, sp.length + 4096, x.length), `${kind}: the noise down (${(e(y, sp.length + 4096, x.length) / e(x, sp.length + 4096, x.length)).toFixed(2)})`)
+    ok(e(y, 0, sp.length) > 0.95 * e(x, 0, sp.length), `${kind}: the speech kept`)
+  }
+})
+
 test('debreath — speech under noise is not turned down', () => {
   // 0.1 turned down what lay under 9 dB over the input's 10th-percentile frame energy: under noise that is the noise,
   // and at 5 dB SNR it took 56 % of lena's loud frames down by over 3 dB
@@ -1575,6 +1608,16 @@ test('desilence — speech under noise keeps every word', () => {
   loud.forEach((l, k) => lost += l && !keep[k])
   is(lost, 0, `loud speech frames cut at 5 dB SNR: ${lost} (${r.removed.toFixed(2)} s removed)`)
   ok(r.data.every(Number.isFinite), 'finite output')
+})
+
+test('desilence — noise after speech is a pause', () => {
+  // 1.5 s of lena, then 1.5 s of white noise at 0.02: 2.0.0 called the noise speech and cut nothing
+  let s = 7, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296
+  let sp = lena.subarray(0, Math.round(1.5 * fs)), x = new Float32Array(2 * sp.length)
+  x.set(sp); for (let i = sp.length; i < x.length; i++) x[i] = 0.02 * (r() * 2 - 1)
+  let o = desilence(x, { fs })
+  ok(o.removed > 0.7, `the noise shortened as a pause: ${o.removed.toFixed(2)} s removed`)
+  ok(o.segments[0].start === 0 && o.segments[0].end > 1.4, 'the speech whole')
 })
 
 test('desilence — a held note is not a pause; nothing to cut, nothing changed', () => {

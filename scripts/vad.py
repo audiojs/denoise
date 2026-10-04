@@ -1,6 +1,6 @@
 # Measure @audio/vad through its two users, desilence and debreath: what they take from speech, clean and in noise,
 # what they leave of a breath, what they do to music. Prints the README's tables (a few minutes).
-#   python scripts/vad.py [test|train] [DESILENCE_JS DEBREATH_JS]     other kernels: an older version, to compare
+#   python scripts/vad.py [test|train] [DESILENCE_JS DEBREATH_JS VAD_JS]     other kernels: an older version, to compare
 # test: VoiceBank+DEMAND's test set (Valentini-Botinhao 2017, CC BY 4.0: 824 pairs, 48 kHz) and ten Spoken Wikipedia
 # narrations (~/.cache/audiojs/data/spoken, 60 s each, CC BY-SA); train: the training subset (scripts/speech.py fetch)
 # and ten other narrations (spoken-train), on which the defaults were chosen. Music: repair/*.f32 (scripts/repair.js:
@@ -17,6 +17,11 @@
 # Breaths: Gaussian noise through three wide resonances (500, 1500, 2500 Hz; bandwidths 300, 400, 500 Hz) under a
 # 350 ms Hann envelope, its loudest 10 ms 35 or 25 dB under the narration's, put in each pause long enough to end G s
 # before the next phrase (a pause: 10 ms frames within 6 dB of the floor). Music: frames within 30 dB of the loudest.
+# Noise alone: each VoiceBank+DEMAND noise (noisy minus clean, each utterance's at unit RMS, joined by 20 ms crossfades,
+# its first 10 s) at RMS 0.003, 0.03, 0.3, and white, pink (J. O. Smith's 1/f filter) and brown (a leaky integrator, 0.998)
+# noise at 0.02 RMS, steady, or stepping down to 0.002 halfway: the share of frames vad calls speech; then the same
+# noises at 0.03 for 1.5 s after 1.5 s of a clean utterance: the share of their 10 ms frames, 0.4 s on, that debreath
+# turns down by 6 dB or more.
 import os, sys, glob, json, subprocess, tempfile, numpy as np
 from multiprocessing import Pool
 from scipy.io import wavfile
@@ -25,7 +30,7 @@ from scipy.signal import butter, sosfiltfilt, lfilter
 DATA = os.path.expanduser('~/.cache/audiojs/data')
 HERE = os.path.dirname(os.path.abspath(__file__))
 SET = sys.argv[1] if len(sys.argv) > 1 else 'test'
-KERNELS = sys.argv[2:4]
+KERNELS = sys.argv[2:5]
 
 def wav(p):
     fs, x = wavfile.read(p)
@@ -152,6 +157,30 @@ if __name__ == '__main__':
             att = np.array(att)
             cells.append(f'{np.median(att):.1f} dB, {100 * np.mean(att <= -6):.0f} %; {100 * np.mean(took):.0f} % ({len(att)})')
         print(f'| {G} s | {cells[0]} | {cells[1]} |', flush=True)
+
+    print('\nNoise alone: frames vad calls speech, at RMS 0.003 / 0.03 / 0.3; after speech: frames debreath turns down 6 dB or more\n\n| noise | alone | after speech |\n|---|---|---|')
+    log = {l.split()[0]: l.split()[1] for l in open(f'{DATA}/vbdemand-train/logs/log_{"trainset_28spk" if SET == "train" else "testset"}.txt')}
+    bank = {}
+    for p, c, x in zip(cl, clean, noisy):
+        t = log.get(os.path.basename(p)[:-4])
+        if t is None: continue
+        z = (x.astype(np.float64) - c) ; z /= np.sqrt(np.mean(z ** 2)) + 1e-12; L = bank.setdefault(t, [])
+        if L and len(L[-1]) > 960: w = np.sin(np.linspace(0, np.pi / 2, 960)); z[:960] = L[-1][-960:] * w[::-1] + z[:960] * w; L[-1] = L[-1][:-960]
+        L.append(z)
+    rng = np.random.default_rng(5); n = 480000
+    def brown(n): return lfilter([1], [1, -0.998], rng.uniform(-1, 1, n))
+    def pink(n): return lfilter([0.049922035, -0.095993537, 0.050612699, -0.004408786], [1, -2.494956002, 2.017265875, -0.522189400], rng.standard_normal(n))
+    synth = {'white': rng.uniform(-1, 1, n), 'pink': pink(n), 'brown': brown(n)}
+    lead = clean[0][:72000] if len(clean[0]) >= 72000 else np.pad(clean[0], (0, 72000 - len(clean[0])))
+    rows = [(t, np.concatenate(L)[:n]) for t, L in sorted(bank.items())] + [(k, v / np.sqrt(np.mean(v ** 2))) for k, v in synth.items()]
+    for t, z in rows:
+        alone = ops([(z * g).astype(np.float32) for g in (0.003, 0.03, 0.3)], 48000)
+        after = ops([np.concatenate([lead, 0.03 * z[:72000]]).astype(np.float32)], 48000)[0]
+        g = np.asarray(after['gain'])[190:300]
+        cells = ' / '.join(f"{100 * o['speech']:.0f} %" for o in alone)
+        if t in synth:
+            step = z * np.where(np.arange(n) < n // 2, 0.02, 0.002); cells += f"; stepping down {100 * ops([step.astype(np.float32)], 48000)[0]['speech']:.0f} %"
+        print(f'| {t} | {cells} | {100 * np.mean(g <= -6):.0f} % |', flush=True)
 
     print('\nMusic: frames within 30 dB of the loudest cut by desilence / turned down 3 dB or more by debreath\n\n| | desilence | debreath |\n|---|---:|---:|')
     rep = [(nm, np.fromfile(f'{DATA}/repair/{nm}.f32', np.float32)[:44100 * 60]) for nm in ('vibeace', 'brahms', 'nutcracker', 'trumpet')]

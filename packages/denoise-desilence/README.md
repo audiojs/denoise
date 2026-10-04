@@ -42,15 +42,15 @@ let outT = project(out.map, 12.4)                              // where did inpu
 
 Runs once over the whole signal — like every whole-render kernel in this family (`denoise`, `dereverb`), it needs the full clip, not a block at a time. Multi-channel input analyses the mono mix; the same cuts and crossfade windows apply to every channel identically.
 
-0.1 read silence under 11 dB over the input's 10th-percentile frame energy: under noise that percentile is the noise, and whole words went. Measured with `python scripts/vad.py` in [@audio/denoise](https://github.com/audiojs/denoise) (VoiceBank+DEMAND test set, ten Spoken Wikipedia narrations; defaults chosen on the training subset and ten other narrations), `shorten` at its defaults, 0.1.1 → 0.2.0, frames cut:
+0.1 read silence under 11 dB over the input's 10th-percentile frame energy: under noise that percentile is the noise, and whole words went. Measured with `python scripts/vad.py` in [@audio/denoise](https://github.com/audiojs/denoise) (VoiceBank+DEMAND test set, ten Spoken Wikipedia narrations; defaults chosen on the training subset and ten other narrations), `shorten` at its defaults, 0.1.1 → 0.2.1, frames cut:
 
 | | voiced | word edges | removed |
 |---|---:|---:|---:|
-| VoiceBank+DEMAND, 824 noisy | 3.89 → **0.00** % | 3.93 → **0.00** % | 290 → 21 of 2072 s |
-| the same, clean | 0.00 → 0.03 % | 0.01 → 0.12 % | 167 → 126 s |
-| 10 narrations | 0.00 → 0.00 % | 0.00 → 0.02 % | 50 → 52 of 600 s |
+| VoiceBank+DEMAND, 824 noisy | 3.89 → **0.02** % | 3.93 → **0.08** % | 290 → 40 of 2072 s |
+| the same, clean | 0.00 → 0.05 % | 0.01 → 0.19 % | 167 → 156 s |
+| 10 narrations | 0.00 → 0.04 % | 0.00 → 0.03 % | 50 → 56 of 600 s |
 
-Breaths (350 ms of resonant noise) in the narrations' pauses ending 0.3 s before the next phrase: 56 → 75 % of each removed at −35 dB, 50 → 69 % at −25 dB. Music, frames within 30 dB of the loudest cut: Vibe Ace 10.5 → 0 %, Brahms 3.5 → 0.02 %, Nutcracker 16.8 → 0 %, sung (VocalSet m8) 25.3 → 0 %.
+Breaths (350 ms of resonant noise) in the narrations' pauses ending 0.3 s before the next phrase: 56 → 75 % of each removed at −35 dB, 50 → 69 % at −25 dB. Noise after speech is a pause (0.2.0 read white or pink noise there as speech and cut none of it). Music, frames within 30 dB of the loudest cut: Vibe Ace 10.5 → 0.5 %, Nutcracker 16.8 → 0 %, sung (VocalSet m8) 25.3 → 0 %, but Brahms (strings) 3.5 → 9.1 % (0.2.0: 0.02 %).
 
 **What this does not do:** no ML VAD — `@audio/vad`'s decision is classical DSP (a likelihood ratio over a minimum-statistics floor, anchored on voicing). Whispered speech holds no voicing and reads as pause. No music-aware pause detection — a rest under `minSilence` in a musical passage looks identical to a speech pause and gets cut/shortened the same way; this is a speech tool, not a general silence-trimmer for mixed program audio.
 
