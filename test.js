@@ -411,10 +411,49 @@ test('declick — removes injected clicks', () => {
   ok(peak(clean) < peak(dirty) * 0.9, 'peak click reduced')
 })
 
+// a tick as a stylus reads one: an impulse ringing at 5 kHz, decaying in 0.2 ms, at 5× the speech around it
+// (scripts/declick.js measures the kinds and sizes)
+function ticks(x, every = 0.3) {
+  let d = copy(x), at = []
+  for (let t = Math.round(0.25 * fs); t < x.length - 0.25 * fs; t += Math.round(every * fs)) {
+    let s = 0; for (let i = t - 441; i < t + 441; i++) s += x[i] * x[i]
+    let level = Math.sqrt(s / 882), tau = 0.2 * fs / 1000
+    for (let n = 0; n < 5 * tau; n++) d[t + n] += 5 * level * Math.exp(-n / tau) * Math.cos(2 * Math.PI * 5000 * n / fs)
+    at.push(t)
+  }
+  return { d, at }
+}
+const err = (x, y, a, b) => { let s = 0; for (let i = a; i < b; i++) s += (x[i] - y[i]) ** 2; return s }
+
+test('declick — a ringing tick, not only its onset', () => {
+  let speech = lena.subarray(0, fs * 3), { d, at } = ticks(speech)
+  let out = declick(copy(d), { fs }), before = 0, after = 0
+  for (let t of at) before += err(d, speech, t - 44, t + 88), after += err(out, speech, t - 44, t + 88)
+  ok(10 * Math.log10(before / after) > 12, `the ticks' error ${(10 * Math.log10(before / after)).toFixed(1)} dB down`)
+})
+
 test('declick — leaves clean speech alone', () => {
   let speech = lena.subarray(0, fs * 2)
-  let out = declick(copy(speech), { fs, threshold: 6 })
-  almost(rms(out), rms(speech), rms(speech) * 0.1, 'rms preserved within 10%')
+  let out = declick(copy(speech), { fs })
+  is([...out].findIndex((v, i) => v !== speech[i]), -1, 'not a sample changed')
+})
+
+test('declick — regions: the clicks there and nothing else', () => {
+  let speech = lena.subarray(0, fs * 3), { d, at } = ticks(speech)
+  let t = at[2], out = declick(copy(d), { fs, regions: [{ at: (t - 200) / fs, duration: 600 / fs }] })
+  ok(err(out, speech, t - 44, t + 88) < err(d, speech, t - 44, t + 88) / 10, 'the tick in the region gone')
+  let moved = []; for (let i = 0; i < d.length; i++) if (out[i] !== d[i]) moved.push(i)
+  ok(moved[0] >= t - 200 - 64 && moved.at(-1) < t + 400 + 64, `changed only around it (${moved[0]}–${moved.at(-1)})`)
+  is([...declick(copy(d), { fs, regions: [] })].findIndex((v, i) => v !== d[i]), -1, 'no region: none touched')
+})
+
+test('declick — a sound shorter than its window', () => {
+  let x = new Float32Array(600)
+  for (let i = 0; i < x.length; i++) x[i] = 0.3 * Math.sin(2 * Math.PI * 440 * i / fs)
+  x[300] += 0.8
+  let out = declick(copy(x), { fs })
+  ok(out.every(Number.isFinite) && Math.abs(out[300] - 0.3 * Math.sin(2 * Math.PI * 440 * 300 / fs)) < 0.1, 'repaired')
+  is(declick(new Float32Array(8), { fs }).length, 8, 'shorter than the model')
 })
 
 // =================== decrackle ===================

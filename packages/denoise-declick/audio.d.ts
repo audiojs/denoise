@@ -10,18 +10,12 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 
 /** Chainable-host options for 'declick' */
 export interface DeclickOptions {
-  /** 4..200 (default 60) */
-  "order"?: Auto
-  /** 256..8192 (default 1024) */
-  "windowSize"?: Auto
-  /** 64..4096 (default 512) */
-  "hopSize"?: Auto
-  /** 1..20 (default 4) */
+  /** 2..30 (default 8) */
   "threshold"?: Auto
-  /** 0..16 (default 2) */
-  "guard"?: Auto
-  /** 1..512 (default 64) */
-  "maxBurst"?: Auto
+  /** 0.5..20 ms (default 6) */
+  "longest"?: Auto
+  /** 8..100 (default 32) */
+  "order"?: Auto
   at?: number | string
   duration?: number | string
 }
@@ -32,17 +26,11 @@ export declare const declick: {
   streaming: false
   tail: 0
   params: {
-    /** 4..200 (default 60) */
-    "order": { type: "number", default: 60 }
-    /** 256..8192 (default 1024) */
-    "windowSize": { type: "number", default: 1024 }
-    /** 64..4096 (default 512) */
-    "hopSize": { type: "number", default: 512 }
-    /** 1..20 (default 4) */
-    "threshold": { type: "number", default: 4 }
-    /** 0..16 (default 2) */
-    "guard": { type: "number", default: 2 }
-    /** 1..512 (default 64) */
-    "maxBurst": { type: "number", default: 64 }
+    /** 2..30 (default 8) */
+    "threshold": { type: "number", default: 8 }
+    /** 0.5..20 ms (default 6) */
+    "longest": { type: "number", default: 6 }
+    /** 8..100 (default 32) */
+    "order": { type: "number", default: 32 }
   }
 }

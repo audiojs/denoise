@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-declick",
-  "version": "0.1.7",
-  "description": "De-click — detect impulsive transients via AR prediction residual, replace with",
+  "version": "0.2.0",
+  "description": "De-click: clicks found as outliers of the AR prediction error, each rebuilt by least-squares AR interpolation, everywhere or in given regions",
   "type": "module",
   "sideEffects": false,
   "main": "declick.js",
@@ -23,7 +23,7 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/lpc": "^1.0.0"
+    "@audio/lpc": "^1.1.0"
   },
   "keywords": [
     "audio",

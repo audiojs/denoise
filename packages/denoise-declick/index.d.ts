@@ -1,18 +1,16 @@
-/** AR-residual click detection + AR-LS interpolation. */
+/** Clicks found as outliers of the AR prediction error, each rebuilt by least-squares AR interpolation. */
 export interface DeclickOptions {
-  /** AR model order, default 60 */
-  order?: number
-  /** analysis window (samples), default 1024 */
-  windowSize?: number
-  /** window hop (samples), default 512 */
-  hopSize?: number
-  /** residual sigma-multiple, default 4 */
+  /** sample rate, Hz; default 44100 */
+  fs?: number
+  /** how far over the prediction error's local scale a click stands, multiples; default 8 */
   threshold?: number
-  /** samples widened around each click, default 2 */
-  guard?: number
-  /** longest repaired run (samples), default 64 */
-  maxBurst?: number
+  /** longest click rebuilt, ms (longer is taken for real sound); default 6 */
+  longest?: number
+  /** AR order of the detection; default 32 */
+  order?: number
+  /** where the clicks are, seconds: they are looked for only there, none there taken for a pulse or too long */
+  regions?: { at: number, duration: number }[]
 }
 
-/** Process in place; returns the same buffer. Pass the same options object across calls to persist state. */
+/** Returns a repaired copy. */
 export default function declick(data: Float32Array, options?: DeclickOptions): Float32Array

@@ -12,7 +12,7 @@ Single-pass noise reduction. 13 specialised methods + an auto-classifier.
 | [specsub](#specsub) | freq | broadband stationary | ★★ | medium | baseline |
 | [wiener](#wiener) | freq | broadband stationary | ★★★ | medium | general broadband |
 | [omlsa](#omlsa) | freq | broadband non-stationary | ★★★★ | high | speech in changing noise |
-| [declick](#declick) | time | impulses | ★★★★ | medium | vinyl pops, edit clicks |
+| [declick](#declick) | time | impulses | ★★★★ | medium | vinyl ticks, edit clicks, mouth clicks |
 | [decrackle](#decrackle) | time | dense impulses | ★★★ | medium | shellac crackle |
 | [declip](#declip) | time | hard clipping | ★★★ | medium | restoration |
 | [dewind](#dewind) | time | LF rumble | ★★★ | very low | wind, handling noise |
@@ -239,21 +239,34 @@ omlsa(data, { fs, profileFrom: 0, profileTo: fs / 2, gMin: -12 })   // the noise
 
 ### `declick`
 
-Detects impulses as AR-residual outliers (`> threshold·σ`); replaces each click region with an AR-LS interpolation (Janssen 1986 / Godsill-Rayner 1998).
+Finds each click as an outlier of the AR prediction error and rebuilds it from the sound either side. The error is judged against its own median level over ±12 ms, so a click can't raise the bar it must clear; the model is fitted again with the outliers left out, since a loud click otherwise teaches it its own ringing and only its onset stands out. A click spans where the error stays over 3× that level after its onset; one with a like half its size 2.5–15 ms away is a glottal pulse or a plucked string, and is left alone. Each is rebuilt by least-squares AR interpolation over 46 ms either side ([`lpc`](https://github.com/audiojs/denoise/tree/main/packages/lpc)'s `arBridge`, Janssen 1986 / Godsill-Rayner 1998). Samples no click reaches come back bit-exact.
 
 ```js
-declick(data, { threshold: 4, order: 60 })
+declick(data, { fs: 44100 })                                          // everywhere
+declick(data, { fs: 44100, regions: [{ at: 12.31, duration: 0.02 }] }) // the clicks seen there
 ```
 
 | Param | Default | |
 |---|---|---|
-| `threshold` | `4` | σ-multiple for click detection |
-| `order` | `60` | AR model order |
-| `guard` | `2` | Extra samples on each side of the detected click |
-| `maxBurst` | `64` | Longest run repaired (longer → left as a real transient) |
+| `threshold` | `8` | how far over the error's local level a click stands, multiples |
+| `longest` | `6` | longest click rebuilt, ms; longer is taken for real sound |
+| `order` | `32` | AR order of the detection |
+| `regions` | — | `[{ at, duration }]`, s: look only there, and take nothing there for a pulse or too long |
+| `fs` | `44100` | sample rate, Hz |
 
-**Use when:** vinyl pops, edit clicks, occasional impulse noise.<br>
-**Not for:** dense crackle (use `decrackle`); long dropouts (use `arInterpolate` directly).
+`node scripts/declick.js` adds clicks to speech (audio-lena) and music (librosa/data, as `repair`), one every 0.25–0.45 s at 2, 5 and 15× the sound's RMS around it, and measures how much of each click's error is gone (median dB, over the click and 1 ms either side) and the share gone by 10 dB or more:
+
+| click | 2× | 5× | 15× |
+|---|---:|---:|---:|
+| tick (rings at 2–8 kHz, 0.05–0.3 ms) | 13.4 dB · 60% | 17.5 dB · 88% | 25.4 dB · 99% |
+| pop (300–1500 Hz, 0.3–1 ms) | 5.7 dB · 30% | 12.9 dB · 60% | 18.2 dB · 86% |
+| glitch (1–8 samples off) | 15.5 dB · 71% | 20.5 dB · 90% | 29.4 dB · 99% |
+| mouth (1–3 ms of noise) | 9.3 dB · 49% | 17.8 dB · 86% | 25.6 dB · 100% |
+
+0.1.7 (AR(60) on its own window, σ including the click, 2 samples either side): ticks 5–6 dB, pops 0, mouth clicks 4–6 dB. The clean material through it: speech, Brahms and the trumpet untouched (0.1.7 changed 2295, 123 and 2283 samples, the trumpet to −19 dB), "Vibe Ace" 112 samples at −42 dB. Each click's surroundings (3–20 ms either side) given as `regions`: the same within 0.5 dB; regions over the clean material change nothing. Ticks at 2× are as far as the interpolation reaches: rebuilt at their exact span, they come out the same. 10 s in 0.1 s.
+
+**Use when:** vinyl ticks, edit clicks, digital glitches, mouth clicks on a voice; a click seen on a spectrogram, given as a region.<br>
+**Not for:** dense crackle (use `decrackle`); long dropouts (use `repair`).
 
 
 ### `decrackle`
@@ -430,7 +443,7 @@ import { noiseProfile, minStats, imcra } from '@audio/denoise'
 |---|---:|---|---:|---:|---:|
 | 60 Hz hum + harmonics | -5.2 dB | `dehum` | 15.3 dB | 6.3 dB | 5 |
 | white noise (~13 dB SNR) | 13.3 dB | `wiener` | 20.5 dB | 0.3 dB | 82 |
-| clicks (vinyl-style) | 24.1 dB | `declick` | 44.1 dB | — | 462 |
+| clicks (vinyl-style) | 24.1 dB | `declick` | 46.2 dB | — | 227 |
 | 7 kHz sibilance | 2.0 dB | `deesser` | 9.2 dB | 1.9 dB | 5 |
 
 Higher = better.
