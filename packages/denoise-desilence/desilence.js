@@ -1,10 +1,11 @@
 // De-silence — VAD-driven silence handling for speech recordings: remove, shorten
 // ("smart speed"), split, trim.
 //
-// Runs @audio/vad once on the mono mix to get a frame-level speech/non-speech track,
-// folds it into time segments (bridging gaps shorter than `merge` — VAD jitter and
-// short in-word pauses shouldn't fragment a phrase), then edits the *silence*
-// between/around speech per `mode`:
+// Runs @audio/vad once on the mono mix to get a frame-level speech/non-speech track
+// (voicing and the sound around it over a tracked noise floor: noise, breaths and room
+// tone between phrases are silence, a quiet word in noise is not), folds it into time
+// segments (bridging gaps shorter than `merge` — VAD jitter and short in-word pauses
+// shouldn't fragment a phrase), then edits the *silence* between/around speech per `mode`:
 //   - trim:    strip only leading/trailing silence, in full
 //   - remove:  cut any pause longer than `minSilence` down to `pad` s kept on each
 //              side (the side that borders speech; a leading/trailing pause has only
@@ -34,9 +35,9 @@ function mixMono(channels) {
 }
 
 // Absolute-dB-threshold frame classifier — used only when opts.threshold overrides
-// vad()'s adaptive percentile floor. Same STFT frame grid vad.js walks (mag energy,
-// see @audio/vad's `lin2db(sqrt(e/N))`), but no spectral-flatness gate: an absolute
-// level threshold has no "is it tonal" component to combine with, by construction.
+// vad()'s decision (its tracked floor and voicing): frame power over the STFT bins,
+// 1024-sample frames unless given, no voicing check — an absolute level threshold has
+// no "is it speech" component to combine with, by construction.
 function energyFrames(mono, { fs, frameSize, hopSize, threshold }) {
 	let N = frameSize || 1024
 	let hop = hopSize || (N >> 1)
@@ -61,26 +62,27 @@ function analyse(channels, opts) {
 	let mono = mixMono(channels)
 	let n = mono.length
 	let duration = n / fs
-	let frameSize = opts.frameSize || 1024
-	let hopSize = opts.hopSize || (frameSize >> 1)
+	let { frameSize, hopSize } = opts
 	let merge = opts.merge ?? 0.15
 
-	// Too short to run a single STFT frame over — nothing to analyse, whole input
-	// counts as one speech segment (so every mode below naturally produces zero cuts).
-	if (n < frameSize) return { speech: n ? [{ start: 0, end: duration }] : [], duration, fs, mono }
-
-	let { active, times, hop } = opts.threshold == null
+	let { active, times, hop, frameSize: N } = opts.threshold == null
 		? runVad(mono, { fs, frameSize, hopSize })
 		: energyFrames(mono, { fs, frameSize, hopSize, threshold: opts.threshold })
 
-	// STFT frames start at k·hop — each frame "owns" a hop-wide, non-overlapping time
-	// cell. Group consecutive active cells into raw segments on that grid.
+	// Too short to run a single STFT frame over — nothing to analyse, whole input
+	// counts as one speech segment (so every mode below naturally produces zero cuts).
+	if (!active.length) return { speech: n ? [{ start: 0, end: duration }] : [], duration, fs, mono }
+
+	// Frame i is centred at times[i] + N/2 and owns the hop-wide cell around its centre;
+	// the first and the last reach the ends of the input. Group consecutive active cells
+	// into raw segments on that grid.
+	let cell = i => i ? times[i] + (N - hop) / 2 / fs : 0
 	let raw = [], start = -1
 	for (let i = 0; i < active.length; i++) {
-		if (active[i]) { if (start < 0) start = times[i] }
-		else if (start >= 0) { raw.push({ start, end: times[i] }); start = -1 }
+		if (active[i]) { if (start < 0) start = cell(i) }
+		else if (start >= 0) { raw.push({ start, end: cell(i) }); start = -1 }
 	}
-	if (start >= 0) raw.push({ start, end: Math.min(duration, times[active.length - 1] + hop / fs) })
+	if (start >= 0) raw.push({ start, end: duration })
 
 	// hangover: bridge speech separated by a gap shorter than `merge`
 	let speech = []

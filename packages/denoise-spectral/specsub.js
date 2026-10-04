@@ -38,6 +38,10 @@ export default function specsub(dataOrOpts, opts) {
   return writer(stftStream(makeProcess(o), o))
 }
 
+/** The gain as a frame process, (mag, phase) → { mag, phase }, for a host that runs its own STFT (@audio/stft's
+ *  framing: Hann, `hopSize` a quarter of `frameSize`). One per channel: it keeps state across frames. */
+export const processor = opts => makeProcess(framing(opts || {}))
+
 function run(data, opts) {
   let N = opts.frameSize, hop = opts.hopSize
   let profile = opts.profile

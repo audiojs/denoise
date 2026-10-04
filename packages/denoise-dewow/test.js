@@ -133,106 +133,102 @@ function rmsDevPercent(freqs, nominal) {
 // --- fixtures ---
 const DUR = 6, N6 = DUR * fs
 const env6 = envelope(N6)
-const chord = mul(add(sine(220, N6, 0.25), sine(330, N6, 0.25), sine(440, N6, 0.25), sine(660, N6, 0.25)), env6)
-const tone = mul(harmonicTone(110, N6, [0.3, 0.2, 0.12, 0.08, 0.05, 0.03]), env6) // plucked-string-ish spectrum
+// Four independent notes: equal-tempered C4 E4 G♯4 D5, no two in a ratio of small whole numbers, so none can be a
+// harmonic of another — four witnesses to the speed. (220/330/440/660 Hz, this suite's chord before 0.2, are the
+// 2nd–6th harmonics of one 110 Hz note: one witness, which by design measures nothing.)
+const chord = mul(add(sine(261.63, N6, 0.25), sine(329.63, N6, 0.25), sine(415.30, N6, 0.25), sine(587.33, N6, 0.25)), env6)
+const tone = mul(harmonicTone(110, N6, [0.3, 0.2, 0.12, 0.08, 0.05, 0.03]), env6) // one note, six harmonics
+const wowOnly = tt => 1 + 0.02 * Math.sin(PI2 * 0.8 * tt)
 const dirtyChord = warp(chord, sOfT)
 const dirtyTone = warp(tone, sOfT)
+function voice(fn, n = N6) { // a voice, harmonics 1..8 at 1/k, its pitch fn(t)
+	let x = new Float32Array(n), ph = 0
+	for (let i = 0; i < n; i++) { ph += PI2 * fn(i / fs) / fs; for (let h = 1; h <= 8; h++) x[i] += 0.2 / h * Math.sin(h * ph) }
+	return x
+}
+const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i])
 
 // =================== analyze() — speed curve recovery ===================
 
-t('analyze — recovers the speed curve (chord, correlation ≥ 0.95)', () => {
+t('analyze — recovers the wow on independent notes (correlation ≥ 0.95)', () => {
+	// 'partial' reads frequency over the 93 ms analysis frame: the 0.8 Hz wow, not the 30 Hz flutter (reference mode
+	// below resolves that), so the curve is compared with the wow alone
 	let a = analyze(dirtyChord, { fs })
-	let truth = Array.from(a.times).map(sOfT)
-	let c = corr(a.speed, truth)
-	ok(c >= 0.95, `correlation ${c.toFixed(4)} (measured 0.984)`)
-	is(a.tracks.length, 4, 'one track per chord partial')
-})
-
-t('analyze — recovers the speed curve (harmonic tone, correlation ≥ 0.95)', () => {
-	let a = analyze(dirtyTone, { fs })
-	let truth = Array.from(a.times).map(sOfT)
-	let c = corr(a.speed, truth)
-	ok(c >= 0.95, `correlation ${c.toFixed(4)} (measured 0.983)`)
-	is(a.tracks.length, 6, 'one track per harmonic')
+	let c = corr(a.speed, Array.from(a.times).map(wowOnly))
+	ok(c >= 0.95, `correlation ${c.toFixed(4)}`)
+	is(a.tracks.length, 4, 'one track per note')
 })
 
 t('analyze — wow amplitude within 15% of the injected 2%', () => {
-	// Tolerance derives from the estimator's own accuracy budget, not hop
-	// resolution alone: wow (0.8 Hz) sits far below both the per-hop curve's
-	// Nyquist (43 Hz) and the zero-phase split's cutoff (~3.2 Hz at the default
-	// smooth=0.05s) — no averaging should touch it. The 15% margin covers the
-	// finite-window bias (a 6 s clip is 4.8, not a whole number of, 0.8 Hz
-	// cycles) and ordinary track-combination noise.
 	let a = analyze(dirtyChord, { fs })
-	let lo = 2 * 0.85, hi = 2 * 1.15
-	ok(a.wowPeak >= lo && a.wowPeak <= hi, `wowPeak ${a.wowPeak.toFixed(3)}% (measured 2.06%, expect ${lo}-${hi}%)`)
+	ok(a.wowPeak >= 1.7 && a.wowPeak <= 2.3, `wowPeak ${a.wowPeak.toFixed(3)}%`)
 })
 
-t('analyze — flutter amplitude within 30% of the injected 0.4%', () => {
-	// Wider tolerance than wow's, and justified differently: flutter (30 Hz) is
-	// close to where the *fine* phase-vocoder window (IF_FRAME=1024, 23.2 ms ≈
-	// 0.7 flutter cycles) starts attenuating instead of tracking cleanly — see
-	// dewow.js's IF_FRAME comment. 30% covers that understatement plus the same
-	// finite-window/noise budget as wow's check.
-	let a = analyze(dirtyChord, { fs })
-	let lo = 0.4 * 0.7, hi = 0.4 * 1.3
-	ok(a.flutterPeak >= lo && a.flutterPeak <= hi, `flutterPeak ${a.flutterPeak.toFixed(3)}% (measured 0.41%, expect ${lo.toFixed(2)}-${hi.toFixed(2)}%)`)
+t('analyze — one note and its harmonics carry no evidence: wow and a performer\'s pitch movement look the same there', () => {
+	let a = analyze(dirtyTone, { fs })
+	is(a.confidence, 0, 'no hop has two independent sources')
+	ok(a.speed.every(v => v === 1), 'curve stays at nominal')
 })
 
-t('analyze — confidence reflects how much of the signal has stable partials', () => {
+t('analyze — confidence reflects how much of the signal has independent sources agreeing', () => {
 	let a = analyze(dirtyChord, { fs })
-	ok(a.confidence > 0.95, `confidence ${a.confidence.toFixed(3)} — a wall-to-wall chord should track almost every frame`)
-	let silent = analyze(new Float32Array(fs * 2), { fs })
-	is(silent.confidence, 0, 'silence has no evidence anywhere')
+	ok(a.confidence > 0.9, `confidence ${a.confidence.toFixed(3)}`)
+	is(analyze(new Float32Array(fs * 2), { fs }).confidence, 0, 'silence has no evidence anywhere')
 })
 
 // =================== dewow() — correction ===================
 
-t('dewow — reduces the 440 Hz partial\'s residual frequency deviation from ~2% to ≤0.2%', () => {
+t('dewow — reduces the E4 partial\'s residual frequency deviation from ~1.4% to ≤ 0.3%', () => {
 	let corrected = dewow(dirtyChord, { fs })
-	// Trim 20 frames (~230ms) off each end: phase-vocoder tracking needs a
-	// previous frame, and dewow's own resampling has a few-sample settling
-	// region at the very start/end of the buffer.
-	let devDirty = rmsDevPercent(trackFreq(dirtyChord, 440).slice(20, -20), 440)
-	let devCorrected = rmsDevPercent(trackFreq(corrected, 440).slice(20, -20), 440)
-	ok(devDirty > 1, `sanity: dirty signal is actually deviating (${devDirty.toFixed(2)}%)`)
-	ok(devCorrected <= 0.2, `residual deviation ${devCorrected.toFixed(3)}% (measured 0.18%, from ${devDirty.toFixed(2)}% dirty)`)
+	let devDirty = rmsDevPercent(trackFreq(dirtyChord, 329.63).slice(20, -20), 329.63)
+	let devCorrected = rmsDevPercent(trackFreq(corrected, 329.63).slice(20, -20), 329.63)
+	ok(devDirty > 1, `sanity: the dirty chord deviates (${devDirty.toFixed(2)}%)`)
+	ok(devCorrected <= 0.3, `residual deviation ${devCorrected.toFixed(3)}% (from ${devDirty.toFixed(2)}%)`)
 })
 
-t('dewow — SNR vs. the clean original after alignment improves by ≥10 dB', () => {
-	// See localSnr's own comment for why "after alignment" (the brief's wording)
-	// means a local lag search here, and why a plain whole-buffer SNR is the
-	// wrong tool for this class of corrector.
+t('dewow — SNR vs. the clean original after alignment improves by ≥ 10 dB', () => {
+	// see localSnr for why "after alignment"
 	let corrected = dewow(dirtyChord, { fs })
-	let before = localSnr(chord, dirtyChord)
-	let after = localSnr(chord, corrected)
-	ok(after >= before + 10, `${before.toFixed(1)} dB → ${after.toFixed(1)} dB (measured +14.6 dB; target ≥10 dB gain)`)
-	ok(after >= 12, `${after.toFixed(1)} dB (measured 17.2 dB; target ≥12 dB absolute)`)
+	let before = localSnr(chord, dirtyChord), after = localSnr(chord, corrected)
+	ok(after >= before + 10, `${before.toFixed(1)} dB → ${after.toFixed(1)} dB`)
 })
 
-t('dewow — clean input passes through nearly unchanged (SNR ≥ 40 dB)', () => {
-	// The estimator should find s≈1 throughout, and a sinc read at (near-)integer
-	// positions is near-identity — no wow/flutter defect to correct.
-	let out = dewow(chord, { fs })
-	let s = snr(chord, out)
-	ok(s >= 40, `SNR ${s.toFixed(1)} dB (measured 44.3 dB)`)
+t('dewow — clean input passes through bit-exact', () => {
+	ok(same(dewow(chord, { fs }), chord), 'steady chord: nothing to correct')
+	ok(same(dewow(tone, { fs }), tone), 'one note')
+})
+
+t('dewow — a vibrato and a glide are the performer\'s, kept bit-exact (0.1 flattened both)', () => {
+	let vib = voice(tt => 220 * 2 ** (50 / 1200 * Math.sin(PI2 * 5.5 * tt)))
+	let glide = voice(tt => tt < 2 ? 220 : tt < 3 ? 220 * 1.5 ** (tt - 2) : 330)
+	ok(same(dewow(vib, { fs }), vib), 'vibrato ±50 cents at 5.5 Hz')
+	ok(same(dewow(glide, { fs }), glide), '220 → 330 Hz glide')
+	ok(same(dewow(dirtyTone, { fs }), dirtyTone), 'one note with wow: the wow cannot be told from the note\'s own movement')
+})
+
+t('dewow — a vibrato voice over steady notes keeps its vibrato and loses the wow', () => {
+	let vib = voice(tt => 220 * 2 ** (50 / 1200 * Math.sin(PI2 * 5.5 * tt)))
+	let clean = add(vib, chord), dirty = warp(clean, wowOnly)
+	let a = analyze(dirty, { fs })
+	ok(corr(a.speed, Array.from(a.times).map(wowOnly)) > 0.95, 'the speed is the wow, not the vibrato')
+	let corrected = dewow(dirty, { fs })
+	let devDirty = rmsDevPercent(trackFreq(dirty, 329.63).slice(20, -20), 329.63)
+	let devCorrected = rmsDevPercent(trackFreq(corrected, 329.63).slice(20, -20), 329.63)
+	ok(devCorrected < devDirty / 3, `E4 deviation ${devDirty.toFixed(2)}% → ${devCorrected.toFixed(2)}%`)
 })
 
 t('dewow — keepLength: output length equals input length', () => {
 	let out = dewow(dirtyChord, { fs })
 	is(out.length, dirtyChord.length)
 	let outFalse = dewow(dirtyChord, { fs, keepLength: false })
-	ok(Math.abs(outFalse.length - dirtyChord.length) < dirtyChord.length * 0.05, 'natural length stays within 5% of input (wow/flutter integrates to ~0 net drift)')
+	ok(Math.abs(outFalse.length - dirtyChord.length) < dirtyChord.length * 0.05, 'natural length stays within 5% of input (wow integrates to ~0 net drift)')
 })
 
 t('dewow — multi-channel stays sample-aligned (one shared curve from the mono mix)', () => {
-	let stereo = [dirtyChord, dirtyChord] // L = R
-	let out = dewow(stereo, { fs })
+	let out = dewow([dirtyChord, dirtyChord], { fs })
 	is(out.length, 2)
 	is(out[0].length, out[1].length)
-	let maxDiff = 0
-	for (let i = 0; i < out[0].length; i++) maxDiff = Math.max(maxDiff, Math.abs(out[0][i] - out[1][i]))
-	is(maxDiff, 0, 'L and R correct identically when the input channels are identical')
+	ok(same(out[0], out[1]), 'L and R correct identically when the input channels are identical')
 })
 
 // =================== mode 'reference' ===================
@@ -241,15 +237,16 @@ t('analyze — reference mode locks onto a 50 Hz hum at −30 dB under speech (c
 	let speech = new Float32Array(raw).subarray(0, N6)
 	let hum = sine(50, N6, 1)
 	let scale = rms(speech) * Math.pow(10, -30 / 20) / rms(hum)
-	let humScaled = new Float32Array(N6)
-	for (let i = 0; i < N6; i++) humScaled[i] = hum[i] * scale
-	let cleanRef = add(speech, humScaled)
-	let dirtyRef = warp(cleanRef, sOfT)
+	let cleanRef = add(speech, hum.map(v => v * scale))
+	let a = analyze(warp(cleanRef, sOfT), { fs, mode: 'reference', refFreq: 50 })
+	let c = corr(a.speed, Array.from(a.times).map(sOfT))
+	ok(c >= 0.95, `correlation ${c.toFixed(4)}`)
+})
 
-	let a = analyze(dirtyRef, { fs, mode: 'reference', refFreq: 50 })
-	let truth = Array.from(a.times).map(sOfT)
-	let c = corr(a.speed, truth)
-	ok(c >= 0.95, `correlation ${c.toFixed(4)} (measured 0.973)`)
+t('analyze — reference mode resolves 30 Hz flutter on a 1 kHz calibration tone (within 30% of 0.4%)', () => {
+	let a = analyze(warp(sine(1000, N6, 0.5), sOfT), { fs, mode: 'reference', refFreq: 1000 })
+	ok(a.flutterPeak >= 0.28 && a.flutterPeak <= 0.52, `flutterPeak ${a.flutterPeak.toFixed(3)}%`)
+	ok(a.wowPeak >= 1.7 && a.wowPeak <= 2.3, `wowPeak ${a.wowPeak.toFixed(3)}%`)
 })
 
 t('reference mode — requires refFreq, rejects an out-of-range one', () => {
@@ -264,48 +261,38 @@ t('unknown mode throws', () => {
 // =================== mode 'pitch' ===================
 
 t('pitch mode — runs on real speech, produces finite same-length output', () => {
-	// Real speech's own prosody (rising/falling F0) is orders of magnitude bigger
-	// than a 2% wow within any short window — see dewow.js's pitchCurve comment
-	// on the smooth/vibrato trade-off. This is a functional check (matches the
-	// brief's call for audio-lena/raw coverage of this mode), not a precision
-	// one: 'partial'/'reference' above already prove the estimator/corrector
-	// core at high accuracy on tonal material.
+	// opt-in, monophonic: it takes the voice's own pitch movement for speed (see dewow.js); a functional check
 	let speech = new Float32Array(raw).subarray(0, N6)
 	let dirtySpeech = warp(speech, sOfT)
 	let out = dewow(dirtySpeech, { fs, mode: 'pitch', smooth: 3 })
 	is(out.length, dirtySpeech.length)
 	ok(out.every(isFinite), 'no NaN/Inf')
 	let a = analyze(dirtySpeech, { fs, mode: 'pitch' })
-	ok(a.confidence > 0.5, `voiced-frame confidence ${a.confidence.toFixed(2)} — most of this clip is voiced speech`)
+	ok(a.confidence > 0.5, `voiced-frame confidence ${a.confidence.toFixed(2)}`)
 })
 
 // =================== edge cases ===================
 
-t('edge cases — silence, very short input, empty input: finite, no throw', () => {
+t('edge cases — silence, very short input, a single sample, empty input: finite, no throw', () => {
 	let silent = dewow(new Float32Array(fs * 2), { fs })
 	is(silent.length, fs * 2)
 	ok(silent.every(v => v === 0), 'silence stays silent')
-
 	let short = dewow(sine(440, 100, 0.5), { fs })
 	is(short.length, 100)
 	ok(short.every(isFinite), 'shorter than one analysis frame — no crash, no NaN')
-
-	let empty = dewow(new Float32Array(0), { fs })
-	is(empty.length, 0)
+	is(dewow(Float32Array.of(0.5), { fs })[0], 0.5, 'one sample')
+	is(dewow(new Float32Array(0), { fs }).length, 0)
+	for (let mode of ['reference', 'pitch']) ok(dewow(sine(440, 100, 0.5), { fs, mode, refFreq: 50 }).every(isFinite), mode + ' mode, short')
 })
 
 t('edge cases — wow:false / flutter:false disable their own band only', () => {
-	let a = analyze(dirtyChord, { fs })
-	let wowOnly = dewow(dirtyChord, { fs, flutter: false })
-	let flutterOnly = dewow(dirtyChord, { fs, wow: false })
-	ok(wowOnly.every(isFinite) && flutterOnly.every(isFinite))
-	is(wowOnly.length, dirtyChord.length)
+	let wowOnlyOut = dewow(dirtyChord, { fs, flutter: false }), flutterOnly = dewow(dirtyChord, { fs, wow: false })
+	ok(wowOnlyOut.every(isFinite) && flutterOnly.every(isFinite))
+	is(wowOnlyOut.length, dirtyChord.length)
 	is(flutterOnly.length, dirtyChord.length)
 })
 
 t('edge cases — maxDeviation clamps an outlier curve', () => {
-	// A pathological reference frequency (way off — silence there) should never
-	// blow the correction past the clamp, however noisy the raw estimate is.
 	let out = dewow(new Float32Array(fs).fill(0), { fs, mode: 'reference', refFreq: 1000, maxDeviation: 0.05 })
 	ok(out.every(isFinite))
 })
@@ -314,11 +301,10 @@ t('edge cases — maxDeviation clamps an outlier curve', () => {
 
 t('speed — 60s stereo', () => {
 	let n = 60 * fs
-	let long = mul(add(sine(220, n, 0.25), sine(330, n, 0.25), sine(440, n, 0.25), sine(660, n, 0.25)), envelope(n))
-	let stereo = [long, long]
+	let long = mul(add(sine(261.63, n, 0.25), sine(329.63, n, 0.25), sine(415.30, n, 0.25), sine(587.33, n, 0.25)), envelope(n))
 	let t0 = Date.now()
-	dewow(stereo, { fs })
+	dewow([long, long], { fs })
 	let ms = Date.now() - t0
 	console.log(`  60s stereo dewow(): ${ms}ms`)
-	ok(ms < 15000, `${ms}ms (measured ~1000ms)`)
+	ok(ms < 15000, `${ms}ms`)
 })

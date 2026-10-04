@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-wiener",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Wiener filter / MMSE-LSA denoise with decision-directed a-priori SNR",
   "type": "module",
   "sideEffects": false,
@@ -23,7 +23,7 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/noise-estimate": "^2.1.0",
+    "@audio/noise-estimate": "^2.2.0",
     "@audio/stft": "^2.0.0"
   },
   "keywords": [

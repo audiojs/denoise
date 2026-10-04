@@ -6,7 +6,7 @@ export interface DewowOptions {
   mode?: 'partial' | 'reference' | 'pitch'
   /** known tone/hum frequency (Hz) — required for mode 'reference' */
   refFreq?: number
-  /** STFT frame, default 4096 */
+  /** STFT frame, default 4096 — mode 'partial' reads each partial's frequency over it (wow, not flutter) */
   frameSize?: number
   /** STFT hop, default 512 */
   hopSize?: number
@@ -18,11 +18,11 @@ export interface DewowOptions {
   flutter?: boolean
   /** clamp the corrected speed ratio to [1-x, 1+x], default 0.05 */
   maxDeviation?: number
-  /** shortest partial kept, in seconds — mode 'partial' only, default 0.5 */
+  /** shortest partial kept, in seconds — mode 'partial' only, default 0.1 */
   minTrack?: number
-  /** lowest f0 considered — mode 'pitch' only, default 50 */
+  /** lowest frequency searched (Hz): partials in mode 'partial', f0 in mode 'pitch', default 50 */
   minFreq?: number
-  /** highest f0 considered — mode 'pitch' only, default 2000 */
+  /** highest frequency searched (Hz): partials in mode 'partial', f0 in mode 'pitch', default 2000 */
   maxFreq?: number
   /** output length equals input length, default true */
   keepLength?: boolean
@@ -41,9 +41,9 @@ export interface DewowTrack {
 }
 
 export interface DewowAnalysis {
-  /** per-hop speed ratio, 1.0 = nominal (gap-filled, zero-phase smoothed) */
+  /** per-hop speed ratio, 1.0 = nominal; returns to 1 where nothing is evidence */
   speed: Float32Array
-  /** per-hop timestamps (s) */
+  /** per-hop timestamps (s), each at its analysis frame's centre */
   times: Float32Array
   /** STFT hop size used */
   hop: number
@@ -57,7 +57,7 @@ export interface DewowAnalysis {
   wowPeak: number
   /** unweighted peak flutter deviation, % */
   flutterPeak: number
-  /** fraction of hops with a usable speed estimate, 0..1 */
+  /** fraction of hops with a usable speed estimate (two independent sources agreeing, a present reference tone, voiced pitch), 0..1 */
   confidence: number
   /** accepted partial tracks — mode 'partial' only */
   tracks?: DewowTrack[]

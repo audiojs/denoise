@@ -8,6 +8,12 @@
 // where ξ = a-priori SNR, decision-directed: ξ = α Â²(l−1)/λ(l−1) + (1−α) max(γ−1, 0) (Ephraim & Malah 1984, eq. 51),
 // ν = ξ·γ/(1+ξ), γ = |Y|²/λ the posterior SNR. mmse-lsa is the default: less musical noise than Wiener's gain.
 //
+// α = 0.98 is Ephraim & Malah's for their 8 ms frame step (§VI: 256 samples at 8 kHz, a new frame every 64), rescaled to
+// the actual step Δt as α^(Δt/8 ms), so the a priori SNR's memory holds in seconds: taken per frame, it ran 1.8× longer
+// at 48 kHz (10.7 ms steps) than at 44.1 kHz (5.8 ms). ξ_min stays −15 dB: −25 dB, Cohen's and Loizou's floor, left
+// more musical noise (log kurtosis ratio on steady white and pink noise 0.98 and 1.49, against 0.53 and 1.01) and cost
+// PESQ and SIG on VoiceBank+DEMAND training speech; the floor is what holds the noise's peaks down (Cappé 1994).
+//
 // Noise PSD: a manual `profile`, a noise-only stretch named by `noiseFrames`/`profileFrom`/`profileTo`, or else
 // tracked by Minimum Statistics (Martin 2001) over a 1.5 s window, batch and stream alike.
 
@@ -16,6 +22,7 @@ import { minStats, noiseProfile } from '@audio/noise-estimate'
 
 // Wrap { write, flush } into a single callable (inlined convention).
 const writer = s => chunk => chunk ? s.write(chunk) : s.flush()
+const REF_DT = 64 / 8000                           // Ephraim & Malah's frame step, 8 ms
 
 // The analysis frame: the power of two nearest 32 ms, Ephraim & Malah 1984's (§VI: 256 samples at 8 kHz, each frame
 // overlapping the last by 192, so a quarter-frame hop as here): 512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48.
@@ -34,6 +41,10 @@ export default function wiener(dataOrOpts, opts) {
   let o = framing(dataOrOpts || {})
   return writer(stftStream(makeProcess(o), o))
 }
+
+/** The gain as a frame process, (mag, phase) → { mag, phase }, for a host that runs its own STFT (@audio/stft's
+ *  framing: Hann, `hopSize` a quarter of `frameSize`). One per channel: it keeps state across frames. */
+export const processor = opts => makeProcess(framing(opts || {}))
 
 function run(data, opts) {
   let N = opts.frameSize, hop = opts.hopSize
@@ -68,10 +79,10 @@ function exp1(v) {
 
 function makeProcess(opts) {
   let rule = opts.rule || 'mmse-lsa'
-  let alphaDD = opts.alphaDD ?? opts.alpha ?? 0.98           // `alpha` = documented alias
+  let N = opts.frameSize, hop = opts.hopSize, fs = opts.fs
+  let alphaDD = (opts.alphaDD ?? opts.alpha ?? 0.98) ** (hop / fs / REF_DT)   // per 8 ms; `alpha` = documented alias
   let xiMin = opts.xiMin ?? 10 ** (-15 / 10)       // −15 dB, as the manifest's xiFloor
   let auto = !opts.profile
-  let N = opts.frameSize, hop = opts.hopSize, fs = opts.fs
   let half = N >> 1
   let est = auto ? minStats(half, { D: Math.round(1.5 * fs / hop), ...opts.estimator }) : null   // Martin's 1.5 s
   let profile = opts.profile

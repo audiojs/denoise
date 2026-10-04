@@ -1,7 +1,7 @@
 // atom manifest — wraps the LF-burst ducker kernel per @audio/compile CONTRACT.
 // deplosive.js persists its filter/envelope state directly on the object it's called
-// with (`params._lpC`, `_hpC`, `_lpS`, `_hpS`, `_lfDetS`, `_mfDetS`, `_gain`) — same
-// state-per-channel style as denoise-dehum. triggerRatio/attenuation/attack/release are
+// with (`params._lpC`, `_hpC`, `_lpS`, `_hpS`, `_env`, `_ac`, `_r`, `_hop`, `_on`, `_gain`)
+// — same state-per-channel style as denoise-dehum. triggerRatio/attenuation/attack/release are
 // read fresh every call, so they stay live. crossover is the one exception: the kernel
 // only ever reads it inside a ONE-TIME `if (!params._init)` guard (a boolean flag, not a
 // value comparison — unlike denoise-dewind's length-checked reinit), so it
@@ -31,9 +31,9 @@ export const deplosive = (ctx) => {
 deplosive.channels = 'any'
 deplosive.tail = 0
 deplosive.params = {
-	triggerRatio: { type: 'number', min: 1, max: 20, default: 4 },        // LF/mid energy ratio that opens the duck
+	triggerRatio: { type: 'number', min: 1, max: 20, default: 4 },        // LF over high-band envelope that a pop must exceed
 	attenuation:  { type: 'number', min: -40, max: 0, default: -18, unit: 'dB' },
-	attack:       { type: 'number', min: 0.001, max: 0.2, default: 0.005, unit: 's' },
-	release:      { type: 'number', min: 0.005, max: 1, default: 0.08, unit: 's' },
+	attack:       { type: 'number', min: 0.001, max: 0.2, default: 0.002, unit: 's' },
+	release:      { type: 'number', min: 0.005, max: 1, default: 0.03, unit: 's' },
 	crossover:    { type: 'number', min: 50, max: 500, default: 200, unit: 'Hz', flags: ['restart'] },
 }

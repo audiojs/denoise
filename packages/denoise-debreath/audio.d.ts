@@ -16,10 +16,6 @@ export interface DebreathOptions {
   "attack"?: Auto
   /** 0.001..2 s (default 0.1) */
   "release"?: Auto
-  /** 0..20 dB (default 4) */
-  "snrTh"?: Auto
-  /** 0.05..1 (default 0.5) */
-  "flatTh"?: Auto
   at?: number | string
   duration?: number | string
 }
@@ -36,9 +32,5 @@ export declare const debreath: {
     "attack": { type: "number", default: 0.005 }
     /** 0.001..2 s (default 0.1) */
     "release": { type: "number", default: 0.1 }
-    /** 0..20 dB (default 4) */
-    "snrTh": { type: "number", default: 4 }
-    /** 0.05..1 (default 0.5) */
-    "flatTh": { type: "number", default: 0.5 }
   }
 }

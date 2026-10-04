@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-detect",
-  "version": "0.3.2",
-  "description": "denoise — content-aware auto-selector that classifies the dominant noise type",
+  "version": "0.4.0",
+  "description": "denoise — content-aware auto-selector: finds the defect a recording carries, if any, and routes to its method",
   "type": "module",
   "sideEffects": false,
   "main": "denoise.js",
@@ -18,12 +18,12 @@
   ],
   "types": "index.d.ts",
   "dependencies": {
-    "@audio/denoise-wiener": "^0.2.1",
-    "@audio/denoise-omlsa": "^0.2.0",
-    "@audio/denoise-dehum": "^0.2.0",
+    "@audio/denoise-wiener": "^0.3.0",
+    "@audio/denoise-omlsa": "^0.3.0",
+    "@audio/denoise-dehum": "^0.3.0",
     "@audio/denoise-declick": "^0.2.0",
-    "@audio/denoise-dewind": "^0.1.0",
-    "@audio/dynamics-deesser": "^0.2.7",
+    "@audio/denoise-dewind": "^0.2.0",
+    "@audio/dynamics-deesser": "^0.3.0",
     "@audio/denoise-dereverb": "^0.2.0",
     "@audio/lpc": "^1.0.0",
     "@audio/stft": "^2.0.0"

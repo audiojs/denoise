@@ -1,7 +1,7 @@
 // atom manifest — wraps the adaptive-cutoff de-wind kernel per @audio/compile
 // CONTRACT. dewind.js persists its filter cascade + cutoff tracker state directly on the
-// object it's called with (`params._state`, `_fc`, `_coefs`, `_lfDc`, `_mfDc`) — same
-// state-per-channel style as denoise-dehum. cutoffMin/cutoffMax/Q/attack/release are read
+// object it's called with (`params._state`, `_fc`, `_coefs`, `_lfDc`, `_mfDc`, `_ac`, `_w`, ...)
+// — same state-per-channel style as denoise-dehum. cutoffMin/cutoffMax/attack/release are read
 // fresh every call, so they stay live (the one-pole cutoff tracker smooths toward whatever
 // target they produce — no discontinuity from changing them). order is the one exception:
 // the kernel only rebuilds the filter cascade + state array when `params._state.length
@@ -24,7 +24,6 @@ export const dewind = (ctx) => {
 			st.cutoffMin = params.cutoffMin[0]
 			st.cutoffMax = params.cutoffMax[0]
 			st.order = params.order[0]
-			st.Q = params.Q[0]
 			st.attack = params.attack[0]
 			st.release = params.release[0]
 			out[c].set(inp[c])
@@ -37,8 +36,7 @@ dewind.tail = 0
 dewind.params = {
 	cutoffMin: { type: 'number', min: 20, max: 300, default: 60, unit: 'Hz' },
 	cutoffMax: { type: 'number', min: 50, max: 500, default: 250, unit: 'Hz' },
-	order:     { type: 'number', min: 1, max: 4, default: 2, flags: ['restart'] },  // biquad sections (12dB/oct each)
-	Q:         { type: 'number', min: 0.3, max: 3, default: 0.707 },
+	order:     { type: 'number', min: 1, max: 4, default: 2, flags: ['restart'] },  // Butterworth sections (12dB/oct each)
 	attack:    { type: 'number', min: 0.005, max: 1, default: 0.05, unit: 's' },
 	release:   { type: 'number', min: 0.01, max: 2, default: 0.4, unit: 's' },
 }

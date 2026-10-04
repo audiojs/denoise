@@ -2,9 +2,9 @@
 export interface WienerOptions {
   /** gain rule, default 'mmse-lsa' */
   rule?: 'wiener' | 'mmse-lsa'
-  /** decision-directed smoothing (alias alphaDD), default 0.98 */
+  /** decision-directed smoothing (alias alphaDD), per 8 ms of frame step (rescaled to the actual step), default 0.98 */
   alpha?: number
-  /** decision-directed smoothing, default 0.98 */
+  /** decision-directed smoothing per 8 ms of frame step (rescaled to the actual step), default 0.98 */
   alphaDD?: number
   /** a-priori SNR floor, linear, default 10^-1.5 (−15 dB) */
   xiMin?: number
@@ -30,3 +30,6 @@ export default function wiener(data: Float32Array | Float64Array, options?: Wien
 export default function wiener(options?: WienerOptions): (chunk?: Float32Array) => Float32Array
 /** The default frame at a rate: the power of two nearest 32 ms (512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48). */
 export function frame(fs: number): number
+/** The gain as an @audio/stft frame process, for a host that runs its own frames (Hann, hop frameSize/4). It keeps state
+ *  across frames: one per channel. */
+export function processor(options?: WienerOptions): (mag: Float64Array, phase: Float64Array) => { mag: Float64Array, phase: Float64Array }

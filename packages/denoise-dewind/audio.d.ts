@@ -16,8 +16,6 @@ export interface DewindOptions {
   "cutoffMax"?: Auto
   /** 1..4 (default 2) */
   "order"?: Auto
-  /** 0.3..3 (default 0.707) */
-  "Q"?: Auto
   /** 0.005..1 s (default 0.05) */
   "attack"?: Auto
   /** 0.01..2 s (default 0.4) */
@@ -37,8 +35,6 @@ export declare const dewind: {
     "cutoffMax": { type: "number", default: 250 }
     /** 1..4 (default 2) [restart] */
     "order": { type: "number", default: 2 }
-    /** 0.3..3 (default 0.707) */
-    "Q": { type: "number", default: 0.707 }
     /** 0.005..1 s (default 0.05) */
     "attack": { type: "number", default: 0.05 }
     /** 0.01..2 s (default 0.4) */

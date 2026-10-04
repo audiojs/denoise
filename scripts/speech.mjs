@@ -106,8 +106,8 @@ export function hum(n, fs, f0, rms) {
 const rmsOf = x => { let e = 0; for (let v of x) e += v * v; return Math.sqrt(e / x.length) }
 const withHum = f0 => ({ x, fs }) => { let h = hum(x.length, fs, f0, rmsOf(x) / 10); return { x: x.map((v, i) => v + h[i]), fs } }
 
-// Hum reduction, dB: dehum is linear and time-invariant (not adaptive), so it acts on the hum alone as within any mix;
-// 10 s of hum, the first 0.5 s (notch settling) left out.
+// Hum reduction on the hum alone, dB, 10 s of it, the first 0.5 s left out. dehum adapts to what it is given, so this
+// is the hum without a program; scripts/dehum.js measures it under speech and music.
 function humReduction(fs = 48000) {
 	for (let f0 of [50, 50.05, 60, 59.95]) {
 		let h = hum(10 * fs, fs, f0, 0.01), row = []

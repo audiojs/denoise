@@ -7,7 +7,8 @@
 // reads opts.* once, not per call), so all carry flags:['restart']. xiFloor mirrors
 // denoise-wiener's dB-exposed floor (xiMin = 10**(xiFloor/10)). qPrior 0 (the default)
 // leaves the a priori speech absence to the kernel's estimate (Cohen & Berdugo 2001 §4);
-// a value above 0 fixes it (at 0.9 and over, no bin counts as speech).
+// a value above 0 fixes it (at 0.9 and over, no bin counts as speech). alphaDD is per 8 ms
+// of frame step (Table 1's time base), rescaled to the step, so it means the same at any rate.
 //
 // Same primed FIFO as denoise-spectral (see its audio.js header): a constant frame − 1
 // delay under any block size. The frame follows the rate (omlsa.js `frame`: the power of
@@ -59,7 +60,7 @@ omlsa.channels = 'any'
 omlsa.latency = ({ sampleRate }) => frame(sampleRate) - 1
 omlsa.tail = 0
 omlsa.params = {
-	alphaDD: { type: 'number', min: 0.8, max: 0.999, default: 0.98, flags: ['restart'] },
+	alphaDD: { type: 'number', min: 0.8, max: 0.999, default: 0.97, flags: ['restart'] },   // per 8 ms of frame step
 	qPrior:  { type: 'number', min: 0, max: 0.95, default: 0, flags: ['restart'] },       // a-priori speech absence; 0: estimated
 	gMin:    { type: 'number', min: -40, max: 0, default: -15, unit: 'dB', flags: ['restart'] },
 	xiFloor: { type: 'number', min: -30, max: 0, default: -25, unit: 'dB', flags: ['restart'] },

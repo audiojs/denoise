@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-repair",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Spectral repair: rebuild dropouts and damaged time×frequency regions by AR interpolation, a sinusoidal bridge or a similarity transplant, routed by length and content (iZotope RX class)",
   "type": "module",
   "sideEffects": false,

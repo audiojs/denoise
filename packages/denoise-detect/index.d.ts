@@ -1,19 +1,23 @@
-/** Content-aware auto-selector — classifies the dominant noise type and dispatches to the matching method. */
-export type DenoiseMethod = 'dehum' | 'declick' | 'dewind' | 'deesser' | 'dereverb' | 'omlsa' | 'wiener'
+/** Content-aware auto-selector — finds the defect a recording carries, if any, and dispatches to the matching method. */
+export type DenoiseMethod = 'none' | 'dehum' | 'declick' | 'dewind' | 'deesser' | 'dereverb' | 'omlsa' | 'wiener'
 
 export interface ClassifyScores {
-  /** hit count (0-3) of mains harmonics with ≥50× line/off-line ratio */
+  /** mains harmonics dehum's measurement finds (0: no hum) */
   hum: number
-  /** 50 or 60 */
+  /** their fundamental, Hz (0: no hum) */
   humFreq: number
-  /** impulses per second standing out of the AR(30) residual; declick above `CLICK_RATE` */
+  /** their A-weighted level re the program, dB; dehum from −50 */
+  humLevel: number
+  /** isolated impulses per second standing 32σ out of the AR(30) error; declick above `CLICK_RATE` */
   click: number
-  /** low/mid band power ratio */
-  lf: number
-  /** high/mid (sibilance) band power ratio */
+  /** 5–9 kHz over 0.2–2 kHz power; deesser above 8 */
   hi: number
-  /** CV of the frame-energy floor — low = stationary noise bed */
-  stationarity: number
+  /** share of 0.15 s blocks with loud, aperiodic low end 6 dB over the mid band; dewind above 0.1 */
+  wind: number
+  /** program over noise bed, dB (Infinity: no bed); a reducer under `BED_SNR` */
+  snr: number
+  /** the bed shows in steady bands (wiener), else in the pauses alone (omlsa) */
+  steady: boolean
 }
 
 export interface Plan {
@@ -40,15 +44,18 @@ export interface DenoiseResult {
   plan: Plan
 }
 
-/** Classify the dominant noise type and clean it with the matching method. */
+/** Find the defect and clean it with the matching method; with none evidenced, a copy of the input. */
 export default function denoise(data: Float32Array, params?: DenoiseOptions & { returnPlan?: false }): Float32Array
 export default function denoise(data: Float32Array, params: DenoiseOptions & { returnPlan: true }): DenoiseResult
 
-/** Run the classification sweep only (no cleaning). */
+/** Run the classification only (no cleaning). */
 export function classify(data: Float32Array, fs?: number): Plan
 
 /** Impulses per second above which classify() routes to declick. */
 export const CLICK_RATE: number
+
+/** Program over noise bed, dB, under which classify() routes to a reducer. */
+export const BED_SNR: number
 
 export interface DeesserOptions {
   /** sample rate (Hz), default 44100 */
@@ -59,8 +66,10 @@ export interface DeesserOptions {
   freq?: number
   /** notch Q, default 1.4 */
   Q?: number
-  /** dB, default -30 */
+  /** dB of the sibilance band over the voice body, the kernel's default (0 in @audio/dynamics-deesser 0.3) */
   threshold?: number
+  /** deepest cut, dB, the kernel's default (−6) */
+  range?: number
   /** default 4 */
   ratio?: number
   /** seconds, default 0.001 */

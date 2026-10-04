@@ -10,7 +10,7 @@ npm install @audio/denoise-desilence
 import desilence, { segments, split, project } from '@audio/denoise-desilence'
 ```
 
-Runs [`@audio/vad`](https://github.com/audiojs/denoise/tree/main/packages/vad)'s frame-level speech/non-speech decision once over the mono mix, folds it into time segments (bridging gaps shorter than `merge`), then edits the *silence* between and around speech. Three modes: `remove` cuts every pause longer than `minSilence` down to a `pad`-second buffer on each side; `shorten` compresses any pause longer than `maxSilence` to that target, trimmed from the middle so the natural onset/offset survives — the technique behind Overcast's "Smart Speed" (Marco Arment, [2015](https://overcast.fm/podcaster/2015/09/09/smart-speed)); `trim` only strips leading/trailing silence. Every cut is an equal-power crossfade, never a hard splice, so the result is click-free at any pause length.
+Runs [`@audio/vad`](https://github.com/audiojs/denoise/tree/main/packages/vad)'s frame-level speech decision once over the mono mix (voicing, and the sound over a tracked noise floor next to it: noise, breaths and room tone between phrases are pause, a quiet word in noise is not), folds it into time segments (bridging gaps shorter than `merge`), then edits the *silence* between and around speech. Three modes: `remove` cuts every pause longer than `minSilence` down to a `pad`-second buffer on each side; `shorten` compresses any pause longer than `maxSilence` to that target, trimmed from the middle so the natural onset/offset survives — the technique behind Overcast's "Smart Speed" (Marco Arment, [2015](https://overcast.fm/podcaster/2015/09/09/smart-speed)); `trim` only strips leading/trailing silence. Every cut is an equal-power crossfade, never a hard splice, so the result is click-free at any pause length.
 
 ```js
 let out = desilence(recording, { mode: 'shorten', fs: 44100 })
@@ -35,14 +35,24 @@ let outT = project(out.map, 12.4)                              // where did inpu
 | `pad` | `0.1` | s — `remove` target: silence kept on each side bordering speech |
 | `threshold` | `null` | dB — absolute override for the VAD's adaptive floor (see below) |
 | `fade` | `0.01` | s — equal-power crossfade length at every cut |
-| `frameSize` / `hopSize` | `1024` / `512` | forwarded to `vad()` |
+| `frameSize` / `hopSize` | `vad()`'s: 3 periods of 75 Hz (2048 at 44.1/48 kHz) / a quarter of it | forwarded to `vad()` |
 | `merge` | `0.15` | s — speech gaps shorter than this are bridged into one segment |
 
-`threshold` trades away `vad()`'s energy+spectral-flatness decision for a plain absolute-dB gate on frame energy (same STFT frame grid, no flatness check — an absolute level has no "is it tonal" component to combine with). Leave it `null` for the adaptive per-file floor `vad()` computes; set it when you know the true noise floor and want a fixed cutoff instead.
+`threshold` trades away `vad()`'s decision for a plain absolute-dB gate on frame energy (1024-sample frames unless `frameSize` is given, no voicing check — an absolute level has no "is it speech" component to combine with). Leave it `null` for `vad()`'s tracked floor and voicing; set it when you know the true noise floor and want a fixed cutoff instead.
 
 Runs once over the whole signal — like every whole-render kernel in this family (`denoise`, `dereverb`), it needs the full clip, not a block at a time. Multi-channel input analyses the mono mix; the same cuts and crossfade windows apply to every channel identically.
 
-**What this does not do:** no ML VAD — `@audio/vad`'s energy+flatness decision is classical DSP, tuned for close-miced narration, not far-field or noisy conference audio. No music-aware pause detection — a rest under `minSilence` in a musical passage looks identical to a speech pause and gets cut/shortened the same way; this is a speech tool, not a general silence-trimmer for mixed program audio.
+0.1 read silence under 11 dB over the input's 10th-percentile frame energy: under noise that percentile is the noise, and whole words went. Measured with `python scripts/vad.py` in [@audio/denoise](https://github.com/audiojs/denoise) (VoiceBank+DEMAND test set, ten Spoken Wikipedia narrations; defaults chosen on the training subset and ten other narrations), `shorten` at its defaults, 0.1.1 → 0.2.0, frames cut:
+
+| | voiced | word edges | removed |
+|---|---:|---:|---:|
+| VoiceBank+DEMAND, 824 noisy | 3.89 → **0.00** % | 3.93 → **0.00** % | 290 → 21 of 2072 s |
+| the same, clean | 0.00 → 0.03 % | 0.01 → 0.12 % | 167 → 126 s |
+| 10 narrations | 0.00 → 0.00 % | 0.00 → 0.02 % | 50 → 52 of 600 s |
+
+Breaths (350 ms of resonant noise) in the narrations' pauses ending 0.3 s before the next phrase: 56 → 75 % of each removed at −35 dB, 50 → 69 % at −25 dB. Music, frames within 30 dB of the loudest cut: Vibe Ace 10.5 → 0 %, Brahms 3.5 → 0.02 %, Nutcracker 16.8 → 0 %, sung (VocalSet m8) 25.3 → 0 %.
+
+**What this does not do:** no ML VAD — `@audio/vad`'s decision is classical DSP (a likelihood ratio over a minimum-statistics floor, anchored on voicing). Whispered speech holds no voicing and reads as pause. No music-aware pause detection — a rest under `minSilence` in a musical passage looks identical to a speech pause and gets cut/shortened the same way; this is a speech tool, not a general silence-trimmer for mixed program audio.
 
 **Use when:** podcast/voiceover "smart speed" playback prep, batch-trimming long pauses out of narration, splitting a take into per-line clips, or stripping room tone from the head/tail of a recording.
 

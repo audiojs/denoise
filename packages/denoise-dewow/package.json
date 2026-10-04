@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dewow",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Wow & flutter correction — pitch-drift removal for tape/vinyl/cassette transfers",
   "type": "module",
   "sideEffects": false,

@@ -210,11 +210,11 @@ function process() {
   let s = cls.scores
   document.getElementById('scores').innerHTML =
     `<b>classifier:</b> would route to <b>${cls.method}</b> · ` +
-    `hum=${s.hum}@${s.humFreq}Hz · ` +
-    `click=${s.click.toFixed(1)} · ` +
-    `lf/mf=${s.lf.toFixed(1)} · ` +
+    `hum=${s.hum}@${s.humFreq.toFixed(1)}Hz ${s.humLevel.toFixed(0)}dBA · ` +
+    `click=${s.click.toFixed(1)}/s · ` +
     `hi/mf=${s.hi.toFixed(1)} · ` +
-    `stationarity=${s.stationarity.toFixed(2)}`
+    `wind=${(100 * s.wind).toFixed(0)}% · ` +
+    `bed=${s.snr.toFixed(1)}dB${s.steady ? ' steady' : ''}`
 
   draw(document.getElementById('canIn'), dirty)
   draw(document.getElementById('canOut'), out)

@@ -123,9 +123,9 @@ class Imcra:
         return self.lam
 
 class Omlsa:
-    """gain(|Y|^2) -> G = G_H1^p G_min^(1-p) (16), p (9) with q = 1 - P_local P_global P_frame (23)-(28). As omlsa.m:
-    P_local of 500 Hz-3.5 kHz set to P_min where its mean over 0-4 kHz is under 0.25, and p = 0 where q >= 0.9 (which
-    makes the paper's q_max moot)."""
+    """gain(|Y|^2) -> G = max(G_H1, G_min)^p G_min^(1-p) (16) with G_H1 floored at G_min (G_min is the floor), p (9)
+    with q = 1 - P_local P_global P_frame (23)-(28). As omlsa.m: P_local of 500 Hz-3.5 kHz set to P_min where its mean
+    over 0-4 kHz is under 0.25, and p = 0 where q >= 0.9 (which makes the paper's q_max moot)."""
     def __init__(self, K, fs, N, dt=REF_DT, gmin_db=-25, alpha_zeta=0.7, w_local=1, w_global=15, zmin_db=-10,
                  zmax_db=-5, zpmin_db=0, zpmax_db=10, p_min=0.005, f_l=50, f_u=10000, q_fixed=None, **imcra):
         self.est = Imcra(K, dt=dt, **imcra)
@@ -159,7 +159,7 @@ class Omlsa:
             if np.mean(Pl[2:self.k2 + self.k3 - 1]) < 0.25: Pl[self.k2:self.k3 + 1] = self.p_min
             q = 1 - Pl * self.P(conv_same(self.zeta, self.bg)) * Pf                                 # (28)
         p = np.where(q < 0.9, 1 / (1 + q / (1 - np.minimum(q, 0.9)) * (1 + e.xi) * np.exp(-e.v)), 0)  # (9)
-        return e.gH1 ** p * self.gmin ** (1 - p)                                                  # (16)
+        return np.maximum(e.gH1, self.gmin) ** p * self.gmin ** (1 - p)                           # (16), floored
 
 def dd_gain(P, lam, alpha=0.98, xi_min=10 ** (-15 / 10), rule='mmse-lsa'):
     """ξ = α Â²(l−1)/λ(l−1) + (1−α) max(γ−1, 0), Â = G|Y|; the memory Â²/λ starts at 1 (omlsa.m, Loizou's logmmse.m)."""
@@ -185,15 +185,21 @@ def bias_min(D, alpha):
 
 def minstats(P, D=96, alpha=0.7, bias=None):
     """Minimum of the smoothed periodogram over the last D non-silent frames, times B_min, and once there are D of them
-    no more than their mean (a steady line's minimum is its mean: B_min would put it over); the smoother starts at the
-    first frame."""
+    no more than their mean (a steady line's minimum is its mean: B_min would put it over). The smoother starts as the
+    mean of the frames so far (α_l = min(α, l/(l+1))), and its values enter the minimum once its memory, ceil(1/(1−α))
+    frames, is full; until then the estimate is that mean."""
     bias = bias_min(D, alpha) if bias is None else bias
-    out = np.zeros_like(P); S = None; hist = []; last = np.zeros(P.shape[1])
+    settle = int(np.ceil(1 / (1 - alpha)))
+    out = np.zeros_like(P); S = np.zeros(P.shape[1]); n = 0; hist = []; mins = []; last = np.zeros(P.shape[1])
     for l, p in enumerate(P):
         if p.any():
-            S = p.copy() if S is None else alpha * S + (1 - alpha) * p
-            hist = (hist + [S])[-D:]; last = np.min(hist, 0) * bias
-            if len(hist) == D: last = np.minimum(last, np.mean(hist, 0))
+            a = min(alpha, n / (n + 1)); S = a * S + (1 - a) * p; n += 1
+            hist = (hist + [S])[-D:]; mins = (mins + [S if n > settle else None])[-D:]
+            m = [h for h in mins if h is not None]
+            if not m: last = S.copy()
+            else:
+                last = np.min(m, 0) * bias
+                if len(hist) == D: last = np.minimum(last, np.mean(hist, 0))
         out[l] = last
     return out
 

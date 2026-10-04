@@ -14,9 +14,9 @@ export interface DeplosiveOptions {
   "triggerRatio"?: Auto
   /** -40..0 dB (default -18) */
   "attenuation"?: Auto
-  /** 0.001..0.2 s (default 0.005) */
+  /** 0.001..0.2 s (default 0.002) */
   "attack"?: Auto
-  /** 0.005..1 s (default 0.08) */
+  /** 0.005..1 s (default 0.03) */
   "release"?: Auto
   /** 50..500 Hz (default 200) */
   "crossover"?: Auto
@@ -33,10 +33,10 @@ export declare const deplosive: {
     "triggerRatio": { type: "number", default: 4 }
     /** -40..0 dB (default -18) */
     "attenuation": { type: "number", default: -18 }
-    /** 0.001..0.2 s (default 0.005) */
-    "attack": { type: "number", default: 0.005 }
-    /** 0.005..1 s (default 0.08) */
-    "release": { type: "number", default: 0.08 }
+    /** 0.001..0.2 s (default 0.002) */
+    "attack": { type: "number", default: 0.002 }
+    /** 0.005..1 s (default 0.03) */
+    "release": { type: "number", default: 0.03 }
     /** 50..500 Hz (default 200) [restart] */
     "crossover": { type: "number", default: 200 }
   }

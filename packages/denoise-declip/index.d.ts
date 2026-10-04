@@ -1,14 +1,15 @@
-/** Clipped-run restoration via AR-LS interpolation. */
+/** Hard clipping undone: each side's rail found, every clipped sample rebuilt by consistent least-squares AR interpolation. */
 export interface DeclipOptions {
-  /** AR model order, default 100 */
-  order?: number
-  /** clip rail; auto-detected from histogram when omitted */
+  /** sample rate, Hz; default 44100 */
+  fs?: number
+  /** a symmetric rail, ± this; omitted or 0: each side's rail found from the sound (none: returned untouched) */
   clipLevel?: number
-  /** clean context per side (samples), default order*4 */
-  context?: number
-  /** longest restored run (samples), default order/2 */
-  maxRun?: number
+  /** AR order of the rebuild; default 256 */
+  order?: number
 }
 
-/** Process in place; returns the same buffer. Pass the same options object across calls to persist state. */
+/** Each side's rail, or null: the sound's extreme on that side, when the samples at it are a point mass in runs. */
+export function rails(data: Float32Array | Float64Array): { hi: number | null, lo: number | null }
+
+/** Returns a repaired copy. */
 export default function declip(data: Float32Array, options?: DeclipOptions): Float32Array

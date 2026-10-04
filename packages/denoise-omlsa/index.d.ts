@@ -1,12 +1,13 @@
 /** OM-LSA (Cohen & Berdugo 2001) with IMCRA noise tracking (Cohen 2003), or a noise learned where it plays alone. */
 export interface OmlsaOptions {
-  /** what noise-only bins keep, dB (alias gMin), default -15 */
+  /** what noise-only bins keep, dB (alias gMin), default -15: the floor, no bin goes lower */
   gMinDb?: number
-  /** what noise-only bins keep, dB, default -15 */
+  /** what noise-only bins keep, dB, default -15: the floor, no bin goes lower */
   gMin?: number
-  /** decision-directed smoothing (alias alphaDD), default 0.98 */
+  /** decision-directed smoothing (alias alphaDD), per 8 ms of frame step (rescaled to the actual step); default 0.97,
+   *  0.95 with a `profile` */
   alpha?: number
-  /** decision-directed smoothing, default 0.98 */
+  /** decision-directed smoothing per 8 ms of frame step (rescaled to the actual step); default 0.97, 0.95 with a `profile` */
   alphaDD?: number
   /** a-priori SNR floor, linear, default 10^-2.5 (−25 dB) */
   xiMin?: number

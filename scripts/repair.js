@@ -1,8 +1,10 @@
 // Measure @audio/denoise-repair's tiers and 'auto' on dropouts and band-limited damage.
 // Run: `node scripts/repair.js [ms…]` (tens of minutes: AR is O(m²) in the gap length; gap lengths in ms
-// limit the dropout tables, e.g. `5 20`, and skip the band-limited ones). Prints the README's
-// "Measured" tables: mean SNR over the lost samples (the audio-inpainting convention, Adler et al.
-// 2012) / log-spectral distance over the STFT frames overlapping them (@audio/quality lsd, 1024/256).
+// limit the dropout tables, e.g. `5 20`, and skip the others). Prints the README's "Measured" tables:
+// mean SNR over the lost samples (the audio-inpainting convention, Adler et al. 2012) / log-spectral
+// distance over the STFT frames overlapping them (@audio/quality lsd, 1024/256); then "Seams": the good
+// audio each tier rewrites around a gap and what its joins add there. `node scripts/repair.js seams
+// [path to a repair.js]` prints that table alone, for the given kernel (an earlier version's) if any.
 //
 // Material: audio-lena (speech, devDependency); a sine, a C-major chord, a vibrato tone and a repeating
 // song, generated here; and when present in ~/.cache/audiojs/data/repair/ as 44.1 kHz mono float32
@@ -11,6 +13,7 @@
 // public domain; Mihai Sorohan, trumpet loop (trumpet), CC BY 3.0.
 
 import repair, { plan } from '@audio/denoise-repair'
+import { arFit } from '@audio/lpc'
 import { lsd as qlsd } from '@audio/quality'
 import raw from 'audio-lena/raw'
 import { fft, ifft } from 'fourier-transform'
@@ -92,8 +95,8 @@ function table(title, rows, cols) {
 }
 
 // ---- dropouts: the gap zeroed, every method, auto's pick counted
-let ARGS = process.argv.slice(2).map(Number).filter(v => v > 0), GAPS = ARGS.length ? ARGS : [5, 20, 50, 70, 100, 300, 1000]
-for (let [name, [xs, per, margin]] of Object.entries(groups)) {
+let SEAMS = process.argv[2] === 'seams', ARGS = process.argv.slice(2).map(Number).filter(v => v > 0), GAPS = ARGS.length ? ARGS : [5, 20, 50, 70, 100, 300, 1000]
+for (let [name, [xs, per, margin]] of SEAMS ? [] : Object.entries(groups)) {
   if (!xs.length) { console.log(`\n(${name}: not in ~/.cache/audiojs/data/repair, skipped)`); continue }
   let rows = []
   for (let ms of GAPS) {
@@ -130,7 +133,7 @@ function ring(x, a, b) {   // UK ring: 400 + 450 Hz, harmonics 1..3
   for (let i = a; i < b; i++) { let t = (i - a) / fs; for (let k = 1; k <= 3; k++) d[i] += 0.1 / k * (Math.sin(2 * Math.PI * 400 * k * t) + Math.sin(2 * Math.PI * 450 * k * t)) }
   return [d, 350, 1400]
 }
-for (let [dmg, gen] of ARGS.length ? [] : [['cough, 300–3000 Hz', cough], ['phone ring, 350–1400 Hz', ring]]) {
+for (let [dmg, gen] of ARGS.length || SEAMS ? [] : [['cough, 300–3000 Hz', cough], ['phone ring, 350–1400 Hz', ring]]) {
   let rows = []
   for (let ms of [100, 300, 1000]) {
     let acc = Object.fromEntries([...METHODS, 'none'].map(m => [m, [0, 0, 0]]))
@@ -149,4 +152,69 @@ for (let [dmg, gen] of ARGS.length ? [] : [['cough, 300–3000 Hz', cough], ['ph
     rows.push([`${ms} ms`, [...METHODS, 'none'].map(m => `${(acc[m][0] / acc[m][2]).toFixed(1)} / ${(acc[m][1] / acc[m][2]).toFixed(2)}`)])
   }
   table(`${dmg} (speech, music, trumpet, song): SNR / LSD (dB)`, rows, [...METHODS, 'unrepaired'])
+}
+
+// ---- seams: the good audio each tier rewrites around a dropout, and what its joins add there. At each edge, over 8 ms
+// of good audio and 1 ms into the fill: the strongest onset (librosa's onset_strength: 40 mel bands, 30 Hz – 16 kHz, dB
+// floored 80 dB under the window's peak, mean rise from the frame before; 512/64) and the strongest 1 ms of the AR(32)
+// residual, where a click stands out (Vaseghi & Rayner 1990; fitted on the original's 100 ms of good audio beside the
+// edge). "New onsets": the share of edges where the output's onset there tops every onset the original has within
+// ±150 ms (after the slash, the original's own share: its edge against the rest of the window); "clicks": the mean
+// excess of the output's residual burst over the original's at the same place, dB.
+const kernel = SEAMS && process.argv[3] ? (await import(new URL(process.argv[3], `file://${process.cwd()}/`))).default : repair
+const db = v => 10 * Math.log10(v)
+const MEL = (F => {
+  let mel = f => 2595 * Math.log10(1 + f / 700), hz = m => 700 * (10 ** (m / 2595) - 1), m0 = mel(30), m1 = mel(16000)
+  let e = Array.from({ length: 42 }, (_, i) => hz(m0 + (m1 - m0) * i / 41))
+  return Array.from({ length: 40 }, (_, j) => {
+    let w = Float64Array.from({ length: F / 2 + 1 }, (_, k) => { let f = k * fs / F; return Math.max(0, Math.min((f - e[j]) / (e[j + 1] - e[j]), (e[j + 2] - f) / (e[j + 2] - e[j + 1]))) })
+    if (w.every(v => !v)) w[Math.round(e[j + 1] * F / fs)] = 1   // a band narrower than a bin takes its nearest
+    return w
+  })
+})(512)
+function onsets(x, p0, p1) {
+  let win = Float64Array.from({ length: 512 }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / 512)), f = new Float64Array(512), S = [], c = []
+  for (let p = p0; p + 512 <= p1; p += 64) {
+    for (let i = 0; i < 512; i++) f[i] = (x[p + i] || 0) * win[i]
+    let [re, im] = fft(f)
+    S.push(MEL.map(w => { let s = 0; for (let k = 0; k <= 256; k++) s += w[k] * (re[k] * re[k] + im[k] * im[k]); return db(s + 1e-30) })); c.push(p + 256)
+  }
+  return { S, c }
+}
+const rise = (S, lo) => S.map((v, n) => n ? v.reduce((s, q, k) => s + Math.max(0, Math.max(q, lo) - Math.max(S[n - 1][k], lo)), 0) / v.length : -Infinity)
+function burst(x, A, p0, p1) {   // 1 ms mean power of the AR residual, dB, hop 0.25 ms
+  let M = Math.round(0.001 * fs), e = new Float64Array(p1 - p0), out = [], c = []
+  for (let n = p0; n < p1; n++) { let r = 0; for (let k = 0; k < A.length; k++) r += A[k] * (x[n - k] || 0); e[n - p0] = r * r }
+  for (let p = 0; p + M <= e.length; p += M >> 2) { let s = 0; for (let i = p; i < p + M; i++) s += e[i]; out.push(db(s / M + 1e-20)); c.push(p0 + p + M / 2) }
+  return { v: out, c }
+}
+function edge(x, y, s, side) {
+  let W = Math.round(0.15 * fs), z0 = s - Math.round((side < 0 ? 0.008 : 0.001) * fs), z1 = s + Math.round((side < 0 ? 0.001 : 0.008) * fs)
+  let peak = (v, c, inside) => v.reduce((m, q, i) => (c[i] >= z0 && c[i] < z1) === inside ? Math.max(m, q) : m, -Infinity)
+  let ox = onsets(x, s - W, s + W), oy = onsets(y, s - W, s + W), lo = Math.max(...ox.S.flat()) - 80, rx = rise(ox.S, lo), ry = rise(oy.S, lo)
+  let g0 = side < 0 ? s - Math.round(0.11 * fs) : s + Math.round(0.01 * fs), A = arFit(Float64Array.from(x.subarray(g0, g0 + Math.round(0.1 * fs))), 32).a
+  let bx = burst(x, A, s - W, s + W), by = burst(y, A, s - W, s + W), top = peak(rx, ox.c, false)
+  return { onset: peak(ry, oy.c, true) > top, own: peak(rx, ox.c, true) > top, click: peak(by.v, by.c, true) - peak(bx.v, bx.c, true) }
+}
+if (SEAMS || !ARGS.length) {
+  // per length: 16 gaps in speech, 6 in each recording, placed afresh for each length
+  const SG = [20, 50, 100, 300, 1000], { speech: [sp], music: [mu], trumpet: [tr] } = groups
+  const kinds = { speech: [[sp, 16, 0.5]], music: [[mu, 6, 11], [tr, 6, 0.3]] }
+  for (let [kind, sets] of Object.entries(kinds)) {
+    let acc = {}
+    for (let [xs, per, margin] of sets) xs.forEach((x, xi) => {
+      for (let ms of SG) for (let a of positions(x, per, 11 + xi + ms, margin)) {
+        let b = a + Math.round(ms / 1000 * fs), d = Float32Array.from(x).fill(0, a, b), regions = [{ at: a / fs, duration: (b - a) / fs }]
+        for (let m of METHODS) {
+          if (m === 'ar' && ms > 100) continue   // O(m²): AR on long gaps is in the tables above
+          let y = kernel(d, { fs, regions, method: m }), q = acc[m] ??= { gaps: 0, n: 0, s: 0, e: 0, edges: 0, onset: 0, own: 0, click: 0, snr: 0, lsd: 0 }
+          for (let i = 0; i < x.length; i++) if ((i < a || i >= b) && y[i] !== d[i]) q.n++, q.s += x[i] ** 2, q.e += (x[i] - y[i]) ** 2
+          for (let [s, side] of [[a, -1], [b, 1]]) { let r = edge(x, y, s, side); q.edges++; q.onset += r.onset; q.own += r.own; q.click += r.click }
+          q.gaps++; q.snr += snr(x, y, a, b); q.lsd += lsd(x, y, a, b)
+        }
+      }
+    })
+    console.log(`\n### Seams, ${kind}: gaps of ${SG.join(', ')} ms\n\n| tier | good audio rewritten | its SNR | new onsets | clicks | gap SNR / LSD |\n|---|---:|---:|---:|---:|---:|`)
+    for (let [m, q] of Object.entries(acc)) console.log(`| ${m}${m === 'ar' ? ' (≤ 100 ms)' : ''} | ${(q.n / q.gaps / fs * 1000).toFixed(0)} ms | ${q.e ? db(q.s / q.e).toFixed(1) + ' dB' : '–'} | ${(100 * q.onset / q.edges).toFixed(0)}% / ${(100 * q.own / q.edges).toFixed(0)}% | ${(q.click / q.edges).toFixed(1)} dB | ${(q.snr / q.gaps).toFixed(1)} / ${(q.lsd / q.gaps).toFixed(2)} |`)
+  }
 }

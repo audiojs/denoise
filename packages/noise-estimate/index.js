@@ -40,7 +40,11 @@ export function noiseProfile(data, opts = {}) {
 // estimate would become the running mean, speech and all. Its cost on Gaussian noise: the mean estimate up to 0.4 dB
 // lower (0.35 at the defaults), where P_min·B_min spreads over the mean. Martin's per-bin B_min from the variance of
 // P (2001 §IV-B) put Gaussian noise 2-4 dB under with this fixed α (the variance, smoothed over ~2 frames of a
-// 3-frame smoother, runs low).
+// 3-frame smoother, runs low). With his time-varying optimal α as well (eqs. 7-11: α_max 0.96, α_c, β = min(α², 0.8),
+// B_c = 1 + 2.12 √Q̄⁻¹; α floored at 0.3 per 16 ms, else it ran away downward) the estimate under a narration's speech
+// came down (+3.3 → +0.6 dB at 300 Hz–1 kHz, pink noise 20 dB under the voice), but steady pink noise alone read
+// 1.7 dB under, and wiener lost PESQ (1.79 → 1.73 on VoiceBank+DEMAND training speech), BAK and OVRL, its noise
+// reduction falling from 5.0 to 3.8 dB: speech kept by underestimating the noise, not by estimating it better.
 //
 // Usage:
 //   let est = minStats(half, { D: 96 })
@@ -61,6 +65,8 @@ export function minStats(half, opts = {}) {
   let head = new Int32Array(bins), size = new Int32Array(bins), frame = 0
   // the last D smoothed values per bin (a ring) and their sum, for the window's mean
   let win = new Float64Array(bins * D), sum = new Float64Array(bins)
+  // the smoother's memory, 1/(1−α) frames: before it fills, P is the mean of the frames so far, the estimate
+  let settle = Math.ceil(1 / (1 - alpha))
 
   return {
     psd,
@@ -72,8 +78,13 @@ export function minStats(half, opts = {}) {
       let i = frame % D
       for (let k = 0, o = 0; k <= half; k++, o += D) {
         let pk = mag[k] * mag[k]
-        // the smoother starts at the first frame, not at 0: a warm-up from 0 would be the window's minimum for D frames
-        let v = smoothed[k] = frame ? alpha * smoothed[k] + (1 - alpha) * pk : pk
+        // the smoother starts on the mean of the frames so far, not on 0 (a warm-up from 0 would be the window's minimum
+        // for D frames), and its values enter the minimum once its memory is full: one periodogram swings over 2
+        // degrees of freedom, not the 2(1+α)/(1−α) B_min is for, and 1 % of bins would start 20 dB low and stay the
+        // minimum for D frames (2.6 % of bins 10 dB under white noise over the first 1.5 s; 0.09 % now)
+        let a = Math.min(alpha, frame / (frame + 1))
+        let v = smoothed[k] = a * smoothed[k] + (1 - a) * pk
+        if (frame < settle) { sum[k] += v - win[o + i]; win[o + i] = v; psd[k] = v; continue }
         let h = head[k], n = size[k], t
         if (n && at[o + h] <= frame - D) { if (++h === D) h = 0; n-- }    // oldest left the window
         while (n && val[o + ((t = h + n - 1) >= D ? t - D : t)] >= v) n--  // newer and no larger: they can't be minima
@@ -123,9 +134,10 @@ function biasMin(D, alpha) {
 // (1 − α) max(γ − 1, 0) (32), (33) (Cohen & Berdugo 2001 eq. 18). The estimator keeps it and exposes, per frame, on the
 // updated noise: `xi`, `gamma` (a posteriori SNR), `v` = γξ/(1+ξ), `gain` (G_H1) and `p`, which OM-LSA's gain uses.
 //
-// Table I's constants hold for 8 ms frames (16 kHz, 128 hop): smoothing constants scale as a^(Δt / 8 ms) and V as
-// 15 · 8 ms / Δt with the actual frame step Δt = hop / fs, so time constants and the ~1 s minimum window keep their
-// length in seconds at any rate. Without `fs` and `hop` the constants apply per frame, as tabulated.
+// Table I's constants hold for 8 ms frames (16 kHz, 128 hop): smoothing constants, the decision-directed α among them,
+// scale as a^(Δt / 8 ms) and V as 15 · 8 ms / Δt with the actual frame step Δt = hop / fs, so time constants and the
+// ~1 s minimum window keep their length in seconds at any rate. Without `fs` and `hop` the constants apply per frame,
+// as tabulated. (α per frame made the a priori SNR's memory 1.8× longer at 48 kHz than at 44.1 kHz.)
 const REF_DT = 128 / 16000
 
 // E1(v) for v > 0: Abramowitz & Stegun 5.1.53 (v < 1, |ε| < 2e-7) and 5.1.56 (v ≥ 1, |ε| < 2e-8 relative)
@@ -150,11 +162,13 @@ function lsa(s, next) {
 
 // A known noise: a profile learned where the noise plays alone (noiseProfile), held rather than tracked. Per frame the
 // outputs imcra gives, on it (ξ, γ, v, G_H1), so a gain written for imcra runs on a learned noise unchanged. `xi0` is
-// `xi` (a held noise does not move within the frame); nothing estimates speech presence, `p` stays 0.
+// `xi` (a held noise does not move within the frame); nothing estimates speech presence, `p` stays 0. `alphaDD` is
+// quoted per 8 ms frame and, given `fs` and `hop`, rescaled to the frame step as imcra's.
 export function known(profile, opts = {}) {
   let K = profile.length, psd = Float64Array.from(profile), y2 = new Float64Array(K), eta2 = new Float64Array(K).fill(1)
   let xi = new Float64Array(K), gamma = new Float64Array(K), v = new Float64Array(K), gain = new Float64Array(K)
-  let s = { y2, psd, eta2, xi, gamma, v, gain, aDD: opts.alphaDD ?? 0.92, xiMin: opts.xiMin ?? 10 ** (-25 / 10) }
+  let r = opts.fs && opts.hop ? opts.hop / opts.fs / REF_DT : 1
+  let s = { y2, psd, eta2, xi, gamma, v, gain, aDD: (opts.alphaDD ?? 0.92) ** r, xiMin: opts.xiMin ?? 10 ** (-25 / 10) }
   let est = { psd, xi, xi0: xi, gamma, v, gain, p: new Float64Array(K), frames: 0, update }
   function update(mag) {
     let silent = true
@@ -176,7 +190,7 @@ export function imcra(half, opts = {}) {
   let bMin = opts.bMin ?? 1.66                   // minimum's bias, (18)
   let g0 = opts.gamma0 ?? 4.6, g1 = opts.gamma1 ?? 3, z0 = opts.zeta0 ?? 1.67   // (21), (29)
   let U = opts.U ?? 8, V = opts.V ?? Math.max(1, Math.round(15 / r))
-  let aDD = opts.alphaDD ?? 0.92, xiMin = opts.xiMin ?? 10 ** (-25 / 10)
+  let aDD = (opts.alphaDD ?? 0.92) ** r, xiMin = opts.xiMin ?? 10 ** (-25 / 10)
   let w = opts.w ?? 1, b = new Float64Array(2 * w + 1), bs = 0
   for (let i = 0; i < b.length; i++) bs += b[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * (i + 1) / (b.length + 1))   // MATLAB hanning(2w+1)
   for (let i = 0; i < b.length; i++) b[i] /= bs

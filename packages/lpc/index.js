@@ -2,6 +2,7 @@
 //   - autocorr + levinson (Levinson-Durbin) → AR(p) / LPC coefficients from a window
 //   - arPredict / arExtrapolate → forward prediction (de-clip projection)
 //   - arInterpolate → least-squares fill of scattered samples (de-click / de-crackle)
+//   - arFill → the same fill solved exactly, banded Cholesky (de-clip)
 //   - arBridge → exact least-squares fill of one contiguous gap, any length (repair)
 //
 // `lpc(x, p)` is the standard entry point (alias of arFit): coefficients a[] + residual e.
@@ -133,6 +134,59 @@ export function arInterpolate(x, gap, a) {
     }
   }
   return x
+}
+
+// arInterpolate's problem solved exactly, for unknowns scattered anywhere: `gap` (sorted ints) in place under model `a`.
+// The normal equations Σ_j r[|g_i−g_j|]·u_j = −Σ_known r[|g_i−k|]·x_k (r the autocorrelation of `a`) couple two
+// unknowns only within p samples of each other, so the matrix is banded in the gap's order: Cholesky within its
+// envelope, O(m·b²) for m unknowns at most b within p of one another. The Janssen step of de-clipping, where every
+// clipped sample of a window is unknown at once (Janssen, Veldhuis & Vries 1986; Godsill & Rayner 1998 §5.2.2).
+// Returns false, leaving x as it was, when the model makes the system singular.
+export function arFill(x, gap, a) {
+  let p = a.length - 1, m = gap.length, n = x.length
+  if (!m) return true
+  let r = new Float64Array(p + 1)
+  for (let k = 0; k <= p; k++) {
+    let s = 0
+    for (let i = 0; i + k <= p; i++) s += a[i] * a[i + k]
+    r[k] = s
+  }
+  // row i of L spans columns lo[i]..i (the unknowns within p before it), stored from at[i]
+  let lo = new Int32Array(m), at = new Int32Array(m + 1), unk = new Uint8Array(n)
+  for (let i = 0, j = 0; i < m; i++) {
+    while (gap[i] - gap[j] > p) j++
+    lo[i] = j, at[i + 1] = at[i] + i - j + 1, unk[gap[i]] = 1
+  }
+  let L = new Float64Array(at[m]), u = new Float64Array(m)
+  for (let i = 0; i < m; i++) {
+    let g = gap[i], s = 0, o = at[i] - lo[i]
+    for (let k = Math.max(0, g - p), e = Math.min(n - 1, g + p); k <= e; k++) if (!unk[k]) s += r[Math.abs(g - k)] * x[k]
+    u[i] = -s
+    for (let j = lo[i]; j <= i; j++) L[o + j] = r[g - gap[j]]
+  }
+  for (let i = 0; i < m; i++) {
+    let oi = at[i] - lo[i]
+    for (let j = lo[i]; j <= i; j++) {
+      let oj = at[j] - lo[j], s = L[oi + j]
+      for (let k = Math.max(lo[i], lo[j]); k < j; k++) s -= L[oi + k] * L[oj + k]
+      if (j < i) L[oi + j] = s / L[oj + j]
+      else if (s > 1e-12 * r[0]) L[oi + i] = Math.sqrt(s)
+      else return false
+    }
+  }
+  for (let i = 0; i < m; i++) {
+    let oi = at[i] - lo[i], s = u[i]
+    for (let k = lo[i]; k < i; k++) s -= L[oi + k] * u[k]
+    u[i] = s / L[oi + i]
+  }
+  for (let i = m - 1; i >= 0; i--) {
+    let oi = at[i] - lo[i]
+    u[i] /= L[oi + i]
+    for (let k = lo[i]; k < i; k++) u[k] -= L[oi + k] * u[i]
+  }
+  for (let i = 0; i < m; i++) if (!Number.isFinite(u[i])) return false
+  for (let i = 0; i < m; i++) x[gap[i]] = u[i]
+  return true
 }
 
 // Least-squares interpolation of the contiguous gap x[from..to), in place, under model `a`

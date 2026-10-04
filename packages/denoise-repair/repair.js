@@ -10,11 +10,13 @@
 //                 shaped from white noise (Serra & Smith 1990)
 //   'similarity'  the passage within `window` s whose half-second contexts best match the gap's
 //                 (dB-spectrogram distance, Perraudin et al. 2018), aligned to the sample by
-//                 correlation, transplanted with crossfades
-//   'spectral'    log-magnitude interpolation between the clean frames either side, phase
-//                 advanced from the leading context (phase vocoder)
-// Band-limited regions take only their band from the fill, frame by frame. Samples no fill or
-// modified frame reaches are returned untouched.
+//                 correlation, transplanted
+//   'spectral'    log-magnitude interpolation between the clean frames either side, each frame's
+//                 phase advanced from the nearer side (phase vocoder), so both edges line up
+// Each fill joins the program by a crossfade over the good audio at each edge, as short as the
+// seams allow (XF). Band-limited regions take only their band from the joined fill, frame by frame.
+// Samples beyond the crossfades, or beyond the frames overlapping a band-limited region, are
+// returned untouched.
 
 import { fft } from 'fourier-transform'
 import { stftBatch, hannWindow } from '@audio/stft'
@@ -30,6 +32,13 @@ const clamp = (x, lo, hi) => x < lo ? lo : x > hi ? hi : x
 // match to 20 dB SNR, −10·log10(1 − r²): only a near-exact repeat beats AR there); failing that,
 // AR up to AR_MAX s, the sinusoidal bridge beyond. Band-limited regions route alike.
 const SHORT = 0.05, R_SHORT = 0.995, R_LONG = 0.4, AR_MAX = 0.07
+// Crossfade at each edge, s: the shortest after which the seams show no more onsets (mel onset
+// strength, as librosa's) or clicks (bursts of the AR residual) than the original has around them,
+// on speech and music (README "Seams"); 2 ms already ends the clicks, the rest hides how the fill's
+// level and timbre differ from the program's. AR's least-squares fill is continuous with its context
+// and needs none. A transplant joins in 5 ms only when it repeats the program (aligned r ≥ R_REPEAT);
+// a looser match shows at any shorter length, and keeps the frame-long transition of Perraudin et al.
+const XF = { ar: 0, sinusoidal: 0.015, similarity: 0.005, spectral: 0.03 }, R_REPEAT = 0.9
 const METHODS = ['auto', 'ar', 'sinusoidal', 'similarity', 'spectral']
 
 function options(opts) {
@@ -84,30 +93,38 @@ export default function repair(data, opts = {}) {
 		let { a, b, f0, f1, full } = span(r, o, n)
 		if (b <= a) continue
 		let { method, source } = resolve(out, r, o)
-		if (method === 'spectral') { spectral(out, a, b, f0, f1, o); continue }
-		let X = 0, fill
+		let X = Math.min(Math.round(XF[method] * o.fs), a, n - b), fill
 		if (method === 'ar') fill = arFill(out, a, b, o)
-		else if (method === 'sinusoidal') fill = sineFill(out, a, b, o), X = o.N >> 1
+		else if (method === 'sinusoidal') fill = sineFill(out, a, b, o)
+		else if (method === 'spectral') fill = specFill(out, a, b, o)
 		else {
 			let d = Math.round(source * o.fs) - a
 			if (a + d < 0 || b + d > n || (d < b - a && d > a - b)) throw new RangeError('repair: similarity source must be a clean passage as long as the region')
-			X = Math.max(0, Math.min(o.N, a, n - b, a + d, n - b - d, d > 0 ? d - (b - a) : -d - (b - a)))
+			if (corr(out, a, b, d, o.N) < R_REPEAT) X = o.N
+			X = Math.max(0, Math.min(X, a, n - b, a + d, n - b - d, Math.abs(d) - (b - a)))
 			fill = Float32Array.from(out)
 			for (let i = a - X; i < b + X; i++) fill[i] = out[i + d]
 		}
-		if (full) splice(out, fill, a, b, X)
-		else bandSplice(out, fill, a, b, f0, f1, o)
+		let y = full ? out : Float32Array.from(out)
+		splice(y, fill, a, b, X)
+		if (!full) bandSplice(out, y, a, b, f0, f1, o)
 	}
 	return out
 }
 
-// full band: raised-cosine (equal-gain) crossfade over X samples either side of [a, b), in place
+// x ← fill over [a, b), crossfaded with x over the X samples either side, in place: the fill's gain w
+// rises as sin², the program's g solves g² + w² + 2ρgw = 1 for the two signals' correlation ρ there,
+// so the power holds whether the fill continues the program (ρ = 1: equal gain) or only resembles it
+// (ρ = 0: equal power) (Fink, Holters & Zölzer, DAFx 2016)
 function splice(x, fill, a, b, X) {
-	for (let n = Math.max(0, a - X); n < Math.min(x.length, b + X); n++) {
-		let w = n < a ? Math.sin(Math.PI / 2 * (n - a + X + 0.5) / X) ** 2 : n >= b ? Math.cos(Math.PI / 2 * (n - b + 0.5) / X) ** 2 : 1
-		x[n] += w * (fill[n] - x[n])
+	let n0 = Math.max(0, a - X), n1 = Math.min(x.length, b + X), rL = rho(x, fill, n0, a), rR = rho(x, fill, b, n1)
+	for (let n = n0; n < n1; n++) {
+		if (n >= a && n < b) { x[n] = fill[n]; continue }
+		let w = n < a ? Math.sin(Math.PI / 2 * (n - a + X + 0.5) / X) ** 2 : Math.cos(Math.PI / 2 * (n - b + 0.5) / X) ** 2, r = n < a ? rL : rR
+		x[n] = (Math.sqrt(1 - w * w * (1 - r * r)) - r * w) * x[n] + w * fill[n]
 	}
 }
+const rho = (x, y, p, q) => { let s = 0, u = 0, v = 0; for (let n = p; n < q; n++) s += x[n] * y[n], u += x[n] * x[n], v += y[n] * y[n]; return clamp(s / Math.sqrt(u * v + 1e-30), 0, 1) }
 
 // band-limited: STFT frames overlapping [a, b) take bins [f0, f1] from the fill, in place
 function bandSplice(x, fill, a, b, f0, f1, { fs, N, hop }) {
@@ -319,12 +336,17 @@ function similar(x, a, b, { fs, N, hop, window }) {
 	let top = -Infinity, dBest = d0
 	for (let d = d0 - (hop >> 1); d <= d0 + (hop >> 1); d++) {
 		if (!ok(d)) continue
-		let sxy = 0, sxx = 0, syy = 0
-		for (let [p, q] of [[a - X, a], [b, b + X]]) for (let n = p; n < q; n++) { let u = x[n] || 0, v = x[n + d] || 0; sxy += u * v; sxx += u * u; syy += v * v }
-		let r = sxy / Math.sqrt(sxx * syy + 1e-30)
+		let r = corr(x, a, b, d, X)
 		if (r > top) top = r, dBest = d
 	}
 	return { d: dBest, r: top }
+}
+
+// normalized correlation of x with x shifted by d over the X samples either side of [a, b)
+function corr(x, a, b, d, X) {
+	let sxy = 0, sxx = 0, syy = 0
+	for (let [p, q] of [[a - X, a], [b, b + X]]) for (let n = p; n < q; n++) { let u = x[n] || 0, v = x[n + d] || 0; sxy += u * v; sxx += u * u; syy += v * v }
+	return sxy / Math.sqrt(sxx * syy + 1e-30)
 }
 
 function features(x, starts, usable, N, fs) {
@@ -340,30 +362,36 @@ function features(x, starts, usable, N, fs) {
 	return F
 }
 
-// ---- spectral: the original method, on a local span
-function spectral(x, a, b, f0, f1, { fs, N, hop }) {
-	let s0 = Math.max(0, a - 3 * N), s1 = Math.min(x.length, b + 3 * N), seg = x.subarray(s0, s1)
+// ---- spectral: the original method, on a local span. The frames between the last clean one before
+// the gap (pre) and the first after it (post) take the log-interpolated magnitude; each frame's phase
+// runs from the nearer of the two at its instantaneous frequencies there (from the frame beyond it),
+// so the frames touching either edge line up with the program's
+function specFill(x, a, b, { fs, N, hop }) {
+	let s0 = Math.max(0, a - 3 * N), s1 = Math.min(x.length, b + 3 * N), seg = x.subarray(s0, s1), fill = Float32Array.from(x)
 	let half = N >> 1, win = hannWindow(N)
 	let fPre = Math.max(0, Math.floor((a - s0 - N) / hop)), fPost = Math.ceil((b - s0) / hop)
 	let pre = frame(seg, fPre * hop, win), prePre = frame(seg, Math.max(0, fPre - 1) * hop, win)
 	let post = fPost * hop + N <= seg.length ? frame(seg, fPost * hop, win) : pre
-	let adv = new Float64Array(half + 1)
+	let back = (fPost + 1) * hop + N <= seg.length, postPost = back ? frame(seg, (fPost + 1) * hop, win) : null
+	let advL = new Float64Array(half + 1), advR = new Float64Array(half + 1)
 	for (let k = 0; k <= half; k++) {
 		let expected = PI2 * hop * k / N
-		adv[k] = expected + (fPre > 0 ? princ(pre.phase[k] - prePre.phase[k] - expected) : 0)
+		advL[k] = expected + (fPre > 0 ? princ(pre.phase[k] - prePre.phase[k] - expected) : 0)
+		if (back) advR[k] = expected + princ(postPost.phase[k] - post.phase[k] - expected)
 	}
-	let k0 = Math.max(0, Math.round(f0 * N / fs)), k1 = Math.min(half, Math.round(f1 * N / fs)), c = 0
+	let c = 0
 	let y = stftBatch(seg, (mag, phase, state, ctx) => {
 		let i = (ctx.pos ?? c++ * hop) / hop                     // the frame's index on the hop grid from seg's start
 		if (i <= fPre || i >= fPost) return { mag, phase }
-		let t = (i - fPre) / (fPost - fPre)
-		for (let k = k0; k <= k1; k++) {
+		let t = (i - fPre) / (fPost - fPre), left = !back || i - fPre <= fPost - i
+		for (let k = 0; k <= half; k++) {
 			mag[k] = Math.exp((1 - t) * Math.log(pre.mag[k] + 1e-12) + t * Math.log(post.mag[k] + 1e-12))
-			phase[k] = pre.phase[k] + (i - fPre) * adv[k]
+			phase[k] = left ? pre.phase[k] + (i - fPre) * advL[k] : post.phase[k] - (fPost - i) * advR[k]
 		}
 		return { mag, phase }
 	}, { frameSize: N, hopSize: hop, fs })
-	for (let n = (fPre + 1) * hop; n < Math.min(seg.length, (fPost - 1) * hop + N); n++) x[s0 + n] = y[n]
+	for (let n = (fPre + 1) * hop; n < Math.min(seg.length, (fPost - 1) * hop + N); n++) fill[s0 + n] = y[n]
+	return fill
 }
 
 function frame(data, pos, win) {

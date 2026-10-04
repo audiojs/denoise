@@ -10,13 +10,13 @@ export interface DesilenceOptions {
   maxSilence?: number
   /** remove-mode silence kept around speech (s), default 0.1 */
   pad?: number
-  /** dB override for the VAD's own adaptive floor; null uses vad()'s energy+flatness decision, default null */
+  /** absolute dB gate on frame energy in place of vad()'s decision (tracked floor, voicing); null uses vad(), default null */
   threshold?: number | null
   /** equal-power crossfade at every cut (s), default 0.01 */
   fade?: number
-  /** STFT frame forwarded to vad(), default 1024 */
+  /** STFT frame forwarded to vad(), default vad()'s: 3 periods of 75 Hz (2048 at 44.1/48 kHz) */
   frameSize?: number
-  /** STFT hop forwarded to vad(), default frameSize/2 */
+  /** STFT hop forwarded to vad(), default frameSize/4 */
   hopSize?: number
   /** speech gaps shorter than this are merged into one speech segment (s), default 0.15 */
   merge?: number

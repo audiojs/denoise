@@ -1,18 +1,16 @@
-/** Adaptive high-pass for wind buffeting / handling thumps. */
+/** Adaptive high-pass that comes in while wind (aperiodic low end) blows; the sound passes untouched otherwise. */
 export interface DewindOptions {
-  /** minimum cutoff (Hz), default 60 */
+  /** cutoff in light wind (Hz), default 60 */
   cutoffMin?: number
-  /** maximum cutoff (Hz), default 250 */
+  /** cutoff in strong wind (Hz), default 250 */
   cutoffMax?: number
-  /** HP sections (12 dB/oct each), default 2 */
+  /** Butterworth sections (12 dB/oct each), default 2 */
   order?: number
-  /** section Q, default 0.707 */
-  Q?: number
-  /** cutoff opening time (s), default 0.05 */
+  /** time to come in (s), default 0.05 */
   attack?: number
-  /** cutoff closing time (s), default 0.4 */
+  /** time to go back out after the wind (s), default 0.4 */
   release?: number
-  /** coefficient update interval (samples), default 1024 */
+  /** re-estimation interval (samples), default 5 ms */
   blockSize?: number
   /** sample rate, default 44100 */
   fs?: number

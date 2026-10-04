@@ -1,18 +1,12 @@
-/** Dense-crackle repair via MAD-thresholded AR residual. */
+/** Dense crackle: impulses that stand out of the AR prediction error and of the two-sided interpolation error, rebuilt a window at a time by exact least-squares AR interpolation, searched again on the rebuilt sound until none is new. */
 export interface DecrackleOptions {
-  /** AR model order, default 50 */
-  order?: number
-  /** analysis window (samples), default 2048 */
-  windowSize?: number
-  /** window hop (samples), default 1024 */
-  hopSize?: number
-  /** MAD multiple, default 2.5 */
+  /** sample rate, Hz; default 44100 */
+  fs?: number
+  /** how far over each error's local scale an impulse stands, multiples; default 4 */
   threshold?: number
-  /** samples widened around each event, default 1 */
-  guard?: number
-  /** longest repaired run (samples), default 12 */
-  maxBurst?: number
+  /** AR order of the detection; default 32 */
+  order?: number
 }
 
-/** Process in place; returns the same buffer. Pass the same options object across calls to persist state. */
+/** Returns a repaired copy. */
 export default function decrackle(data: Float32Array, options?: DecrackleOptions): Float32Array

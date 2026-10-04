@@ -10,7 +10,7 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 
 /** Chainable-host options for 'omlsa' */
 export interface OmlsaOptions {
-  /** 0.8..0.999 (default 0.98) */
+  /** 0.8..0.999 (default 0.97) */
   "alphaDD"?: Auto
   /** 0..0.95 (default 0) */
   "qPrior"?: Auto
@@ -28,8 +28,8 @@ export declare const omlsa: {
   latency: (ctx: { sampleRate: number, params: Live }) => number
   tail: 0
   params: {
-    /** 0.8..0.999 (default 0.98) [restart] */
-    "alphaDD": { type: "number", default: 0.98 }
+    /** 0.8..0.999 (default 0.97) [restart] */
+    "alphaDD": { type: "number", default: 0.97 }
     /** 0..0.95 (default 0) [restart] */
     "qPrior": { type: "number", default: 0 }
     /** -40..0 dB (default -15) [restart] */

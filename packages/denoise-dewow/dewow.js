@@ -1,35 +1,36 @@
 // Wow & flutter correction — pitch-drift removal for tape/vinyl/cassette transfers
 // (the classical, non-ML counterpart of Celemony Capstan).
 //
-// 1. Speed-curve estimation (one estimate per STFT hop, nominal = 1.0):
-//    'partial'   — STFT peak-picking (parabolic interpolation) + phase-vocoder
-//                  instantaneous frequency (unwrapped phase difference across the
-//                  hop), linked frame-to-frame into tracks (McAulay & Quatieri 1986
-//                  nearest-frequency continuity, ±3%/frame). Each track's
-//                  freq(t)/median(freq) is a speed-ratio estimate; frames combine
-//                  tracks by amplitude×length-weighted median (Godsill & Rayner,
-//                  Digital Audio Restoration, 1998, ch. 6 — pitch variation defects).
-//    'reference' — phase-vocoder IF locked to a single known bin (a mains hum
-//                  residual or a calibration tone), same technique as
-//                  denoise-dehum's Goertzel tracker but continuous per-hop instead
-//                  of a sweep (Czyżewski et al., "Wow detection and compensation
-//                  employing spectral processing of audio", JAES 2007).
-//    'pitch'     — @audio/pitch-pyin frame f0 relative to its own zero-phase
-//                  smoothed trend; only correct for monophonic material.
-// 2. Smoothing/separation: zero-phase (forward-backward) one-pole low-pass at
-//    `smooth` splits the curve into wow (<~6 Hz) and flutter (residual); gaps
-//    (no track/tone/voicing) hold the last value with exponential decay toward 1.
-// 3. Correction: variable-rate resampling. Integrate 1/speed into a warped read
-//    position and read the source with a 16-zero-crossing windowed sinc
-//    (@audio/resample-sinc), narrowing the anti-alias cutoff when the local read
-//    rate exceeds 1×. Multi-channel: one curve from the mono mix, applied to every
-//    channel so they stay sample-aligned.
+// A speed change of the medium scales every frequency in the recording by one ratio at one instant. A performer's
+// pitch movement (vibrato, a scoop, a glide, a melody, intonation) moves one source: one note and its harmonics.
+// That difference is all the estimator relies on; where the signal cannot show it, nothing is corrected.
 //
-// Refs: Howarth & Wolfe, "Correction of Wow and Flutter Effects in Analogue Tape
-// Transfers", AES 117th/118th Convention 2004/2005. Nichols, "The Digital
-// Restoration of Wow and Flutter Distorted Gramophone Recordings", 1999.
-// Celemony Capstan's product notes are the ML-based practical precedent this
-// package deliberately does not attempt to match — see README.
+// 1. Speed curve, one value per STFT hop, at the analysis frame's centre (nominal = 1):
+//    'partial'   — Godsill & Rayner, Digital Audio Restoration, 1998, ch. 8: log-frequency tracks
+//                  f_ni = f0_i + p_n + v_ni (eq. 8.9, 8.33), each track an unknown centre f0_i, the log speed p_n
+//                  common to all, under a zero-mean smoothness prior (eq. 8.23, 8.31). Their v_ni is i.i.d. noise,
+//                  and the method fails where vibrato or slides dominate (§8.1): a voice's harmonics move together,
+//                  so a per-track consensus follows its vibrato. Here harmonics of one note are grouped into one
+//                  source and count once, and a hop is evidence only where at least two independent sources agree
+//                  on it (re-weighted least squares, Tukey's biweight, annealed), solved on hop-to-hop increments so
+//                  the centres never need estimating. A Wiener gate then keeps of the curve only what stands above
+//                  its own measured uncertainty. A lone voice, however many harmonics, measures nothing: its
+//                  vibrato and wow are the same observation. Tracks: STFT peak-picking, McAulay & Quatieri 1986
+//                  nearest-frequency linking, phase-vocoder instantaneous frequency.
+//    'reference' — phase-vocoder IF locked to one known tone (mains hum, a pilot or calibration tone): a source
+//                  known not to move, so evidence on its own; the method of choice where such a tone is present.
+//                  Czyżewski et al., "Wow detection and compensation employing spectral processing of audio",
+//                  AES 117th Convention, 2004; "DSP techniques for determining 'wow' distortion", JAES, 2007.
+//    'pitch'     — @audio/pitch-pyin f0 relative to its own zero-phase smoothed trend: monophonic material, and it
+//                  takes the performer's own pitch movement for speed (opt-in).
+// 2. Hops without evidence return to 1 (the prior's mean): no evidence, no correction; a clip with none comes back
+//    bit-exact. The curve splits into wow (zero-phase one-pole low-pass at `smooth`) and flutter (the residual).
+// 3. Correction: variable-rate resampling. Integrate 1/speed into a warped read position and read the source with
+//    a 16-zero-crossing windowed sinc (@audio/resample-sinc), narrowing the anti-alias cutoff when the local read
+//    rate exceeds 1×. Multi-channel: one curve from the mono mix, applied to every channel so they stay aligned.
+//
+// Refs: Howarth & Wolfe, "Correction of Wow and Flutter Effects in Analogue Tape Transfers", AES 117th/118th
+// Convention 2004/2005. Nichols, "The Digital Restoration of Wow and Flutter Distorted Gramophone Recordings", 1999.
 
 import { stftAnalyse } from '@audio/stft'
 import { sincRead } from '@audio/resample-sinc'
@@ -49,7 +50,7 @@ function normalizeOpts(opts) {
 		wow: opts.wow ?? true,
 		flutter: opts.flutter ?? true,
 		maxDeviation: opts.maxDeviation ?? 0.05,
-		minTrack: opts.minTrack ?? 0.5,
+		minTrack: opts.minTrack ?? 0.1,
 		keepLength: opts.keepLength ?? true,
 		minFreq: opts.minFreq ?? 50,
 		maxFreq: opts.maxFreq ?? 2000,
@@ -74,42 +75,20 @@ function normalizeChannels(data) {
 
 function wrapPhase(p) { return p - Math.floor(p / PI2 + 0.5) * PI2 }  // floor(x + 0.5) rounds like Math.round here, several times faster in V8 (hot: per bin per frame)
 
-// Phase-vocoder instantaneous frequency at bin k, given this frame's phase and
-// the previous frame's phase at the same bin. Exact for a stationary sinusoid
-// within ±fs/(2·hop) of the bin center — e.g. ±43 Hz at the fs=44100/hop=512
-// default, comfortably above realistic wow/flutter deviations of a few Hz to a
-// few tens of Hz.
-function instFreq(phase, prevPhase, k, fs, hop, N) {
-	let expected = PI2 * hop * k / N
-	let d = wrapPhase(phase[k] - prevPhase[k] - expected)
-	return k * fs / N + d * fs / (PI2 * hop)
-}
-
 // Phase-vocoder IF needs the analysed signal to be roughly stationary across the
 // WHOLE analysis window, not just across one hop — the frame-to-frame phase
 // difference is effectively an average over the frame's own span. At the default
 // frameSize (4096, 93 ms) that holds fine for wow (<6 Hz, period > 166 ms) but not
 // for flutter — a 30 Hz component (33 ms period) completes ~2.8 cycles inside one
-// window and the IF estimate collapses toward the mean, understating the true
-// swing by an order of magnitude (measured: a synthetic ±0.4% 30 Hz flutter on a
-// 440 Hz tone reads back as ~0 at frameSize 4096, correlation −0.18 against the
-// true curve — worse than noise). A short window recovers it (correlation 0.996
-// at 512 samples/11.6 ms) but a *plain* 512-sample FFT then can't separate our own
-// test chord's partials (220/330 Hz are 110 Hz apart — inside a 512-point/44.1 kHz
-// Hann main lobe). 1024 samples (23.2 ms, ~0.7 flutter cycles, some understatement
-// but within test tolerance) is the balance that keeps both working.
-//
-// So peak-picking / track continuity run at the caller's (large) frameSize — that
-// needs the fine frequency resolution to separate nearby partials — while the
-// actual IF numbers come from a Goertzel-style direct evaluation of the DFT at the
-// *exact* target frequency (not snapped to any FFT bin grid) over a short window
-// (`IF_FRAME`), at the same hop. An FFT-bin version of this (evaluate a second,
-// short-window FFT and pick whichever of the two nearest bins is louder) was tried
-// first and rejected: a target sitting near a bin boundary (a 220 Hz partial sits
-// at bin 2.5 of a 512-point/44.1 kHz grid) flickers between neighbours from one
-// frame to the next, corrupting the estimate far worse than the window-length
-// problem it was meant to fix. Evaluating directly at the target frequency has no
-// grid to flicker across.
+// window and the IF estimate collapses toward the mean (measured: a synthetic ±0.4%
+// 30 Hz flutter on a 440 Hz tone reads back as ~0 at frameSize 4096, correlation
+// −0.18 against the true curve). 'partial' mode accepts that: dense music needs the
+// long frame to keep neighbouring partials out of each other's reading (a 1024-sample
+// reading, tried, let a C-E-G triad's fundamentals, 62–68 Hz apart, beat into each
+// other). A single known tone has no neighbours once band-passed, so 'reference'
+// mode reads it over a short window (`IF_FRAME`, or ~4.5 cycles of a low tone) and
+// resolves flutter, via a Goertzel-style evaluation of the DFT at the *exact* target
+// frequency — no bin grid to flicker across from one frame to the next.
 const IF_FRAME = 1024
 
 // Windowed single-frequency DFT of `data[pos..pos+N)` at `freqHz`, via an
@@ -120,7 +99,7 @@ function goertzelDft(data, pos, N, freqHz, fs, win) {
 	let cw = Math.cos(w), sw = Math.sin(w) // e^{-iw} per-sample rotation
 	let ca = 1, sa = 0, re = 0, im = 0
 	for (let i = 0; i < N; i++) {
-		let x = (data[pos + i] || 0) * win[i]
+		let x = data[pos + i] * win[i]
 		re += x * ca
 		im -= x * sa
 		let ca1 = ca * cw - sa * sw
@@ -136,48 +115,48 @@ function hann(N) {
 	return w
 }
 
-// Tracks the phase-vocoder instantaneous frequency of a (slowly moving) target
-// frequency across hops, without needing a persistent per-track buffer: each call
-// re-evaluates both frames it needs, trading a little redundant work (2×ifN
-// samples per call) for a stateless, per-call API that partialCurve/referenceCurve
-// can call with a different target frequency per live track. `ifN` — the caller
-// picks it (see IF_FRAME and referenceCurve's frequency-scaled window below).
-function makeFineTracker(source, fs, hop, ifN) {
+// Phase-vocoder instantaneous frequency of a (slowly moving) target frequency at hop t: the phase advance between
+// two `ifN` windows one hop apart, placed symmetrically about the STFT frame's centre (t·hop + frameSize/2), so the
+// reading belongs to the same instant as the frame it was picked in and as the curve sample it becomes. Stateless
+// per call (re-evaluates both windows), so each live track can ask at its own frequency. NaN where a window leaves
+// the signal.
+function makeFineTracker(source, fs, hop, ifN, centre) {
 	let win = hann(ifN)
-	let nFrames = source.length >= ifN ? Math.floor((source.length - ifN) / hop) + 1 : 0
-	// frame 0 has no previous frame — no phase-vocoder IF is possible yet. Falling
-	// back to the raw bin-center frequency would seed every track/reference-bin with
-	// a bin-quantization error, so callers treat that fallback as low-confidence
-	// (partialCurve's `settle`, referenceCurve's magnitude gate).
 	return function freqAt(t, freqHz) {
-		if (t <= 0 || t >= nFrames) return freqHz
-		let [re0, im0] = goertzelDft(source, (t - 1) * hop, ifN, freqHz, fs, win)
-		let [re1, im1] = goertzelDft(source, t * hop, ifN, freqHz, fs, win)
-		let expected = PI2 * hop * freqHz / fs
-		let d = wrapPhase(Math.atan2(im1, re1) - Math.atan2(im0, re0) - expected)
+		let a = Math.round(t * hop + centre - (ifN + hop) / 2)
+		if (a < 0 || a + hop + ifN > source.length) return NaN
+		let [re0, im0] = goertzelDft(source, a, ifN, freqHz, fs, win)
+		let [re1, im1] = goertzelDft(source, a + hop, ifN, freqHz, fs, win)
+		let d = wrapPhase(Math.atan2(im1, re1) - Math.atan2(im0, re0) - PI2 * hop * freqHz / fs)
 		return freqHz + d * fs / (PI2 * hop)
 	}
 }
 
-// ---- mode 'partial': STFT peak-picking + McAulay-Quatieri partial tracking ----
+// ---- mode 'partial': partial tracks → sources → the speed they agree on ----
 
-function partialCurve(mono, o) {
-	let { fs, frameSize: N, hopSize: hop, minTrack } = o
+// STFT peak-picking + McAulay-Quatieri nearest-frequency linking (±3 %/hop), within [minFreq, maxFreq]. A track may
+// follow a vibrato or a glide: what its movement means is decided later, by whether other sources share it.
+// Frequency: the phase-vocoder IF at the peak bin, over the frame (93 ms at the defaults): wow (< 6 Hz) is
+// resolved, flutter is averaged away (a tone in 'reference' mode resolves it); a shorter window would let
+// neighbouring partials of dense music into each other's reading.
+function trackPartials(mono, o) {
+	let { fs, frameSize: N, hopSize: hop } = o
 	let half = N >> 1
-	let fine = makeFineTracker(mono, fs, hop, Math.min(N, IF_FRAME))
+	let k0 = Math.max(2, Math.floor(o.minFreq * N / fs)), k1 = Math.min(half - 2, Math.ceil(o.maxFreq * N / fs))
+	let prev = new Float64Array(half + 1)
 	let live = [], done = []
 	let t = 0
 
-	stftAnalyse(mono, (mag) => {
+	stftAnalyse(mono, (mag, phase) => {
 		let maxMag = 0
 		for (let k = 0; k <= half; k++) if (mag[k] > maxMag) maxMag = mag[k]
 		// -50 dB relative to the frame's loudest bin: conservative vs. sinusoidal-track's
 		// -60 dB default — we need long *stable* tracks for a speed estimate, not maximal
 		// peak recall, so a slightly higher floor trades a few weak partials for fewer
-		// spurious noise-bin tracks that would corrupt the weighted median.
+		// spurious noise-bin tracks.
 		let floor = maxMag * 3.1622776601683795e-3 // 10^(-50/20)
 		let peaks = []
-		if (maxMag > 0) {
+		if (maxMag > 0 && t > 0) {
 			// A Hann-windowed pure tone has its own local maxima beyond the main lobe —
 			// the first sidelobe is only ~31.5 dB down, well above the floor above — so a
 			// plain "local max + amplitude" scan mistakes window sidelobes for extra
@@ -186,7 +165,7 @@ function partialCurve(mono, o) {
 			// accept the loudest first, then reject anything within one Hann main-lobe
 			// width (4 bins, null-to-null) of an already-accepted bin.
 			let cands = []
-			for (let k = 2; k < half - 2; k++) {
+			for (let k = k0; k < k1; k++) {
 				if (mag[k] > floor && mag[k] > mag[k - 1] && mag[k] >= mag[k + 1]) cands.push(k)
 			}
 			cands.sort((a, b) => mag[b] - mag[a])
@@ -194,13 +173,17 @@ function partialCurve(mono, o) {
 			for (let k of cands) {
 				if (accepted.some(k0 => Math.abs(k - k0) < 4)) continue
 				accepted.push(k)
-				peaks.push({ freq: fine(t, k * fs / N), amp: mag[k] })
+				// A sinusoid's IF (phase advance over the hop) sits where its magnitude peaks (log-parabolic
+				// interpolation, within ~0.05 bin for a Hann window); a noise peak's phase advance is arbitrary,
+				// ±hop/2 bins around it. Kept only where the two agree within SINUS_TOL bins: a noise track would
+				// have to pass by chance hop after hop
+				let bin = k + wrapPhase(phase[k] - prev[k] - PI2 * hop * k / N) * N / (PI2 * hop)
+				let a = Math.log(mag[k - 1] + 1e-30), b = Math.log(mag[k]), c = Math.log(mag[k + 1] + 1e-30), den = a - 2 * b + c
+				if (Math.abs(bin - k - (den < 0 ? 0.5 * (a - c) / den : 0)) < SINUS_TOL) peaks.push({ freq: bin * fs / N, amp: mag[k] })
 			}
 		}
+		prev.set(phase)
 
-		// link live tracks to the nearest unclaimed peak within ±3% (McAulay-Quatieri
-		// nearest-frequency continuity, same scheme as @audio/sinusoidal-track but with
-		// the phase-vocoder frequency instead of the parabolic-interpolated bin).
 		let claimed = new Set()
 		for (let tr of live) {
 			let last = tr.freq[tr.freq.length - 1]
@@ -222,54 +205,202 @@ function partialCurve(mono, o) {
 	}, { frameSize: N, hopSize: hop, fs })
 	done.push(...live)
 
-	let nFrames = t
-	let minFrames = Math.max(1, Math.round(minTrack * fs / hop))
+	let minFrames = Math.max(SETTLE + 2, Math.round(o.minTrack * fs / hop))
 	let maxTrackAmp = 0
 	for (let tr of done) {
 		let m = 0; for (let a of tr.amp) m += a; m /= tr.amp.length
 		tr.meanAmp = m
 		if (m > maxTrackAmp) maxTrackAmp = m
 	}
-	let ampFloor = maxTrackAmp * 0.05 // keep loud tracks: within -26 dB of the loudest
-	let kept = done.filter(tr => tr.freq.length >= minFrames && tr.meanAmp >= ampFloor)
-	// A track's first couple of frames are its least reliable: a partial is often "new"
-	// exactly because an onset/transient just put energy in that bin, and the phase
-	// vocoder's local-stationarity assumption is weakest right there. `settle` frames
-	// (kept-length tracks are ≥ minFrames long, so this is always a small fraction) are
-	// excluded from both the track's reference median and its per-frame contribution.
-	let settle = 2
+	// Keep tracks within −50 dB of the loudest (every source that can witness, the weak ones too); drop each track's
+	// first SETTLE hops: a partial is often "new" because an onset just put energy in its bin, where the phase
+	// vocoder's stationarity is weakest.
+	let kept = done.filter(tr => tr.freq.length >= minFrames && tr.meanAmp >= maxTrackAmp * TRACK_FLOOR)
 	for (let tr of kept) {
-		let core = tr.freq.slice(settle)
-		let sorted = core.slice().sort((a, b) => a - b)
-		tr.median = sorted[sorted.length >> 1]
+		let f = Float64Array.from(tr.freq.slice(SETTLE), Math.log), s = f.slice().sort()
+		tr.median = s[s.length >> 1]
+		tr.length = tr.freq.length
+		tr.start += SETTLE
+		tr.freq = f
+		tr.amp = Float64Array.from(tr.amp.slice(SETTLE))
 	}
+	return { tracks: kept, nFrames: t }
+}
+const SETTLE = 2, SINUS_TOL = 0.25, TRACK_FLOOR = 3.1622776601683795e-3 // 10^(-50/20)
 
-	let speed = new Float64Array(nFrames).fill(NaN)
-	let vals = [], weights = []
-	for (let f = 0; f < nFrames; f++) {
-		vals.length = 0; weights.length = 0
-		for (let tr of kept) {
-			if (f < tr.start + settle || f > tr.end) continue
-			let idx = f - tr.start
-			vals.push(tr.freq[idx] / tr.median)
-			weights.push(tr.amp[idx] * tr.freq.length) // amplitude × track length
+// Harmonics of one note share its pitch movement exactly (a periodic source's partials are integer multiples of one
+// f0 at every instant), so together they are one witness to the speed, not many. Two tracks are taken for one source
+// when, over their overlap, the median ratio of their frequencies is h/k within HARM_TOL, k ≤ 2 (the lower one the
+// fundamental or the 2nd harmonic: a weak fundamental) and h ≤ 20k (a voice's harmonics within maxFreq). HARM_TOL:
+// measured on harmonics of a ±50-cent vibrato voice, synthetic and VocalSet, whose IF over a moving frame is biased by
+// up to 0.2 %. Independent notes an octave or a fifth apart pass too: merging them costs evidence, never adds false.
+const HARM_TOL = 0.003, HARM_K = 2, HARM_H = 20
+
+function harmonicPairs(tracks) {
+	let adj = tracks.map(() => [])
+	for (let i = 0; i < tracks.length; i++) for (let j = i + 1; j < tracks.length; j++) {
+		let a = tracks[i], b = tracks[j], s = Math.max(a.start, b.start), e = Math.min(a.end, b.end)
+		if (s > e) continue
+		let r = []
+		for (let n = s; n <= e; n++) r.push(Math.abs(a.freq[n - a.start] - b.freq[n - b.start]))
+		r.sort((x, y) => x - y)
+		let ratio = Math.exp(r[r.length >> 1])
+		for (let k = 1; k <= HARM_K; k++) {
+			let h = Math.round(ratio * k)
+			if (h > k && h <= HARM_H * k && Math.abs(Math.log(ratio * k / h)) < HARM_TOL) { adj[i].push(j); adj[j].push(i); break }
 		}
-		if (vals.length) speed[f] = weightedMedian(vals, weights)
 	}
-
-	let tracks = kept.map(tr => ({ start: tr.start, end: tr.end, freq: tr.median, length: tr.freq.length }))
-	return { speed, tracks }
+	return adj
 }
 
-function weightedMedian(vals, weights) {
-	let idx = vals.map((_, i) => i).sort((a, b) => vals[a] - vals[b])
-	let total = 0; for (let w of weights) total += w
-	let acc = 0
-	for (let i of idx) { acc += weights[i]; if (acc * 2 >= total) return vals[i] }
-	return vals[idx[idx.length - 1]]
+// A track agrees with the speed where its log frequency less p is constant over ±WIN hops (the RMS about the local
+// mean: offset-free), biweight at the scale c (Tukey). ±WIN hops (±93 ms at the defaults) span a vibrato cycle
+// (4–8 Hz), which then never agrees; wow, slower, moves the window as one. The scale anneals from 3 %, wide enough
+// that wow itself is not taken for disagreement, to 0.2 %, the local scatter of two steady partials. EV0: weak
+// agreement is no evidence (two sources count once each is past biweight 0.3, |r| < 0.67c).
+const SCALES = [0.03, 0.015, 0.008, 0.004, 0.002, 0.002, 0.002], WIN = 8, EV0 = 0.3
+const biweight = (r, c) => { let q = r / c; return q * q < 1 ? (1 - q * q) ** 2 : 0 }
+
+function partialCurve(mono, o) {
+	let { tracks, nFrames } = trackPartials(mono, o)
+	let adj = harmonicPairs(tracks)
+
+	// per hop: the active tracks, grouped into sources (connected components of the harmonic relation)
+	let active = Array.from({ length: nFrames }, () => [])
+	tracks.forEach((tr, i) => { for (let n = tr.start; n <= tr.end; n++) active[n].push(i) })
+	let root = new Int32Array(tracks.length), comp = active.map(act => {
+		for (let i of act) root[i] = i
+		let find = i => { while (root[i] !== i) i = root[i] = root[root[i]]; return i }
+		let on = new Set(act)
+		for (let i of act) for (let j of adj[i]) if (on.has(j)) root[find(i)] = find(j)
+		let ids = new Map()
+		return act.map(i => { let r = find(i); if (!ids.has(r)) ids.set(r, ids.size); return ids.get(r) })
+	})
+
+	// Each track's centre frequency f0_i is unknown, its hop-to-hop change is not: Δf_ni = Δp_n + Δv_ni. The speed
+	// is solved on increments, the offsets never estimated, its level left to the zero-mean prior. Re-weighted from
+	// p = 0: a source's weight at a hop is its best-agreeing partial's, its increment the mean of its partials'
+	// (agreement × amplitude); the hop's evidence is the total source weight less the largest one — what survives
+	// losing any one source, zero unless two independent sources agree; r2 their scatter about the consensus.
+	let p = new Float64Array(nFrames), ev = new Float64Array(nFrames), dbar = new Float64Array(nFrames), r2 = new Float64Array(nFrames)
+	let u = tracks.map(tr => new Float64Array(tr.freq.length))
+	for (let c of SCALES) {
+		tracks.forEach((tr, i) => agreement(tr, p, c, u[i]))
+		ev.fill(0); dbar.fill(0); r2.fill(0)
+		for (let n = 1; n < nFrames; n++) {
+			let act = active[n], cp = comp[n], K = act.length ? Math.max(...cp) + 1 : 0
+			if (K < 2) continue
+			let ws = new Float64Array(K), ds = new Float64Array(K), as = new Float64Array(K)
+			act.forEach((i, m) => {
+				let tr = tracks[i], j = n - tr.start
+				if (j < 1) return
+				let w = Math.min(u[i][j], u[i][j - 1]), q = w * tr.amp[j], k = cp[m]
+				if (w > ws[k]) ws[k] = w
+				ds[k] += q * (tr.freq[j] - tr.freq[j - 1]); as[k] += q
+			})
+			let S = 0, M = 0, Z = 0, Q = 0
+			for (let k = 0; k < K; k++) if (as[k] > 0) { ds[k] /= as[k]; S += ws[k]; if (ws[k] > M) M = ws[k]; Z += ws[k] * ds[k] }
+			if (!(S > 0)) continue
+			dbar[n] = Z / S
+			for (let k = 0; k < K; k++) if (as[k] > 0) Q += ws[k] * (ds[k] - dbar[n]) ** 2
+			ev[n] = Math.max(0, S - M - EV0)
+			r2[n] = Q / S
+		}
+		p = solveIncrements(ev, dbar, o)
+	}
+	wiener(p, ev, r2, o)
+	return { p, ev, centre: o.frameSize / 2 - o.hopSize / 2, tracks: tracks.map(tr => ({ start: tr.start - SETTLE, end: tr.end, freq: Math.exp(tr.median), length: tr.length })) }
 }
 
-// ---- mode 'reference': phase-vocoder IF locked to a single known bin ----
+// biweight of a track's local disagreement with p at each of its hops (prefix sums: O(length))
+function agreement(tr, p, c, out) {
+	let L = tr.freq.length, s1 = new Float64Array(L + 1), s2 = new Float64Array(L + 1)
+	for (let j = 0; j < L; j++) { let e = tr.freq[j] - p[tr.start + j]; s1[j + 1] = s1[j] + e; s2[j + 1] = s2[j] + e * e }
+	for (let j = 0; j < L; j++) {
+		let a = Math.max(0, j - WIN), b = Math.min(L, j + WIN + 1), k = b - a, m = (s1[b] - s1[a]) / k
+		out[j] = biweight(Math.sqrt(Math.max(0, (s2[b] - s2[a]) / k - m * m)), c)
+	}
+}
+
+// MAP log speed from its increments under a zero-mean smoothness prior (Godsill & Rayner eq. 8.23, 8.31):
+//   Σ ev_n (p_n − p_{n−1} − d_n)² + α Σ (Δ²p_n)² + β Σ p_n²
+// α sets the curve's bandwidth: half power at WOW_HZ for unit evidence, α·(2 sin(π f/F))² = 1 (F the hop rate). β
+// sets the slowest variation corrected, DRIFT_HZ (β = (2 sin(π DRIFT_HZ/F))²): slower is the transport's drift, not
+// wow (a disc turns at 0.55–1.3 Hz). Across a stretch without evidence the curve returns to 0 in (α/β)^(1/4) hops.
+const WOW_HZ = 6, DRIFT_HZ = 0.1
+function solveIncrements(e, d, o) {
+	let n = e.length, F = o.fs / o.hopSize
+	let alpha = 1 / (2 * Math.sin(Math.PI * Math.min(WOW_HZ, F / 3) / F)) ** 2, beta = (2 * Math.sin(Math.PI * DRIFT_HZ / F)) ** 2
+	let d0 = new Float64Array(n).fill(beta), d1 = new Float64Array(n), d2 = new Float64Array(n), b = new Float64Array(n)
+	for (let i = 1; i < n; i++) { d0[i] += e[i]; d0[i - 1] += e[i]; d1[i - 1] -= e[i]; b[i] += e[i] * d[i]; b[i - 1] -= e[i] * d[i] }
+	for (let i = 0; i + 2 < n; i++) {
+		d0[i] += alpha; d0[i + 1] += 4 * alpha; d0[i + 2] += alpha
+		d1[i] -= 2 * alpha; d1[i + 1] -= 2 * alpha
+		d2[i] += alpha
+	}
+	return pentaSolve(d0, d1, d2, b)
+}
+
+// What the curve is worth. The agreeing sources' increments scatter about their consensus (IF noise, a string
+// settling, a player's drift): a hop's consensus carries noise variance r2/ev. Carried through the same solve (DRAWS
+// random-sign draws), it is the noise in the curve; over ±GATE_S the curve keeps the share of its power that stands
+// above GATE_K × that noise, G = 1 − GATE_K·noise/power (Wiener). GATE_K > 1: sources kept for agreeing scatter
+// less than they err, and some move together on their own (a strummed chord settling, a fretting hand's pressure);
+// chosen on the tuning music: at 2 no clean clip gains a cent of pitch instability, at 1 a strummed guitar gained
+// 2.3 cents. Wow is a property of the transport and lasts: a window holding less than MIN_EV_S of evidence (a few
+// hops where a speaker's unlinked harmonics agreed with each other) measures nothing — without it 12 of 504 clean
+// VoiceBank+DEMAND training utterances moved, by up to 1.7 cents; with it none. Where the agreed speed does not
+// stand clearly above its own uncertainty, nothing is corrected.
+const GATE_S = 2, GATE_K = 2, DRAWS = 4, MIN_EV_S = 0.25
+function wiener(p, ev, r2, o) {
+	let n = p.length, W = Math.round(GATE_S * o.fs / o.hopSize), noise = new Float64Array(n)
+	let seed = 1, rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296
+	for (let k = 0; k < DRAWS; k++) {
+		let q = solveIncrements(ev, Float64Array.from(r2, (v, f) => ev[f] > 0 ? (rnd() < 0.5 ? -1 : 1) * Math.sqrt(v / ev[f]) : 0), o)
+		for (let f = 0; f < n; f++) noise[f] += q[f] * q[f] / DRAWS
+	}
+	let cp = new Float64Array(n + 1), cv = new Float64Array(n + 1), ce = new Float64Array(n + 1), kMin = MIN_EV_S * o.fs / o.hopSize
+	for (let f = 0; f < n; f++) { cp[f + 1] = cp[f] + p[f] * p[f]; cv[f + 1] = cv[f] + noise[f]; ce[f + 1] = ce[f] + Math.min(ev[f], 1) }
+	let g = new Float64Array(n)
+	for (let f = 0; f < n; f++) {
+		let a = Math.max(0, f - W), b = Math.min(n, f + W + 1), P = cp[b] - cp[a]
+		g[f] = P > 0 && ce[b] - ce[a] >= kMin ? Math.max(0, 1 - GATE_K * (cv[b] - cv[a]) / P) : 0
+	}
+	for (let f = 0; f < n; f++) p[f] *= g[f]
+}
+
+// A tone measures the speed's level directly ('reference': its nominal is known; 'pitch': its own trend), lightly
+// smoothed (half power at a third of the hop rate: flutter passes); across a gap without evidence the curve returns
+// to 0 within ~GAP_S: minimise Σ ev_n (z_n − p_n)² + α Σ (Δ²p_n)² + β Σ p_n², β = α/(GAP_S·F)⁴.
+const GAP_S = 0.1
+function levelSolve(e, z, o) {
+	let n = e.length, F = o.fs / o.hopSize
+	let alpha = 1 / (2 * Math.sin(Math.PI / 3)) ** 4, beta = alpha / (GAP_S * F) ** 4
+	let d0 = new Float64Array(n), d1 = new Float64Array(n), d2 = new Float64Array(n), b = new Float64Array(n)
+	for (let i = 0; i < n; i++) { d0[i] = e[i] + beta; b[i] = e[i] * z[i] }
+	for (let i = 0; i + 2 < n; i++) {
+		d0[i] += alpha; d0[i + 1] += 4 * alpha; d0[i + 2] += alpha
+		d1[i] -= 2 * alpha; d1[i + 1] -= 2 * alpha
+		d2[i] += alpha
+	}
+	return pentaSolve(d0, d1, d2, b)
+}
+
+// symmetric positive-definite pentadiagonal system (main d0, first and second super-diagonals d1, d2): LDLᵀ
+function pentaSolve(d0, d1, d2, b) {
+	let n = d0.length, D = new Float64Array(n), l1 = new Float64Array(n), l2 = new Float64Array(n), y = new Float64Array(n)
+	for (let i = 0; i < n; i++) {
+		D[i] = d0[i] - (i > 0 ? l1[i - 1] ** 2 * D[i - 1] : 0) - (i > 1 ? l2[i - 2] ** 2 * D[i - 2] : 0)
+		l1[i] = (d1[i] - (i > 0 ? l2[i - 1] * D[i - 1] * l1[i - 1] : 0)) / D[i]
+		l2[i] = d2[i] / D[i]
+		y[i] = b[i] - (i > 0 ? l1[i - 1] * y[i - 1] : 0) - (i > 1 ? l2[i - 2] * y[i - 2] : 0)
+	}
+	let x = new Float64Array(n)
+	for (let i = n - 1; i >= 0; i--) x[i] = y[i] / D[i] - (i + 1 < n ? l1[i] * x[i + 1] : 0) - (i + 2 < n ? l2[i] * x[i + 2] : 0)
+	return x
+}
+
+// ---- mode 'reference': phase-vocoder IF locked to a single known tone ----
 
 function referenceCurve(mono, o) {
 	let { fs, frameSize: N, hopSize: hop, refFreq } = o
@@ -294,25 +425,24 @@ function referenceCurve(mono, o) {
 	//    high refFreq (a 1 kHz calibration tone) just floors out at IF_FRAME.
 	let filtered = cascade(Float64Array.from(mono), [bandpass(refFreq, 5, fs)])
 	let ifN = Math.max(IF_FRAME, Math.min(8192, Math.round(4.5 * fs / refFreq)))
-	let fine = makeFineTracker(filtered, fs, hop, ifN)
+	let fine = makeFineTracker(filtered, fs, hop, ifN, N / 2)
 	let t = 0
-	let ratios = [], mags = []
+	let p = [], mags = []
 	stftAnalyse(filtered, (mag) => {
-		// frame 0: fine() has no previous phase yet and returns refFreq unchanged —
-		// mark it as no-evidence rather than trust an un-refined estimate.
-		ratios.push(t > 0 ? fine(t, refFreq) / refFreq : NaN)
+		p.push(Math.log(fine(t, refFreq) / refFreq))
 		mags.push(mag[k0])
 		t++
 	}, { frameSize: N, hopSize: hop, fs })
 
-	// gate weak frames (tone dropout / pure silence) — a frame's estimate is only
-	// trusted when the tracked bin holds a non-trivial fraction of its typical energy.
+	// a hop is evidence when the tone holds a non-trivial fraction of its typical energy (tone dropout / silence)
 	let sorted = mags.slice().sort((a, b) => a - b)
-	let medMag = sorted[sorted.length >> 1] || 0
-	let floor = medMag * 0.1
-	let speed = new Float64Array(ratios.length)
-	for (let i = 0; i < ratios.length; i++) speed[i] = mags[i] > floor && mags[i] > 1e-12 ? ratios[i] : NaN
-	return speed
+	let floor = (sorted[sorted.length >> 1] || 0) * 0.1
+	let ev = new Float64Array(t)
+	for (let i = 0; i < t; i++) {
+		if (mags[i] > floor && mags[i] > 1e-12 && Number.isFinite(p[i])) ev[i] = 1
+		else p[i] = 0
+	}
+	return { p: levelSolve(ev, p, o), ev, centre: N / 2 }
 }
 
 // ---- mode 'pitch': frame f0 relative to its own smoothed trend ----
@@ -334,9 +464,9 @@ function pitchCurve(mono, o) {
 	// recover slow wow in 'pitch' mode, at the cost of also absorbing real vibrato.
 	let held = holdLast(f0)
 	let baseline = zeroPhaseOnePole(held, hop / fs, smooth)
-	let speed = new Float64Array(nFrames)
-	for (let t = 0; t < nFrames; t++) speed[t] = Number.isFinite(f0[t]) && baseline[t] > 0 ? f0[t] / baseline[t] : NaN
-	return speed
+	let p = new Float64Array(nFrames), ev = new Float64Array(nFrames)
+	for (let t = 0; t < nFrames; t++) if (Number.isFinite(f0[t]) && baseline[t] > 0) { p[t] = Math.log(f0[t] / baseline[t]); ev[t] = 1 }
+	return { p: levelSolve(ev, p, o), ev, centre: N / 2 }
 }
 
 function holdLast(curve) {
@@ -353,21 +483,7 @@ function holdLast(curve) {
 	return out
 }
 
-// ---- shared: gap fill, zero-phase smoothing, per-sample warp ----
-
-// No-evidence frames hold the last speed estimate, decaying toward the nominal 1.0
-// (tape assumed to return to nominal speed absent contrary evidence). Leading gaps
-// (no estimate yet) start from 1.0.
-function holdDecayToward1(curve, hopSec, decayTau = 0.3) {
-	let out = new Float64Array(curve.length)
-	let a = Math.exp(-hopSec / decayTau)
-	let last = 1
-	for (let i = 0; i < curve.length; i++) {
-		if (Number.isFinite(curve[i])) { out[i] = curve[i]; last = curve[i] }
-		else { last = 1 + (last - 1) * a; out[i] = last }
-	}
-	return out
-}
+// ---- shared: zero-phase smoothing, per-sample warp ----
 
 // Forward-backward one-pole low-pass — zero phase, no group delay. Time constant
 // `tau` seconds; `hopSec` is the curve's own sample spacing.
@@ -384,17 +500,17 @@ function zeroPhaseOnePole(curve, hopSec, tau) {
 	return out
 }
 
-function upsampleToSamples(curve, hop, nSamples) {
+// per-hop curve (hop t at sample t·hop + centre) → per-sample, linear between hops, held past the ends
+function upsampleToSamples(curve, hop, centre, nSamples) {
 	let n = curve.length
 	let out = new Float64Array(nSamples)
 	if (n === 0) { out.fill(1); return out }
-	if (n === 1) { out.fill(curve[0]); return out }
 	for (let i = 0; i < nSamples; i++) {
-		let p = i / hop
-		let f0 = Math.floor(p), frac = p - f0
-		let a = curve[f0 < 0 ? 0 : f0 >= n ? n - 1 : f0]
-		let b = curve[f0 + 1 < 0 ? 0 : f0 + 1 >= n ? n - 1 : f0 + 1]
-		out[i] = a + (b - a) * frac
+		let q = (i - centre) / hop
+		if (q <= 0) { out[i] = curve[0]; continue }
+		if (q >= n - 1) { out[i] = curve[n - 1]; continue }
+		let f0 = Math.floor(q), frac = q - f0
+		out[i] = curve[f0] + (curve[f0 + 1] - curve[f0]) * frac
 	}
 	return out
 }
@@ -431,23 +547,21 @@ function buildPositions(spd, outLen) {
 
 function computeCurve(mono, o) {
 	let hop = o.hopSize, hopSec = hop / o.fs
-	let raw, tracks
-	if (o.mode === 'reference') raw = referenceCurve(mono, o)
-	else if (o.mode === 'pitch') raw = pitchCurve(mono, o)
-	else if (o.mode === 'partial') { let r = partialCurve(mono, o); raw = r.speed; tracks = r.tracks }
+	let r
+	if (o.mode === 'reference') r = referenceCurve(mono, o)
+	else if (o.mode === 'pitch') r = pitchCurve(mono, o)
+	else if (o.mode === 'partial') r = partialCurve(mono, o)
 	else throw new RangeError(`dewow: unknown mode "${o.mode}" (expected 'partial' | 'reference' | 'pitch')`)
 
-	let nFrames = raw.length
+	let nFrames = r.p.length
 	let valid = 0
-	for (let i = 0; i < nFrames; i++) if (Number.isFinite(raw[i])) valid++
-	let confidence = nFrames ? valid / nFrames : 0
-
-	let filled = holdDecayToward1(raw, hopSec)
+	for (let i = 0; i < nFrames; i++) if (r.ev[i] >= 0.5) valid++
+	let filled = Float64Array.from(r.p, Math.exp)
 	let wowComp = zeroPhaseOnePole(filled, hopSec, o.smooth)
 	let flutterComp = new Float64Array(nFrames)
 	for (let i = 0; i < nFrames; i++) flutterComp[i] = filled[i] - wowComp[i]
 
-	return { filled, wowComp, flutterComp, hop, hopSec, nFrames, confidence, tracks }
+	return { filled, wowComp, flutterComp, hop, hopSec, centre: r.centre, nFrames, confidence: nFrames ? valid / nFrames : 0, tracks: r.tracks }
 }
 
 /**
@@ -469,7 +583,7 @@ export function analyze(data, opts = {}) {
 		if (Math.abs(fd) > flutterPeak) flutterPeak = Math.abs(fd)
 	}
 	let times = new Float32Array(c.nFrames)
-	for (let i = 0; i < c.nFrames; i++) times[i] = i * c.hopSec
+	for (let i = 0; i < c.nFrames; i++) times[i] = (i * c.hop + c.centre) / o.fs
 
 	let result = {
 		speed: Float32Array.from(c.filled),
@@ -501,8 +615,13 @@ export default function dewow(data, opts = {}) {
 		let s = 1 + (o.wow ? c.wowComp[i] - 1 : 0) + (o.flutter ? c.flutterComp[i] : 0)
 		used[i] = s < lo ? lo : s > hi ? hi : s
 	}
+	// nothing to correct: the input itself
+	if (used.every(v => Math.abs(v - 1) < 1e-12)) {
+		let out = channels.map(ch => { let y = new Float32Array(mono.length); y.set(ch); return y })
+		return multi ? out : out[0]
+	}
 
-	let perSample = upsampleToSamples(used, c.hop, mono.length)
+	let perSample = upsampleToSamples(used, c.hop, c.centre, mono.length)
 	let { pos, step } = buildPositions(perSample, o.keepLength ? mono.length : null)
 	let outLen = pos.length
 

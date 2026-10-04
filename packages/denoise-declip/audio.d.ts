@@ -12,12 +12,8 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 export interface DeclipOptions {
   /** 0..1 (default 0) */
   "clipLevel"?: Auto
-  /** 10..300 (default 100) */
+  /** 16..512 (default 256) */
   "order"?: Auto
-  /** 10..2000 (default 400) */
-  "context"?: Auto
-  /** 1..500 (default 50) */
-  "maxRun"?: Auto
   at?: number | string
   duration?: number | string
 }
@@ -30,11 +26,7 @@ export declare const declip: {
   params: {
     /** 0..1 (default 0) */
     "clipLevel": { type: "number", default: 0 }
-    /** 10..300 (default 100) */
-    "order": { type: "number", default: 100 }
-    /** 10..2000 (default 400) */
-    "context": { type: "number", default: 400 }
-    /** 1..500 (default 50) */
-    "maxRun": { type: "number", default: 50 }
+    /** 16..512 (default 256) */
+    "order": { type: "number", default: 256 }
   }
 }

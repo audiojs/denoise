@@ -29,7 +29,18 @@ Project `m` samples forward from `context` under model `a`. Used to reconstruct 
 
 ## `arInterpolate(x, gap, a)`
 
-Least-squares fill of missing indices `gap` (sorted) inside `x`, in place, under model `a` — the interpolator behind de-click / de-crackle. Gauss-Seidel, converges well past audible accuracy for short bursts.
+Least-squares fill of missing indices `gap` (sorted) inside `x`, in place, under model `a` — the interpolator behind de-crackle. Gauss-Seidel, 30 sweeps: close for a few scattered samples; `arFill` solves the same exactly.
+
+## `arFill(x, gap, a)`
+
+`arInterpolate`'s problem solved exactly, for unknowns scattered anywhere in `x`: the normal equations couple two unknowns only when they lie within `p` samples of each other, so they are banded in the gap's order, and Cholesky within that band solves them in O(m·b²) for `m` unknowns with at most `b` of them within `p` of one another. Returns `false` (and leaves `x` as it was) when the model makes the system singular. The interpolator behind [`denoise-declip`](https://github.com/audiojs/denoise/tree/main/packages/denoise-declip), where every clipped sample of a window is unknown at once (Janssen, Veldhuis & Vries 1986).
+
+```js
+let gap = []                              // every clipped sample of the window
+for (let i = 0; i < w.length; i++) if (Math.abs(w[i]) >= rail) gap.push(i)
+let { a } = lpc(w, 64)
+arFill(w, gap, a)                         // the least-squares fill of all of them at once, in place
+```
 
 ## `arBridge(x, from, to, a)`
 

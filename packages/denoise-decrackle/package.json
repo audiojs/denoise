@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-decrackle",
-  "version": "0.1.7",
-  "description": "De-crackle — continuous-stream version of de-click for vinyl-style noise",
+  "version": "0.2.0",
+  "description": "De-crackle: dense small impulses found as outliers of both the AR prediction error and the two-sided error, all of a window rebuilt at once by least-squares AR interpolation, looked for again until none is new",
   "type": "module",
   "sideEffects": false,
   "main": "decrackle.js",
@@ -23,7 +23,7 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/lpc": "^1.0.0"
+    "@audio/lpc": "^1.2.0"
   },
   "keywords": [
     "audio",

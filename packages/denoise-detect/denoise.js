@@ -1,13 +1,14 @@
-// denoise — content-aware auto-selector that classifies the dominant noise type
-// in `data` and dispatches to the most suitable single-pass method.
+// denoise — content-aware auto-selector: finds the defect a recording carries and dispatches to the method for it.
+// Each route needs positive evidence; with none, nothing is removed ('none': the sound comes back as it was).
 //
-// Classification (single STFT sweep over the input):
-//   - hum   — narrow peaks at mains harmonics (Goertzel) → dehum
-//   - click — impulses standing out of the AR residual, over 1 a second → declick
-//   - hi    — 5–9 kHz / mid energy ratio → deesser
-//   - lf    — LF/mid energy ratio → dewind
-//   - stationarity — frame-energy floor CV: stable → wiener, wandering → omlsa
-//   - otherwise → wiener (transparent broadband)
+// classify(), in priority order:
+//   - hum   — dehum's own measurement finds a mains series, A-weighted within 50 dB of the program → dehum
+//   - click — isolated impulses standing 32σ out of the AR error, over 1 a second → declick
+//   - hi    — 5–9 kHz over 0.2–2 kHz power over 8 → deesser
+//   - wind  — loud, aperiodic low end 6 dB over the mid band in over a tenth of the recording → dewind
+//   - bed   — a noise floor within 25 dB of the program, shown in its pauses or as steady bands → wiener when
+//             steady, omlsa when it wanders (IMCRA keeps adapting where a frozen profile can't)
+//   - none
 //
 // dereverb has no reliable single-pass signature, so auto-mode never selects it —
 // reach it explicitly via `denoise(data, { force: 'dereverb' })` or `dereverb()`.
@@ -17,22 +18,23 @@ import { stftAnalyse } from '@audio/stft'
 import { arFit } from '@audio/lpc'
 import wiener from '@audio/denoise-wiener'
 import omlsa from '@audio/denoise-omlsa'
-import dehum from '@audio/denoise-dehum'
+import dehum, { measure as humMeasure } from '@audio/denoise-dehum'
 import declick from '@audio/denoise-declick'
 import dewind from '@audio/denoise-dewind'
 import deesser_ from '@audio/dynamics-deesser'
 import dereverb from '@audio/denoise-dereverb'
 
-// deesser — @audio/dynamics-deesser mode 'band' behind this family's seconds/fs
-// API (2026-07 near-dupe merge). Exported: the umbrella index.js re-exports this
-// same adapter instead of carrying its own copy.
+// deesser — @audio/dynamics-deesser mode 'band' behind this family's seconds/fs API (2026-07 near-dupe merge).
+// `threshold` (dB of the sibilance band over the voice body) and `range` (the deepest cut) are the kernel's, its
+// defaults kept. Exported: the umbrella index.js re-exports this same adapter instead of carrying its own copy.
 export const deesser = (data, params = {}) => {
   data.set(deesser_(data, {
     sampleRate: params.fs || 44100,
     mode: 'band',
     fc: params.fc ?? params.freq ?? 6000,   // `freq`: former name
     Q: params.Q ?? 1.4,
-    threshold: params.threshold ?? -30,
+    threshold: params.threshold,
+    range: params.range,
     ratio: params.ratio ?? 4,
     attack: (params.attack ?? 0.001) * 1000,
     release: (params.release ?? 0.05) * 1000,
@@ -56,145 +58,238 @@ export default function denoise(data, params = {}) {
     case 'deesser': out = deesser(new Float32Array(data), opts); break
     case 'dereverb':out = dereverb(data, opts); break
     case 'omlsa':   out = omlsa(data, opts); break
-    case 'wiener':
-    default:        out = wiener(data, opts)
+    case 'wiener':  out = wiener(data, opts); break
+    default:        out = Float32Array.from(data)    // 'none': no defect evidenced, nothing removed
   }
   return params.returnPlan ? { out, plan } : out
 }
 
+/** Impulses per second a recording must carry for declick. */
+export const CLICK_RATE = 1
+/** Program over noise bed, dB, under which the bed is reduced. */
+export const BED_SNR = 25
+
+const HUM_LEVEL = -50                              // dB A re the program: a line under it goes unheard
+const WIND_SHARE = 0.1                             // share of 0.15 s blocks
+const MAX_FRAMES = 1 << 15                         // ≈ 6 min at 48 kHz; longer, 16 spans of it spread across
+
 export function classify(data, fs = 44100) {
-  let N = 2048, hop = 512, half = N >> 1
-  let bins = new Float64Array(half + 1)
-  let frames = 0
-  let lfSum = 0, mfSum = 0, hiSum = 0
-  let frameVar = []                                 // for stationarity
-
-  stftAnalyse(data, mag => {
-    let lf = 0, mf = 0, hi = 0, tot = 0
-    for (let k = 0; k <= half; k++) {
-      let p = mag[k] * mag[k]
-      bins[k] += p
-      tot += p
-      let f = k * fs / N
-      if (f < 200) lf += p
-      else if (f < 2000) mf += p
-      else if (f >= 5000 && f < 9000) hi += p    // sibilance band, kept specific (not 2–9 kHz)
-    }
-    lfSum += lf; mfSum += mf; hiSum += hi
-    frameVar.push(tot)                            // full-spectrum energy — band-restricted
-    frames++                                      // sums under-average the floor statistic
-  }, { frameSize: N, hopSize: hop })
-  if (!frames) return { method: 'wiener', scores: {} }
-
-  // Tonal hum detection via Goertzel: line power vs. off-line power at ±15 Hz.
-  // Avoids FFT-bin leakage at low frequencies (50/60 Hz fall between coarse bins).
-  // Counts harmonics where on/off ratio ≥ 50; threshold ≥2 means harmonic series
-  // is present (rules out arbitrary single tones).
-  let chunk = data.length > 16384 ? data.subarray(0, 16384) : data
-  let humScore = (f0) => {
-    let hits = 0
-    for (let h = 1; h <= 3; h++) {
-      let f = f0 * h
-      if (f > fs / 2 - 50 || f - 15 < 1) break
-      let on = goertzelE(chunk, f, fs)
-      let offL = goertzelE(chunk, f - 15, fs)
-      let offR = goertzelE(chunk, f + 15, fs)
-      let off = Math.max((offL + offR) / 2, 1e-30)
-      if (on / off > 50) hits++
-    }
-    return hits
-  }
-  let s50 = humScore(50), s60 = humScore(60)
-  let humBest = Math.max(s50, s60)
-  let humFreq = s50 >= s60 ? 50 : 60
-
-  // LF/MF ratio
-  let lfRatio = lfSum / Math.max(mfSum, 1e-30)
-  // HI/MF ratio
-  let hiRatio = hiSum / Math.max(mfSum, 1e-30)
-
-  // Click score: impulses per second. A click stands far out of the AR(30) prediction error around it; a glottal
-  // pulse doesn't, its neighbours 2.5–12 ms away being pulses too (the error's kurtosis can't tell them apart:
-  // clean narration read 2.5–401 against a trigger of 12).
-  let clickScore = impulseRate(data, fs)
-
-  // Noise stationarity: CV of the frame-energy FLOOR (rolling minimum over ~0.75 s).
-  // Speech dynamics ride above the floor, so the floor tracks the *noise bed*:
-  // stationary noise → stable floor (CV ≈ 0.06 measured on speech+white), babble /
-  // wandering beds → drifting floor (CV ≈ 0.5). Raw frame-energy CV can't make this
-  // call — speech's own variance trips it regardless of the noise.
-  let floorCV = 0
-  {
-    let D = 64, step = 16, floors = []
-    for (let i = D; i < frames; i += step) {
-      let mn = Infinity
-      for (let j = i - D; j < i; j++) if (frameVar[j] < mn) mn = frameVar[j]
-      floors.push(mn)
-    }
-    if (floors.length >= 3) {
-      let m = 0; for (let f of floors) m += f; m /= floors.length
-      let v = 0; for (let f of floors) v += (f - m) ** 2; v /= floors.length
-      floorCV = m > 0 ? Math.sqrt(v) / m : 0
-    }
-  }
-
-  let scores = {
-    hum: humBest, humFreq,
-    click: clickScore,
-    lf: lfRatio,
-    hi: hiRatio,
-    stationarity: floorCV                              // low = stationary noise bed
-  }
-
-  // Priority: tonal hum > impulses > sibilance > rumble > stationary → wiener,
-  // non-stationary → omlsa (IMCRA keeps adapting where a frozen profile can't).
-  // humBest is a hit count: ≥2 of the first 3 harmonics show 20× peak-to-median sharpness.
-  let method = 'wiener'
-  if (humBest >= 2) method = 'dehum'
-  else if (clickScore > CLICK_RATE) method = 'declick'
-  else if (hiRatio > 8) method = 'deesser'                // white noise scores ~3.9 by bandwidth alone
-  else if (lfRatio > 3) method = 'dewind'
-  else if (floorCV > 0.3) method = 'omlsa'         // white ~0.06 · rumble ~0.2 · babble ~0.5
-
-  return { method, scores, humFreq }
+  let s = sweep(data, fs)
+  if (!s) return { method: 'none', scores: { hum: 0, humFreq: 0, humLevel: -Infinity, click: 0, hi: 0, wind: 0, snr: Infinity, steady: false }, humFreq: 0 }
+  let hum = humLevel(data, fs, s), click = impulseRate(data, fs), hi = s.hi / Math.max(s.mid, 1e-30)
+  let wind = windShare(s), bed = noiseBed(s)
+  let method = hum.level >= HUM_LEVEL ? 'dehum'
+    : click > CLICK_RATE ? 'declick'
+    : hi > 8 ? 'deesser'                           // white noise scores ~3.9 by bandwidth alone
+    : wind > WIND_SHARE ? 'dewind'
+    : bed.snr < BED_SNR ? (bed.steady ? 'wiener' : 'omlsa')
+    : 'none'
+  let scores = { hum: hum.harmonics, humFreq: hum.f0, humLevel: hum.level, click, hi, wind, snr: bed.snr, steady: bed.steady }
+  return { method, scores, humFreq: hum.f0 }
 }
 
-// Goertzel power at frequency f.
-/** Impulses per second a recording must carry for declick. Measured: clean narration, music and a sung vowel 0–0.87;
- *  the same with clicks at 2.5 a second 1.9 and up, faint ones (0.05) 1.3 and up (Spoken Wikipedia takes, lena). */
-export const CLICK_RATE = 1
-
-/** Impulses per second. An impulse is an AR(30) residual sample over 12× the residual RMS within ±10 ms that also
- *  towers (2×) over every residual 2.5–15 ms away: a glottal pulse has its like one pitch period off, a click doesn't.
- *  Events 5 ms apart, over up to 64 windows of 4096 samples spread across the signal (≈ 6 s at 44.1 kHz). */
-function impulseRate(data, fs) {
-  const W = 4096, P = 30, K = 12, M = 2
-  const h = Math.round(0.01 * fs), gap = Math.round(0.005 * fs), near = Math.round(0.0025 * fs), far = Math.round(0.015 * fs)
-  if (data.length < W || W - P <= 2 * h) return 0
-  let count = Math.min(64, Math.floor(data.length / W)), stride = count > 1 ? (data.length - W) / (count - 1) : 0
-  let r = new Float64Array(W), events = 0, seconds = 0
-  for (let w = 0; w < count; w++) {
-    let seg = data.subarray(Math.round(w * stride), Math.round(w * stride) + W), a
-    try { ({ a } = arFit(seg, P)) } catch { continue }
-    for (let i = P; i < W; i++) { let e = seg[i]; for (let k = 1; k <= P; k++) e += a[k] * seg[i - k]; r[i] = e }
-    let e2 = 0, last = -gap
-    for (let i = P; i < P + 2 * h; i++) e2 += r[i] * r[i]
-    for (let i = P + h; i < W - h; i++) {
-      let v = Math.abs(r[i]), rms = Math.sqrt(e2 / (2 * h))
-      if (rms > 0 && v > K * rms && i - last > gap) {
-        let m = 0
-        for (let j = Math.max(P, i - far); j <= Math.min(W - 1, i + far); j++) if (Math.abs(j - i) >= near && Math.abs(r[j]) > m) m = Math.abs(r[j])
-        if (v > M * m) { events++; last = i }
+// One STFT sweep, N ≈ 46 ms (2048 at 44.1/48 kHz), hop N/4. Per frame: each half-octave band's power (from 62.5 Hz,
+// mean over its bins), its spectral flatness (geometric over arithmetic mean) and, for the bands from 300 Hz with 8
+// bins or more, its persistence: the correlation of the fine structure (log power less its ±4-bin mean) with the
+// frame N back, which shares no sample. A partial holds its bins from frame to frame; noise draws them anew, 0. The
+// low end, 40–300 Hz less its least-squares line, gets its own persistence for wind. Per frame too: the power under
+// 200 Hz and at 300–2000 Hz; for the whole: 5–9 kHz, and the A-weighted share of the power, for hum.
+function sweep(data, fs) {
+  let N = 2 ** Math.round(Math.log2(0.046 * fs)), half = N >> 1, hop = N >> 2
+  let total = data.length >= N ? Math.floor((data.length - N) / hop) + 1 : 0
+  if (!total) return null
+  let spans = total <= MAX_FRAMES ? [[0, data.length]] : Array.from({ length: 16 }, (_, i) => {
+    let a = Math.round(i * (data.length - MAX_FRAMES / 16 * hop - N) / 15)
+    return [a, a + (MAX_FRAMES / 16 - 1) * hop + N]
+  })
+  let T = spans.reduce((n, [a, b]) => n + Math.floor((b - a - N) / hop) + 1, 0)
+  let edges = []
+  for (let f = 62.5; f < fs / 2; f *= Math.SQRT2) edges.push(f)
+  let B = edges.length - 1, band = new Int16Array(half + 1).fill(-1), nb = new Float64Array(B)
+  for (let k = 1; k <= half; k++) for (let b = 0; b < B; b++) if (k * fs / N >= edges[b] && k * fs / N < edges[b + 1]) { band[k] = b; nb[b]++ }
+  let test = edges.slice(0, B).map((e, b) => e >= 300 && nb[b] >= 8)
+  let k0 = Math.max(1, Math.round(40 * N / fs)), k1 = Math.round(300 * N / fs), m = k1 - k0 + 1
+  let aw = new Float64Array(half + 1), zone = new Int8Array(half + 1), tb = new Int16Array(half + 1).fill(-1)
+  for (let k = 1; k <= half; k++) {
+    let f = k * fs / N
+    aw[k] = aWeight(f); zone[k] = f < 200 ? 1 : f >= 300 && f < 2000 ? 2 : f >= 5000 && f < 9000 ? 3 : 0
+    if (band[k] >= 0 && test[band[k]] && k >= 4 && k <= half - 4) tb[k] = band[k]
+  }
+  let L = new Float32Array(T * B), F = new Float32Array(T * B), C = new Float32Array(T * B).fill(NaN)
+  let tot = new Float64Array(T), lf = new Float64Array(T), mf = new Float64Array(T), lfC = new Float32Array(T).fill(NaN), valid = new Uint8Array(T)
+  let ring = Array.from({ length: 5 }, () => new Float64Array(half + 1)), lring = Array.from({ length: 5 }, () => new Float64Array(m))
+  let p = new Float64Array(B), lg = new Float64Array(B), lp = new Float64Array(half + 1)
+  let xy = new Float64Array(B), xx = new Float64Array(B), yy = new Float64Array(B)
+  let hi = 0, mid = 0, all = 0, aw2 = 0, t = 0
+  for (let [a, b] of spans) {
+    let u = 0                                      // frame within the span: persistence looks 4 back in it
+    stftAnalyse(data.subarray(a, b), mag => {
+      let d = ring[u % 5], pr = ring[(u + 1) % 5], ld = lring[u % 5], lq = lring[(u + 1) % 5], back = u >= 4
+      p.fill(0); lg.fill(0); xy.fill(0); xx.fill(0); yy.fill(0)
+      lp[0] = Math.log(mag[0] * mag[0] + 1e-30)
+      for (let k = 1; k <= half; k++) {
+        let v = mag[k] * mag[k], z = zone[k], c = band[k]
+        lp[k] = Math.log(v + 1e-30); all += v; aw2 += v * aw[k]
+        if (z === 1) lf[t] += v; else if (z === 2) mf[t] += v; else if (z === 3) hi += v
+        if (c >= 0) { p[c] += v; lg[c] += lp[k] }
       }
-      e2 += r[i + h] * r[i + h] - r[i - h] * r[i - h]
+      mid += mf[t]
+      let run = 0
+      for (let k = 0; k <= 8; k++) run += lp[k]
+      for (let k = 4; k <= half - 4; k++) {
+        let v = d[k] = lp[k] - run / 9, c = tb[k]
+        if (k + 5 <= half) run += lp[k + 5] - lp[k - 4]
+        if (back && c >= 0) { xy[c] += v * pr[k]; xx[c] += v * v; yy[c] += pr[k] * pr[k] }
+      }
+      for (let c = 0; c < B; c++) {
+        let i = t * B + c, mean = p[c] / nb[c]
+        L[i] = 10 * Math.log10(mean + 1e-30); F[i] = mean > 0 ? Math.exp(lg[c] / nb[c]) / mean : 0
+        tot[t] += p[c]
+        if (back && xx[c] > 0 && yy[c] > 0) C[i] = xy[c] / Math.sqrt(xx[c] * yy[c])
+      }
+      let sx = 0, sy = 0, sxx = 0, sxy = 0
+      for (let j = 0; j < m; j++) { ld[j] = lp[k0 + j]; sx += j; sy += ld[j]; sxx += j * j; sxy += j * ld[j] }
+      let sl = (m * sxy - sx * sy) / (m * sxx - sx * sx), ic = (sy - sl * sx) / m, q = 0, r = 0, w = 0
+      for (let j = 0; j < m; j++) ld[j] -= ic + sl * j
+      if (back) { for (let j = 0; j < m; j++) { q += ld[j] * lq[j]; r += ld[j] * ld[j]; w += lq[j] * lq[j] } if (r > 0 && w > 0) lfC[t] = q / Math.sqrt(r * w) }
+      valid[t] = back
+      u++; t++
+    }, { frameSize: N, hopSize: hop })
+  }
+  let peak = 0
+  for (let i = 0; i < T; i++) if (tot[i] > peak) peak = tot[i]
+  if (!(peak > 0)) return null
+  let act = 0, na = 0
+  for (let i = 0; i < T; i++) if (tot[i] >= peak * 1e-4) { act += tot[i]; na++ }
+  return { fs, hop, T, B, nb, test, L, F, C, tot, lf, mf, lfC, valid, peak, act: act / na, hi, mid, aShare: aw2 / all }
+}
+
+// Hum, by dehum's own measurement over the first 90 s, and how loud: the lines it finds (Goertzel power over the
+// same span), A-weighted (IEC 61672-1), over the program's A-weighted power, dB. The ear hears 50 Hz 30 dB less
+// than 1 kHz: a lone 60 Hz line 30 dB under a voice is there, and under the threshold of hearing at its level.
+function humLevel(data, fs, s) {
+  let x = data.subarray(0, Math.min(data.length, Math.round(90 * fs))), m = humMeasure(x, fs)
+  if (!m) return { f0: 0, harmonics: 0, level: -Infinity }
+  let p = 0, h = 0
+  for (let i = 0; i < x.length; i++) p += x[i] * x[i]
+  for (let k of m.harmonics) h += goertzel(x, k * m.f0, fs) * aWeight(k * m.f0)
+  return { f0: m.f0, harmonics: m.harmonics.length, level: 10 * Math.log10(h / (p / x.length * s.aShare) + 1e-30) }
+}
+
+// power of the sinusoid at f in x, amplitude² / 2
+function goertzel(x, f, fs) {
+  let w = 2 * Math.PI * f / fs, c = 2 * Math.cos(w), s1 = 0, s2 = 0
+  for (let i = 0; i < x.length; i++) { let s = x[i] + c * s1 - s2; s2 = s1; s1 = s }
+  return 2 * (s1 * s1 + s2 * s2 - c * s1 * s2) / x.length / x.length
+}
+
+// A-weighting as a power gain (IEC 61672-1 eq. E.1, +2.00 dB at 1 kHz)
+function aWeight(f) {
+  let f2 = f * f, r = 12194 ** 2 * f2 * f2 / ((f2 + 20.6 ** 2) * Math.sqrt((f2 + 107.7 ** 2) * (f2 + 737.9 ** 2)) * (f2 + 12194 ** 2))
+  return r * r * 10 ** 0.2
+}
+
+// Wind: turbulence at the microphone, energy under a few hundred Hz without a period (Nelke & Vary, IWAENC 2014),
+// where a bass line or a voice's low end repeats at its pitch. The share of 0.15 s blocks where, in two frames of
+// three, the low end (< 200 Hz) is within 20 dB of the program, 6 dB over the 300–2000 Hz band (pink noise: 2 dB),
+// and holds no lines (its median persistence under 0.2). A plosive's thump is over within a block.
+function windShare(s) {
+  let R = Math.max(1, Math.round(0.15 * s.fs / s.hop)), loud = s.act * 0.01, blocks = 0, windy = 0, c = []
+  for (let i = 0; i + R <= s.T; i += R) {
+    c.length = 0
+    for (let j = i; j < i + R; j++) if (s.valid[j] && s.lf[j] > loud && s.lf[j] > 4 * s.mf[j]) c.push(s.lfC[j])
+    blocks++
+    if (c.length >= 2 * R / 3 && median(c) < 0.2) windy++
+  }
+  return blocks ? windy / blocks : 0
+}
+
+// The noise bed and the program's level over it, dB; the program: its frames within 40 dB of the loudest. Frames
+// within 80 dB of the loudest count: digital silence is no bed. Two kinds of evidence:
+//   pauses — runs of 0.15 s or more within 6 dB of the 10th percentile of the frame level, holding no lines (each
+//            band's median persistence there: their median under 0.05, none over 0.5) and flat (the bands' median
+//            flatness over 0.4; Gaussian noise reads e^−γ ≈ 0.56). The bed: their median level. A voice pauses; a
+//            dense mix doesn't sink that long without its partials, nor does a held note.
+//   steady — bands whose frames at or under the band's median level spread no more than twice what Gaussian noise
+//            would over its bins (4.34/√(n/1.5) dB, Hann-windowed bins correlated in pairs) and hold no lines
+//            (median persistence under 0.05): stationary noise where the program doesn't reach. The bed: those
+//            frames' mean power, summed over such bands.
+// The SNR is the lower of the two; steady when the steady bands alone put the bed within BED_SNR.
+function noiseBed({ T, B, nb, test, L, F, C, tot, valid, peak, act, hop, fs }) {
+  let keep = []
+  for (let t = 0; t < T; t++) if (valid[t] && tot[t] > peak * 1e-8) keep.push(t)
+  if (keep.length < 8) return { snr: Infinity, steady: false }
+  let lv = keep.map(t => 10 * Math.log10(tot[t])), q10 = quantile(lv, 0.1), run = Math.round(0.15 * fs / hop), pause = []
+  for (let j = 0, e; j < keep.length; j = Math.max(e, j + 1)) {
+    for (e = j; e < keep.length && lv[e] <= q10 + 6 && keep[e] - keep[j] === e - j; e++);
+    if (e - j >= run) for (let i = j; i < e; i++) pause.push(keep[i])
+  }
+  let at = (A, ts, b) => median(ts.map(t => A[t * B + b]).filter(v => v === v))
+  let snrP = Infinity
+  if (pause.length) {
+    let c = [], f = []
+    for (let b = 0; b < B; b++) if (test[b]) { c.push(at(C, pause, b)); f.push(at(F, pause, b)) }
+    if (median(c) < 0.05 && Math.max(...c) < 0.5 && median(f) > 0.4) snrP = 10 * Math.log10(act / median(pause.map(t => tot[t])))
+  }
+  let bed = 0
+  for (let b = 0; b < B; b++) {
+    if (!test[b]) continue
+    let md = at(L, keep, b), lo = keep.filter(t => L[t * B + b] <= md), l = lo.map(t => L[t * B + b])
+    let mean = l.reduce((s, v) => s + v, 0) / l.length, sd = Math.sqrt(l.reduce((s, v) => s + (v - mean) ** 2, 0) / l.length)
+    if (sd <= 2 * 4.343 / Math.sqrt(nb[b] / 1.5) && at(C, lo, b) < 0.05) bed += l.reduce((s, v) => s + 10 ** (v / 10), 0) / l.length * nb[b]
+  }
+  let snrE = bed > 0 ? 10 * Math.log10(act / bed) : Infinity
+  return { snr: Math.min(snrP, snrE), steady: snrE < BED_SNR }
+}
+
+/** Impulses per second. The AR(30) prediction error, per window of 4096, judged against its local scale σ: the
+ *  median of its 1.5 ms block RMS over ±12 ms (declick's: a click can't raise the bar it must clear). An impulse
+ *  stands over 32σ, 5 ms or more from the last, and alone: no like of half its size 2.5–40 ms either side (a voice's
+ *  pulses, creak down to 25 Hz, a plucked string repeat), and no sound 10 dB louder over the 3–20 ms after it than
+ *  before (a plosive's burst or a note's attack begins one). Over the whole signal up to 30 s, else 30 spans of 1 s
+ *  spread across it. VoiceBank's clean takes carry lip smacks of 32–124σ themselves; the bar is set over most. */
+function impulseRate(data, fs) {
+  const P = 30, W = 4096, K = 32, ms = fs / 1000
+  let near = Math.round(2.5 * ms), far = Math.round(40 * ms), gap = Math.round(5 * ms), a = Math.round(3 * ms), z = Math.round(20 * ms)
+  let n = data.length, whole = n <= 30 * fs, len = whole ? n : Math.round(fs), count = whole ? 1 : 30
+  let stride = count > 1 ? (n - len) / (count - 1) : 0, events = 0, seconds = 0
+  for (let w = 0; w < count; w++) {
+    let x = data.subarray(Math.round(w * stride), Math.round(w * stride) + len)
+    if (x.length < 2 * far + W) continue
+    let e = residual(x, P, W), Bk = Math.round(1.5 * ms), sg = scale(e, Bk, 8), last = -gap
+    for (let i = far; i < x.length - far; i++) {
+      let v = Math.abs(e[i]), s = sg[(i / Bk) | 0]
+      if (!(s > 0 && v > K * s && i - last > gap)) continue
+      last = i
+      let m = 0
+      for (let j = i - far; j <= i + far; j++) if (Math.abs(j - i) >= near && Math.abs(e[j]) > m) m = Math.abs(e[j])
+      if (v > 2 * m && power(x, i + a, i + z) < 10 * power(x, i - z, i - a)) events++
     }
-    seconds += (W - P - 2 * h) / fs
+    seconds += (x.length - 2 * far) / fs
   }
   return seconds ? events / seconds : 0
 }
 
-function goertzelE(data, f, fs) {
-  let w = 2 * Math.PI * f / fs, c = 2 * Math.cos(w), s1 = 0, s2 = 0
-  for (let i = 0; i < data.length; i++) { let s = data[i] + c * s1 - s2; s2 = s1; s1 = s }
-  return (s1 * s1 + s2 * s2 - c * s1 * s2) / data.length
+// AR(p) prediction error of x, a fit per window of W samples
+function residual(x, p, W) {
+  let e = new Float64Array(x.length)
+  for (let s = 0; s + 2 * p < x.length; s += W - p) {
+    let seg = x.subarray(s, Math.min(x.length, s + W)), a
+    try { ({ a } = arFit(seg, p)) } catch { continue }
+    if (!a.every(Number.isFinite)) continue
+    for (let i = p; i < seg.length; i++) { let v = seg[i]; for (let k = 1; k <= p; k++) v += a[k] * seg[i - k]; e[s + i] = v }
+  }
+  return e
 }
+
+// per block of B samples: the median, over ±R blocks, of the blocks' RMS
+function scale(e, B, R) {
+  let nb = Math.ceil(e.length / B), rms = new Float64Array(nb), sg = new Float64Array(nb)
+  for (let b = 0; b < nb; b++) rms[b] = Math.sqrt(power(e, b * B, (b + 1) * B))
+  for (let b = 0; b < nb; b++) sg[b] = median(rms.subarray(Math.max(0, b - R), Math.min(nb, b + R + 1)))
+  return sg
+}
+
+function power(x, a, b) { a = Math.max(0, a); b = Math.min(x.length, b); let s = 0; for (let i = a; i < b; i++) s += x[i] * x[i]; return b > a ? s / (b - a) : 0 }
+function median(a) { return quantile(a, 0.5) }
+function quantile(a, q) { let s = Float64Array.from(a).sort(); return s.length ? s[Math.min(s.length - 1, Math.floor(q * s.length))] : NaN }

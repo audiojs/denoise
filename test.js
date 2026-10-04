@@ -9,7 +9,8 @@ import {
 } from './index.js'
 import { vad, spp, ddSnr } from '@audio/vad'
 import { vad as vadUmbrella, minStats as minStatsUmbrella } from './index.js'
-import { noiseProfile, minStats, imcra } from '@audio/noise-estimate'
+import { noiseProfile, minStats, imcra, known } from '@audio/noise-estimate'
+import { processor as omlsaProcessor, frame as omlsaFrame } from '@audio/denoise-omlsa'
 import { snr, segSnr, lsd, nrr, speechAttenuation } from '@audio/quality'
 import { stftBatch, stftStream, stftAnalyse } from '@audio/stft'
 
@@ -101,6 +102,51 @@ test('vad — silence yields no active frames', () => {
   is(active.reduce((a, b) => a + b, 0), 0)
 })
 
+// lena under pink noise (Voss-McCartney filter bank, seeded) at `snr` dB, and her loud 10 ms frames: within 20 dB of
+// the loudest, speech beyond doubt. The fixture for what the speech ops must keep under noise.
+function pinkNoise(n, seed = 7) {
+  let s = seed >>> 0, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296, x = new Float32Array(n), b = [0, 0, 0, 0, 0, 0, 0]
+  for (let i = 0; i < n; i++) {
+    let w = r() * 2 - 1
+    b[0] = 0.99886 * b[0] + w * 0.0555179; b[1] = 0.99332 * b[1] + w * 0.0750759; b[2] = 0.969 * b[2] + w * 0.153852
+    b[3] = 0.8665 * b[3] + w * 0.3104856; b[4] = 0.55 * b[4] + w * 0.5329522; b[5] = -0.7616 * b[5] - w * 0.016898
+    x[i] = b[0] + b[1] + b[2] + b[3] + b[4] + b[5] + b[6] + w * 0.5362; b[6] = w * 0.115926
+  }
+  return x
+}
+function lenaInNoise(snr) {
+  let x = mix(lena, pinkNoise(lena.length), snr), n = fs / 100, m = Math.floor(lena.length / n), e = new Float64Array(m)
+  for (let k = 0; k < m; k++) for (let i = k * n; i < (k + 1) * n; i++) e[k] += lena[i] * lena[i]
+  let top = Math.max(...e)
+  return { x, n, loud: Array.from(e, v => v > top / 100) }
+}
+
+test('vad — speech under noise is speech, the noise alone is not', () => {
+  // 1.x took the 10th-percentile frame energy of the whole input for the floor and wanted 11 dB over it: under noise
+  // the 10th percentile is the noise, and at 5 dB SNR it heard 11 % of lena's loud frames
+  let { x, n, loud } = lenaInNoise(5), { active, hop, frameSize } = vad(x, { fs }), on = 0, all = 0
+  loud.forEach((l, k) => { if (!l) return; all++; on += active[Math.min(active.length - 1, Math.max(0, Math.round((k * n + n / 2 - frameSize / 2) / hop)))] })
+  ok(on / all > 0.95, `loud speech frames active at 5 dB SNR: ${(100 * on / all).toFixed(1)} %`)
+  let quiet = vad(pinkNoise(fs * 5, 3).map(v => 0.01 * v), { fs }).active
+  is(quiet.reduce((a, b) => a + b, 0), 0, 'pink noise alone: no speech')
+})
+
+test('vad — a note held past the floor window is not the floor', () => {
+  // the floor is a minimum over 1.5 s: a steady sound longer than that is its own minimum, unless tones stay out of it
+  let x = pinkNoise(fs * 4, 5).map(v => 0.0003 * v)
+  for (let i = fs / 2, ph = 0; i < fs * 3.5; i++) { ph += 2 * Math.PI * 150 / fs; for (let h = 1; h <= 10; h++) x[i] += 0.2 * Math.sin(h * ph) / h }
+  let { active, hop, frameSize } = vad(x, { fs }), mid = active.slice(Math.round((fs - frameSize / 2) / hop), Math.round((fs * 3 - frameSize / 2) / hop))
+  ok(mid.every(v => v), `the held note is speech-like sound throughout its middle: ${mid.reduce((a, b) => a + b, 0)} of ${mid.length} frames`)
+})
+
+test('vad — empty, shorter than a frame, a single sample: no frames, no throw', () => {
+  for (let x of [new Float32Array(0), new Float32Array(1), new Float32Array(1000).fill(0.1)]) {
+    let r = vad(x, { fs })
+    is(r.active.length, 0); is(r.voiced.length, 0); is(r.times.length, 0)
+  }
+  is(vad(lena.subarray(0, 2048), { fs }).active.length, 1, 'exactly a frame: one decision')
+})
+
 test('@audio/denoise umbrella forwards vad + noise estimation to their promoted atoms (single impl)', () => {
   is(vadUmbrella, vad, '@audio/denoise re-exports @audio/vad — one implementation')
   is(minStatsUmbrella, minStats, '@audio/denoise re-exports @audio/noise-estimate — one implementation')
@@ -185,6 +231,67 @@ test('dehum — preserves nearby content', () => {
   ok(narrowEnergy(clean, 440) > 0.1, '440Hz content preserved')
 })
 
+// mains hum: 12 harmonics at 1/h, the fundamental wandering ±dev Hz (a 20 s sine), scaled to rms r
+function mainsHum(n, f0, dev, r) {
+  let y = new Float32Array(n), ph = 0
+  for (let i = 0; i < n; i++) { ph += 2 * Math.PI * (f0 + dev * Math.sin(2 * Math.PI * i / fs / 20)) / fs; for (let h = 1; h <= 12; h++) y[i] += Math.cos(h * ph + h) / h }
+  let g = r / rms(y)
+  return y.map(v => v * g)
+}
+function sumsq(d) { let s = 0; for (let v of d) s += v * v; return s }
+
+// 0.2.0 notched at Q 30 the few harmonics that stood out from speech: hum 6 dB down, speech SDR 23 dB here
+test('dehum — wandering hum under speech: removed, the speech kept', () => {
+  let x = lena.subarray(0, fs * 8), h = mainsHum(x.length, 50.05, 0.02, rms(x) / 10)
+  // phase inversion (Hagerman & Olofsson 2004): what became of the hum and of the speech, apart
+  let yp = dehum(x.map((v, i) => v + h[i]), { fs }), ym = dehum(x.map((v, i) => v - h[i]), { fs })
+  let down = 10 * Math.log10(sumsq(h) / sumsq(yp.map((v, i) => (v - ym[i]) / 2)))
+  let sdr = 10 * Math.log10(sumsq(x) / sumsq(yp.map((v, i) => (v + ym[i]) / 2 - x[i])))
+  ok(down > 35, `hum 20 dB under, ±0.02 Hz: ${down.toFixed(1)} dB down`)
+  ok(sdr > 33, `speech SDR ${sdr.toFixed(1)} dB`)
+})
+
+// a Q 30 notch at 100.1 Hz is 3.3 Hz wide: it took 2 dB of a G2 2 Hz away
+test('dehum — a note 2 Hz from a line is left to the program', () => {
+  let n = fs * 6, x = new Float32Array(n)
+  for (let i = 0; i < n; i++) for (let k = 1; k <= 4; k++) x[i] += 0.2 / k * Math.sin(2 * Math.PI * 98 * k * i / fs + k)
+  let h = mainsHum(n, 50.05, 0, rms(x) / 10), y = dehum(x.map((v, i) => v + h[i]), { fs })
+  // Hann-windowed DFT over the middle 4 s: the note's leakage stays off the line
+  let at = (d, f) => { let re = 0, im = 0; for (let i = fs; i < n - fs; i++) { let w = 1 - Math.cos(2 * Math.PI * (i - fs) / (n - 2 * fs)); re += w * d[i] * Math.cos(2 * Math.PI * f * i / fs); im += w * d[i] * Math.sin(2 * Math.PI * f * i / fs) } return Math.hypot(re, im) }
+  let kept = 20 * Math.log10(at(y, 98) / at(x, 98)), down = 20 * Math.log10(at(h, 100.1) / at(y, 100.1))
+  ok(Math.abs(kept) < 0.3, `G2 at 98 Hz: ${kept.toFixed(2)} dB`)
+  ok(down > 25, `the 100.1 Hz line beside it: ${down.toFixed(1)} dB down`)
+})
+
+test('dehum — hum alone, wandering ±0.05 Hz: tracked', () => {
+  let h = mainsHum(fs * 20, 59.95, 0.05, 0.05), down = 10 * Math.log10(sumsq(h) / sumsq(dehum(copy(h), { fs })))
+  ok(down > 35, `${down.toFixed(1)} dB down (0.2.0: 22)`)
+})
+
+// a bar repeated exactly is a comb of lines 1/bar apart: at 120 bpm every 2 Hz, 50 and 60 Hz among them
+test('dehum — a loop is no hum, nor a chord beside the series; speech passes untouched', async () => {
+  let { measure } = await import('@audio/denoise-dehum')
+  let r = 1, rnd = () => (r = r * 16807 % 2147483647) / 2147483647, bar = new Float32Array(fs / 2)
+  for (let i = 0; i < bar.length; i++) bar[i] = 0.3 * Math.exp(-i / 2000) * Math.sin(2 * Math.PI * 52 * i / fs) + 0.05 * (rnd() - 0.5)
+  let loop = Float32Array.from({ length: fs * 30 }, (_, i) => bar[i % bar.length])
+  let chord = new Float32Array(fs * 4)
+  for (let i = 0; i < chord.length; i++) for (let f of [98, 146.83, 196]) chord[i] += 0.2 * Math.sin(2 * Math.PI * f * i / fs)
+  for (let [name, x] of [['loop', loop], ['G2 D3 G3', chord], ['speech', lena.subarray(0, fs * 4)]])
+    ok(!measure(x, fs) && dehum(copy(x), { fs }).every((v, i) => v === x[i]), `${name}: untouched`)
+})
+
+test('dehum — edges: empty, a sample, silence, half a second as told, NaN', async () => {
+  let { measure } = await import('@audio/denoise-dehum')
+  is(dehum(new Float32Array(0), { fs }).length, 0, 'empty')
+  is(dehum(new Float32Array([0.5]), { fs, freq: 50 })[0], 0.5, 'one sample: too short to fit, untouched')
+  ok(dehum(new Float32Array(fs * 2), { fs }).every(v => v === 0), 'silence')
+  let s = mainsHum(fs / 2, 60, 0, 0.1), down = 10 * Math.log10(sumsq(s) / sumsq(dehum(copy(s), { fs, freq: 60 })))
+  ok(down > 20, `0.5 s, freq 60 as told: ${down.toFixed(1)} dB down`)
+  let t = mainsHum(fs * 3, 50, 0, 0.1); t[fs] = NaN
+  ok(dehum(copy(t), { fs, freq: 50, harmonics: 12 }).every((v, i) => i === fs || Number.isFinite(v)), 'a NaN stays one sample')
+  is(measure(t, fs), null, 'measure over a NaN: null')
+})
+
 // =================== specsub ===================
 
 test('specsub — improves SNR on white-noisy speech', () => {
@@ -212,6 +319,27 @@ test('wiener — mmse-lsa rule runs', () => {
   ok(rms(clean) > 0, 'produces output')
 })
 
+// α = 0.98 is Ephraim & Malah's for an 8 ms frame step (1984 §VI) and was applied per frame, 10.7 ms at 48 kHz. On a
+// learned profile the gain is the LSA rule on ξ = α^(Δt/8 ms) Â²(l−1)/λ + (1 − α^(Δt/8 ms)) max(γ − 1, 0), written out
+test('wiener: the decision-directed α is per 8 ms, rescaled to the frame step', () => {
+  let sr = 48000, N = 2048, hop = 512, o = { fs: sr, frameSize: N, hopSize: hop }, a = 0.98 ** (hop / sr / 0.008)
+  let x = gauss(sr * 2, 0.01).map((v, i) => v + 0.1 * Math.sin(2 * Math.PI * 440 * i / sr) * (i > sr)), profile = noiseProfile(x, { to: sr, frameSize: N, hopSize: hop })
+  // E1 by its series (Abramowitz & Stegun 5.1.11), apart from the kernel's rational approximation
+  let e1 = v => { if (v > 30) return 0; let s = 0, t = 1; for (let k = 1; k < 200; k++) { t *= -v / k; s += t / k } return -0.5772156649015329 - Math.log(v) - s }
+  let eta = new Float64Array(N / 2 + 1).fill(1)
+  let ref = stftBatch(x, (mag, phase) => {
+    for (let k = 0; k <= N / 2; k++) {
+      let g = mag[k] ** 2 / profile[k], xi = Math.max(10 ** -1.5, a * eta[k] + (1 - a) * Math.max(g - 1, 0))
+      let G = xi / (1 + xi) * Math.exp(0.5 * e1(xi * g / (1 + xi)))
+      eta[k] = G * G * g; mag[k] *= G
+    }
+    return { mag, phase }
+  }, o)
+  let y = wiener(x, { ...o, profile }), d = 0
+  for (let i = 0; i < x.length; i++) d = Math.max(d, Math.abs(y[i] - ref[i]))
+  ok(d < 1e-6, `α = 0.98^(Δt/8 ms) = ${a.toFixed(4)}: max deviation ${d.toExponential(1)} (signal peak 0.15)`)
+})
+
 // =================== omlsa ===================
 
 test('omlsa — improves segSNR on noisy speech', () => {
@@ -221,22 +349,117 @@ test('omlsa — improves segSNR on noisy speech', () => {
   ok(segSnr(clean, speech) > segSnr(dirty, speech), 'segSNR improved')
 })
 
+// Syllables after pauses: 120 Hz pulses through formants at 700 and 1200 Hz, rising and falling over 50 ms, 250 ms
+// each, 300 ms apart, from 1 s; white Gaussian noise `snrDb` under the syllables' level
+function afterPauses(sr, snrDb = 0) {
+  let n = 4 * sr, s = new Float32Array(n), on = [], y1 = 0, y2 = 0, z1 = 0, z2 = 0, P = Math.round(sr / 120)
+  for (let t = sr; t + 0.25 * sr < n; t += Math.round(0.55 * sr)) on.push(t)
+  for (let i = 0; i < n; i++) {
+    let t0 = on.find(t => i >= t && i < t + 0.25 * sr), e = t0 != null && i % P === 0 ? Math.min(1, (i - t0) / (0.05 * sr), (t0 + 0.25 * sr - i) / (0.05 * sr)) : 0
+    let y = e + 2 * Math.cos(2 * Math.PI * 700 / sr) * 0.97 * y1 - 0.9409 * y2; y2 = y1; y1 = y
+    let z = y + 2 * Math.cos(2 * Math.PI * 1200 / sr) * 0.95 * z1 - 0.9025 * z2; z2 = z1; z1 = z
+    s[i] = 0.02 * z
+  }
+  let p = 0; for (let v of s) p += v * v
+  let nz = gauss(n, Math.sqrt(p / (on.length * 0.25 * sr) / 10 ** (snrDb / 10)), 3)
+  return { s, on, y: s.map((v, i) => v + nz[i]) }
+}
+// a frame process's gain on y, frame by frame, on @audio/stft's frames
+function frameGains(proc, y, o) { let G = []; stftBatch(y, (m, p) => { let m0 = Float64Array.from(m), r = proc(m, p); G.push(Float64Array.from(m0, (v, k) => v > 0 ? r.mag[k] / v : 1)); return r }, o); return G }
+
+// The decision-directed α is quoted per 8 ms frame (Cohen & Berdugo 2001 Table 1, Ephraim & Malah 1984 §VI) and was
+// applied per frame: at 48 kHz (10.7 ms frames) the a priori SNR's memory ran 1.8× longer than at 44.1 kHz (5.8 ms)
+test('known, imcra: the decision-directed α is per 8 ms, rescaled to the frame step as the other time constants', () => {
+  let sr = 48000, N = 2048, hop = 512, x = gauss(sr, 0.01).map((v, i) => v + 0.2 * Math.sin(2 * Math.PI * 440 * i / sr) * (i > sr / 2))
+  let profile = noiseProfile(gauss(sr, 0.01, 11), { frameSize: N, hopSize: hop, to: sr }), a = 0.92 ** (hop / sr / 0.008)
+  let est = known(profile, { fs: sr, hop, alphaDD: 0.92 }), eta = new Float64Array(N / 2 + 1).fill(1), worst = 0
+  stftAnalyse(x, mag => {
+    est.update(mag)
+    for (let k = 0; k <= N / 2; k++) {
+      let g = mag[k] ** 2 / profile[k], xi = Math.max(a * eta[k] + (1 - a) * Math.max(g - 1, 0), 10 ** -2.5)
+      worst = Math.max(worst, Math.abs(est.xi[k] - xi) / xi)
+      eta[k] = est.gain[k] ** 2 * g
+    }
+  }, { frameSize: N, hopSize: hop })
+  ok(worst < 1e-9, `known: ξ with α = 0.92^(Δt/8 ms) = ${a.toFixed(4)}, worst relative error ${worst.toExponential(1)}`)
+  let m = imcra(N / 2, { fs: sr, hop, alphaDD: 0.92 }), worst2 = 0, e2 = null
+  stftAnalyse(x, mag => {
+    let prev = Float64Array.from(m.psd)
+    m.update(mag)
+    if (e2) for (let k = 0; k <= N / 2; k++) {                // ξ on the previous estimate, for this frame's p
+      let g = mag[k] ** 2 / prev[k], xi = Math.max(a * e2[k] + (1 - a) * Math.max(g - 1, 0), 10 ** -2.5)
+      worst2 = Math.max(worst2, Math.abs(m.xi0[k] - xi) / xi)
+    }
+    e2 = Float64Array.from(m.gain, (G, k) => G * G * m.gamma[k])
+  }, { frameSize: N, hopSize: hop })
+  ok(worst2 < 1e-9, `imcra: the same α, worst relative error ${worst2.toExponential(1)}`)
+})
+
+// G = G_H1^p G_min^(1−p) (eq. 16) dips below G_min where G_H1 does (to −18 dB at G_min −12). G_H1 floored at G_min:
+// a bin where speech may be present goes no further down than one where it is absent
+test('omlsa: G_min is the floor, tracked and on a learned noise', () => {
+  let sr = 48000, N = omlsaFrame(sr), o = { fs: sr, frameSize: N, hopSize: N / 4 }, { y } = afterPauses(sr, 5)
+  for (let [name, opts, gMin] of [['tracked', {}, -15], ['learned', { profile: noiseProfile(y, { to: sr, frameSize: N, hopSize: N / 4 }), gMin: -12 }, -12]]) {
+    let lo = Infinity
+    for (let g of frameGains(omlsaProcessor({ ...o, ...opts }), y, o)) for (let v of g) lo = Math.min(lo, v)
+    ok(20 * Math.log10(lo) > gMin - 1e-6, `${name}: lowest gain ${(20 * Math.log10(lo)).toFixed(2)} dB, G_min ${gMin} dB`)
+  }
+})
+
+// ξ trails a word's start after a pause; with α 0.98 per frame (per 10.7 ms at 48 kHz) a syllable's first 50 ms lost
+// 6.3 dB tracked and 8.5 on the learned noise, at 0 dB SNR
+test('omlsa: a syllable\'s first 50 ms after a pause is kept, tracked and on a learned noise', () => {
+  let sr = 48000, N = omlsaFrame(sr), o = { fs: sr, frameSize: N, hopSize: N / 4 }, { s, y, on } = afterPauses(sr, 0)
+  for (let [name, opts, least] of [['tracked', {}, -4], ['learned', { profile: noiseProfile(y, { to: sr, frameSize: N, hopSize: N / 4 }), gMin: -12 }, -2.5]]) {
+    let G = frameGains(omlsaProcessor({ ...o, ...opts }), y, o), l = 0, a = 0, b = 0
+    stftBatch(s, (mag, phase, st, ctx) => {
+      let c = ctx.pos + N / 2                              // the frame's centre
+      if (on.some(t => c >= t && c < t + 0.05 * sr)) for (let k = 0; k <= N / 2; k++) { a += mag[k] ** 2; b += (mag[k] * G[l][k]) ** 2 }
+      l++
+      return { mag, phase }
+    }, o)
+    let kept = 10 * Math.log10(b / a)
+    ok(kept > least, `${name}: speech kept in the first 50 ms, ${kept.toFixed(2)} dB`)
+  }
+})
+
+// Clean speech (syllables 60 dB over a room tone) comes back as it went in; degenerate input comes back finite, its length
+test('omlsa, wiener, specsub: clean speech kept; empty, one-sample, sub-frame, silent input', () => {
+  let ops = sr => [['omlsa', x => omlsa(x, { fs: sr })], ['omlsa learned', x => omlsa(x, { fs: sr, profileFrom: 0, profileTo: sr / 2, gMin: -12 })],
+    ['wiener', x => wiener(x, { fs: sr })], ['specsub', x => specsub(x, { fs: sr })]]
+  for (let sr of [44100, 48000]) {
+    let { s, y } = afterPauses(sr, 60)
+    for (let [name, op] of ops(sr)) {
+      let out = op(copy(y)), e = 0, p = 0
+      for (let i = 0; i < y.length; i++) { e += (out[i] - y[i]) ** 2; p += y[i] ** 2 }
+      ok(10 * Math.log10(p / e) > 45, `${name} at ${sr} Hz: clean speech back at ${(10 * Math.log10(p / e)).toFixed(1)} dB SNR`)
+    }
+  }
+  for (let [name, op] of ops(fs)) for (let [what, x] of [['empty', new Float32Array(0)], ['one sample', Float32Array.of(0.5)],
+    ['100 samples', Float32Array.from({ length: 100 }, (_, i) => Math.sin(i))], ['silence', new Float32Array(fs)]]) {
+    let out = op(copy(x))
+    ok(out.length === x.length && out.every(Number.isFinite) && (what !== 'silence' || out.every(v => v === 0)), `${name}, ${what}`)
+  }
+})
+
 // minStats keeps each bin's minimum over the last D frames by monotonic deque; the rescan it replaced is the reference,
 // and once the window is full its mean the cap (a running sum, re-added once a window). Windows of 1, 3 and 96 frames,
 // fewer frames than the window, repeated values, minima falling and rising. Frames of digital silence (every 37th
-// frame starts five) are skipped, and the smoother starts at the first frame with sound.
+// frame starts five) are skipped; the smoother starts as the mean of the frames with sound so far, and enters the
+// minimum from its 5th frame (its memory, 1/(1−α) = 3.3 frames, full), the mean standing for the estimate until then.
 test('minStats — the D-frame minimum equals a rescan of the last D frames', () => {
   let seed = 5, rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647
   for (let [half, D, frames] of [[64, 96, 300], [16, 1, 50], [16, 3, 200], [64, 96, 20]]) {
-    let est = minStats(half, { D }), smoothed = new Float64Array(half + 1), hist = [], bad = 0
+    let est = minStats(half, { D }), smoothed = new Float64Array(half + 1), hist = [], seen = 0, bad = 0
     for (let f = 0; f < frames; f++) {
       let mag = Float64Array.from({ length: half + 1 }, () => f % 37 < 5 ? 0 : rnd() < 0.1 ? 1 : rnd() * (1 + (f % 300) / 30))
       est.update(mag)
-      if (f % 37 >= 5) hist.push(Float64Array.from(mag, (m, k) => smoothed[k] = hist.length ? 0.7 * smoothed[k] + (1 - 0.7) * (m * m) : m * m))
+      if (f % 37 >= 5) { let a = Math.min(0.7, seen / (seen + 1)); seen++; hist.push(Float64Array.from(mag, (m, k) => smoothed[k] = a * smoothed[k] + (1 - a) * (m * m))) }
       if (hist.length > D) hist.shift()
+      let mins = hist.slice(Math.max(0, hist.length - (seen - 4)))      // the frames that entered the minimum
       for (let k = 0; k <= half; k++) {
-        let m = hist.length ? Math.min(...hist.map(p => p[k])) * est.bias : 0, mean = hist.reduce((a, p) => a + p[k], 0) / D
-        let ref = hist.length === D ? Math.min(m, mean) : m                  // a full window caps it at its mean
+        let m = mins.length ? Math.min(...mins.map(p => p[k])) * est.bias : smoothed[k], mean = hist.reduce((a, p) => a + p[k], 0) / D
+        let ref = mins.length && hist.length === D ? Math.min(m, mean) : m   // a full window caps it at its mean
         if (Math.abs(est.psd[k] - ref) > 1e-12 * ref) bad++
       }
     }
@@ -314,9 +537,21 @@ test('minStats: unbiased on white noise; starts at the first frame; skips digita
   ok(Math.abs(db) < 0.7, `mean estimate ${db.toFixed(2)} dB re the noise power`)
   let e = minStats(8), m = new Float64Array(9).fill(2)
   e.update(m)
-  almost(e.psd[3], 4 * e.bias, 1e-9, 'first frame: its own power times B_min, no warm-up from zero')
+  almost(e.psd[3], 4, 1e-9, 'first frame: its own power, no warm-up from zero')
   e.update(new Float64Array(9)); e.update(new Float64Array(9))
-  almost(e.psd[3], 4 * e.bias, 1e-9, 'digital silence leaves the estimate as it was')
+  almost(e.psd[3], 4, 1e-9, 'digital silence leaves the estimate as it was')
+})
+
+// A lone periodogram value swings over 2 degrees of freedom: started on it, the smoother put 1 % of bins 20 dB low, and
+// the minimum held them there for the window's length (white noise, wiener's 1.5 s window at 48 kHz: 2.6 % of bins
+// 10 dB under over the first 1.5 s). Started on the mean of the frames so far, it enters the minimum once its memory is full
+test('minStats: the first frames do not hold the estimate down for a window', () => {
+  let sr = 48000, N = 2048, hop = 512, D = Math.round(1.5 * sr / hop), low = 0, all = 0
+  for (let seed of [1, 2, 3]) {
+    let est = minStats(N / 2, { D }), l = 0
+    stftAnalyse(gauss(sr * 2, 1, seed), mag => { est.update(mag); if (l++ < D) for (let k = 10; k < 1000; k++) { all++; if (est.psd[k] < 768 / 10) low++ } }, { frameSize: N, hopSize: hop })
+  }
+  ok(low / all < 0.005, `${(100 * low / all).toFixed(2)} % of bins 10 dB under the noise power over the first ${D} frames`)
 })
 
 // A steady line (a whine, a pilot tone) hardly swings: its minimum is its mean, and B_min put it 6.5 dB over in
@@ -334,8 +569,9 @@ test('minStats: a steady line is estimated at its power, not B_min over it; wien
   let amp = y => { let re = 0, im = 0; for (let i = 2 * fs; i < n; i++) { re += y[i] * Math.cos(2 * Math.PI * 7000 * i / fs); im += y[i] * Math.sin(2 * Math.PI * 7000 * i / fs) } return 20 * Math.log10(2 * Math.hypot(re, im) / (n - 2 * fs)) }
   let tracked = amp(wiener(copy(x), { fs })), learned = amp(wiener(copy(x), { fs, profile: psd(add(line, gauss(n, 0.01, 99))) }))
   ok(Math.abs(tracked - learned) < 0.5, `line left ${tracked.toFixed(1)} dBFS tracked, ${learned.toFixed(1)} on its learned profile (was 6 dB over)`)
-  let { out, plan } = denoise(copy(x), { fs, returnPlan: true }), s = snr(speech, out)
-  ok(plan.method === 'wiener' && s > 10, `denoise() routes it to wiener: SNR ${s.toFixed(1)} dB (7.8 before)`)
+  // forced: the line holds through the voice's pauses, as a held note would, so classify() can't call it a defect
+  let { out, plan } = denoise(copy(x), { fs, force: 'wiener', returnPlan: true }), s = snr(speech, out)
+  ok(plan.method === 'wiener' && s > 10, `denoise({ force: 'wiener' }): SNR ${s.toFixed(1)} dB (7.8 before)`)
 })
 
 test('imcra: unbiased on white noise; digital silence is skipped; a 12 dB step is followed within two windows', () => {
@@ -467,6 +703,63 @@ test('decrackle — reduces high-rate impulse noise', () => {
   ok(peak(clean) < peak(dirty), 'peaks reduced')
 })
 
+// crackle as scripts/decrackle.js makes it: impulses at Poisson times, `rate` a second, half 1–3 samples off, half ticks
+// ringing at 2–8 kHz for 0.03–0.15 ms, peaking at A/5–A × the sound's RMS
+function crackle(x, rate, A, seed = 1) {
+  let s = seed, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296, d = copy(x), g = rms(x)
+  for (let at = 0; ; ) {
+    at += Math.max(1, Math.round(-Math.log(r() || 1e-9) / rate * fs))
+    if (at > x.length - 64) break
+    let amp = g * A * 5 ** -r() * (r() < 0.5 ? -1 : 1), h
+    if (r() < 0.5) h = Array.from({ length: 1 + Math.floor(r() * 3) }, () => 1 - r() * 0.3)
+    else { let f = 2000 + r() * 6000, t = (0.03 + r() * 0.12) * fs / 1000; h = Array.from({ length: Math.ceil(5 * t) }, (_, n) => Math.exp(-n / t) * Math.cos(2 * Math.PI * f * n / fs)) }
+    for (let j = 0; j < h.length; j++) d[at + j] += amp * h[j]
+  }
+  return d
+}
+const sdr = (c, y) => { let s = 0, e = 0; for (let i = 0; i < c.length; i++) s += c[i] ** 2, e += (y[i] - c[i]) ** 2; return 10 * Math.log10(s / e) }
+const moved = (x, y) => { let c = 0, e = 0, s = 0; for (let i = 0; i < x.length; i++) { if (y[i] !== x[i]) c++; e += (y[i] - x[i]) ** 2; s += x[i] ** 2 } return { share: c / x.length, db: 10 * Math.log10(e / s) } }
+
+test('decrackle — small crackle on speech taken out, the speech not made worse', () => {
+  // 0.1.7 (2.5 × the window's MAD, Gauss-Seidel fill) took this from 32.5 to 20.5 dB
+  let speech = lena.subarray(0, fs * 3), d = crackle(speech, 200, 0.5)
+  let before = sdr(speech, d), after = sdr(speech, decrackle(d, { fs }))
+  ok(after > before + 5, `SDR ${before.toFixed(1)} → ${after.toFixed(1)} dB`)
+})
+
+test('decrackle — dense crackle, 1000/s at 0.4–2× the speech', () => {
+  let speech = lena.subarray(0, fs * 2), d = crackle(speech, 1000, 2, 7)
+  let before = sdr(speech, d), after = sdr(speech, decrackle(d, { fs }))
+  ok(after > before + 6, `SDR ${before.toFixed(1)} → ${after.toFixed(1)} dB`)
+})
+
+test('decrackle — clean speech and a sung-like tone left nearly as they are', () => {
+  // 0.1.7 changed 7% of these samples, the speech to −20 dB
+  let speech = lena.subarray(0, fs * 3), m = moved(speech, decrackle(speech, { fs }))
+  ok(m.share < 0.001 && m.db < -50, `speech: ${(100 * m.share).toFixed(3)}% of samples, ${m.db.toFixed(1)} dB`)
+  let tone = new Float32Array(fs * 2), ph = 0                     // 220 Hz, 8 harmonics at 1/k, ±30 cents at 5.5 Hz
+  for (let i = 0; i < tone.length; i++) {
+    ph += 2 * Math.PI * 220 * 2 ** (0.3 / 12 * Math.sin(2 * Math.PI * 5.5 * i / fs)) / fs
+    for (let k = 1; k <= 8; k++) tone[i] += 0.3 * Math.sin(k * ph) / k
+  }
+  m = moved(tone, decrackle(tone, { fs }))
+  ok(m.share < 0.005 && m.db < -50, `tone: ${(100 * m.share).toFixed(3)}% of samples, ${m.db.toFixed(1)} dB`)
+  let hiss = noise(fs, 0.1)
+  is([...decrackle(hiss, { fs })].findIndex((v, i) => v !== hiss[i]), -1, 'noise: not a sample changed')
+})
+
+test('decrackle — empty, one sample, silence, shorter than its window', () => {
+  is(decrackle(new Float32Array(0), { fs }).length, 0, 'empty')
+  is([...decrackle(Float32Array.of(0.5), { fs })], [0.5], 'one sample')
+  ok(decrackle(new Float32Array(fs)).every(v => v === 0), 'silence stays silent')
+  let x = new Float32Array(600)
+  for (let i = 0; i < x.length; i++) x[i] = 0.3 * Math.sin(2 * Math.PI * 440 * i / fs)
+  let d = copy(x); d[300] += 0.8
+  let out = decrackle(d, { fs })
+  ok(out.every(Number.isFinite) && Math.abs(out[300] - x[300]) < 0.01, `the impulse rebuilt (${out[300].toFixed(3)} for ${x[300].toFixed(3)})`)
+  ok(decrackle(crackle(lena.subarray(0, fs), 1000, 8), { fs }).every(Number.isFinite), 'no NaN')
+})
+
 // =================== declip ===================
 
 test('declip — restores clipped peaks', () => {
@@ -478,20 +771,130 @@ test('declip — restores clipped peaks', () => {
   ok(peak(restored) > limit + 0.02, 'peak restored above clip level')
 })
 
+import { rails } from '@audio/denoise-declip'
+import { arFill } from '@audio/lpc'
+const scaled = (x, k) => Float32Array.from(x, v => v * k)
+const clamp = (x, hi, lo = -hi) => Float32Array.from(x, v => Math.min(hi, Math.max(lo, v)))
+const pcm16 = x => Float32Array.from(x, v => Math.max(-32768, Math.min(32767, Math.round(v * 32768))) / 32768)
+const unchanged = (x, y) => x.length === y.length && x.every((v, i) => v === y[i])
+// a lookahead limiter, as a mastered track has been through: the gain is the 5 ms moving average of the minimum over
+// the next 5 ms of ceiling/|x|, so each peak touches the ceiling in one sample and its neighbours follow the wave
+function limited(x, c = 0.98) {
+  let L = Math.round(0.005 * fs), n = x.length, M = new Float64Array(n), y = new Float32Array(n)
+  for (let i = 0; i < n; i++) { M[i] = 1; for (let j = i; j < Math.min(n, i + L); j++) M[i] = Math.min(M[i], c / Math.max(Math.abs(x[j]), c)) }
+  for (let i = 0, s = 0; i < n; i++) { s += M[i]; if (i >= L) s -= M[i - L]; y[i] = x[i] * s / Math.min(i + 1, L) }
+  return y
+}
+
+test('declip — sound with no rail comes back bit-exact, at any level and bit depth, limited or not', () => {
+  // 0.1.7 took the most populated |x| bin over 0.5 for the rail: a limiter at half scale for any sound peaking over it
+  let s = lena.subarray(0, fs), one = scaled(s, 1 / peak(s))
+  for (let [v, x] of [['as is', s], ['peak 1', one], ['16-bit', pcm16(one)], ['16-bit at −40 dB', pcm16(scaled(one, 0.01))], ['limited 12 dB', limited(scaled(one, 4))]]) {
+    let r = rails(x)
+    ok(r.hi == null && r.lo == null && unchanged(x, declip(x, { fs })), `${v}: no rail, not a sample changed`)
+  }
+  for (let f of [50, 1000]) { let x = sine(f, fs, 0.9); ok(unchanged(x, declip(x, { fs })), `a ${f} Hz sine's top is no rail`) }
+})
+
+test('declip — finds the rail wherever it sits: clipped, then turned down to 0.28', () => {
+  // 0.1.7 looked for a rail above 0.5 only, and left this alone
+  let s = lena.subarray(0, fs), x = scaled(s, 0.4 / peak(s)), y = scaled(clamp(scaled(s, 1 / peak(s)), 0.7), 0.4)
+  let { hi, lo } = rails(y), z = declip(y, { fs })
+  ok(Math.abs(hi - 0.28) < 1e-6 && Math.abs(lo + 0.28) < 1e-6, `rails ${hi?.toFixed(4)} / ${lo?.toFixed(4)}`)
+  ok(snr(x, z) > snr(x, y) + 10, `SDR ${snr(x, y).toFixed(1)} → ${snr(x, z).toFixed(1)} dB`)
+})
+
+test('declip — one rail, two different rails, a 16-bit converter overdriven', () => {
+  let s = lena.subarray(0, fs), x = scaled(s, 1 / peak(s)), up = scaled(x, 1.3)
+  for (let [v, ref, y, want] of [
+    ['one side', x, clamp(x, 0.6, -2), [0.6, null]], ['two rails', x, clamp(x, 0.6, -0.45), [0.6, -0.45]],
+    ['16-bit, 2.3 dB over', up, pcm16(up), [32767 / 32768, -1]]
+  ]) {
+    let { hi, lo } = rails(y), z = declip(y, { fs })
+    ok(hi === Math.fround(want[0]) && lo === (want[1] == null ? null : Math.fround(want[1])), `${v}: rails ${hi} / ${lo}`)
+    ok(snr(ref, z) > snr(ref, y) + 6, `${v}: SDR ${snr(ref, y).toFixed(1)} → ${snr(ref, z).toFixed(1)} dB`)
+  }
+})
+
+test('declip — speech clipped to 10 dB SDR comes back over 20', () => {
+  // 0.1.7 (AR on the left context, Gauss-Seidel fill, runs over 50 skipped): 10.6 dB at its best, the rail given
+  let s = lena.subarray(0, fs), x = scaled(s, 1 / peak(s)), lo = 0, hi = 1
+  for (let i = 0; i < 40; i++) { let m = (lo + hi) / 2; if (snr(x, clamp(x, m)) < 10) lo = m; else hi = m }
+  let y = clamp(x, hi), z = declip(y, { fs })
+  ok(snr(x, z) > 20, `SDR ${snr(x, y).toFixed(1)} → ${snr(x, z).toFixed(1)} dB`)
+  ok(z.every(Number.isFinite), 'finite')
+  ok(z.every((v, i) => y[i] === v || Math.abs(v) >= Math.abs(y[i])), 'consistent: each rebuilt sample at least as far out as recorded')
+})
+
+test('declip — edges: empty, one sample, silence, a constant, shorter than its window', () => {
+  is(declip(new Float32Array(0), { fs }).length, 0, 'empty')
+  ok(unchanged(new Float32Array([0.5]), declip(new Float32Array([0.5]), { fs, clipLevel: 0.5 })), 'one sample')
+  ok(unchanged(new Float32Array(4096), declip(new Float32Array(4096), { fs })), 'silence')
+  let dc = new Float32Array(4096).fill(0.3)
+  ok(unchanged(dc, declip(dc, { fs })), 'a constant: nothing to rebuild it from')
+  let x = sine(440, 600), y = clamp(x, 0.8), z = declip(y, { fs })
+  ok(z.every(Number.isFinite) && peak(z) > 0.85 && snr(x, z) > snr(x, y) + 6, `600 samples: SDR ${snr(x, y).toFixed(1)} → ${snr(x, z).toFixed(1)} dB`)
+})
+
+test('lpc arFill: the exact least-squares fill; arBridge\'s on one contiguous gap', () => {
+  let r = 0x9e3779b9, rand = () => ((r = (r * 1664525 + 1013904223) >>> 0) / 0x100000000) - 0.5
+  let x = new Float64Array(1500), y1 = 0, y2 = 0
+  for (let i = 0; i < x.length; i++) { let v = 1.6 * y1 - 0.9 * y2 + rand(); y2 = y1; y1 = v; x[i] = v }
+  let p = 24, { a } = arFit(x, p), A = Float64Array.from(x), B = Float64Array.from(x), gap = []
+  for (let i = 600; i < 700; i++) gap.push(i)
+  arFill(A, gap, a); arBridge(B, 600, 700, a)
+  ok(A.every((v, i) => Math.abs(v - B[i]) < 1e-9), 'a contiguous gap: arBridge')
+  let C = Float64Array.from(x), g = []
+  for (let i = 30; i < 1470; i++) if (rand() < -0.2 || (i >= 700 && i < 760)) g.push(i)
+  ok(arFill(C, g, a), 'solved')
+  // the gradient of Σ_t (a∗x)[t]² with respect to every unknown vanishes
+  let e = new Float64Array(x.length + p), worst = 0
+  for (let t = 0; t < e.length; t++) for (let k = 0; k <= p; k++) if (t - k >= 0 && t - k < x.length) e[t] += a[k] * C[t - k]
+  for (let i of g) { let d = 0; for (let k = 0; k <= p; k++) d += a[k] * e[i + k]; worst = Math.max(worst, Math.abs(d)) }
+  ok(worst < 1e-9, `normal equations hold (${worst.toExponential(1)}) over ${g.length} scattered unknowns`)
+})
+
 // =================== dewind ===================
 
-test('dewind — attenuates LF rumble', () => {
-  let speech = lena.subarray(0, fs * 2)
-  let rumble = sine(40, speech.length, 0.4)
-  let dirty = add(speech, rumble)
+// steady wind: Gaussian-ish noise through a one-pole 80 Hz low-pass (deterministic LCG)
+function lfNoise(n, amp, seed = 12345) {
+  let d = new Float32Array(n), y = 0, a = Math.exp(-2 * Math.PI * 80 / fs)
+  let rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 0x100000000) * 2 - 1
+  for (let i = 0; i < n; i++) d[i] = amp * (y = a * y + (1 - a) * rand())
+  return d
+}
+
+test('dewind – takes steady wind under speech', () => {
+  let speech = lena.subarray(0, fs * 4), dirty = add(speech, lfNoise(speech.length, 6))
   let clean = dewind(copy(dirty), { fs })
-  ok(narrowEnergy(clean, 40) < narrowEnergy(dirty, 40) * 0.3, 'rumble cut ≥3×')
+  ok(snr(speech, clean) > snr(speech, dirty) + 3, `SNR ${snr(speech, dirty).toFixed(1)} → ${snr(speech, clean).toFixed(1)} dB (+3 required)`)
+})
+
+// 0.1.9 took any low end over the 300–2000 Hz band for wind, behind a fixed 60 Hz floor: it thinned voices and cut
+// this bass line by 9 dB. A voice's, a note's, a tone's low end repeats at its pitch; wind's does not.
+test('dewind – no wind, no change: speech, a bass line, a steady low tone', () => {
+  let y = dewind(copy(lena), { fs }), md = 0
+  for (let i = 0; i < lena.length; i++) md = Math.max(md, Math.abs(y[i] - lena[i]))
+  is(md, 0, 'speech: untouched')
+  let bass = bassline(), b = 10 * Math.log10(energy(dewind(copy(bass), { fs })) / energy(bass))
+  ok(Math.abs(b) < 0.1, `bass line ${b.toFixed(2)} dB`)
+  let tone = sine(40, 2 * fs, 0.4), t = dewind(copy(tone), { fs })
+  ok(t.every((v, i) => v === tone[i]), '40 Hz tone: untouched (a tone is hum or a note, not wind)')
+})
+
+test('dewind – empty, one sample, shorter than a block, silence', () => {
+  is(dewind(new Float32Array(0), { fs }).length, 0, 'empty')
+  is(dewind(new Float32Array([0.5]), { fs })[0], 0.5, 'one sample')
+  let short = lfNoise(100, 1), s = dewind(copy(short), { fs })
+  ok(s.every((v, i) => v === short[i]), 'shorter than a block: nothing measured yet, nothing changed')
+  ok(dewind(new Float32Array(fs), { fs }).every(v => v === 0), 'silence stays silent')
+  ok(dewind(noise(fs, 0.5), { fs }).every(Number.isFinite), 'finite on noise')
 })
 
 test('dewind — the cutoff tracker keeps its clock across calls: same output under any chunking', () => {
   // Analysis blocks restarted at every call, and each short tail block took a full block's
   // attack/release step: at 64-sample host blocks the cutoff tracked 16× too fast
-  let n = 2 * fs, x = add(sine(800, n, 0.2), sine(40, n, 0.5))
+  let n = 2 * fs, x = add(sine(800, n, 0.2), lfNoise(n, 3))
   for (let i = 0; i < n; i++) if (i % fs > fs / 2) x[i] *= 0.05          // wind gusts on and off
   let run = block => {
     let d = copy(x), opts = { fs }
@@ -499,6 +902,7 @@ test('dewind — the cutoff tracker keeps its clock across calls: same output un
     return d
   }
   let ref = dewind(copy(x), { fs })
+  ok(ref.some((v, i) => v !== x[i]), 'the gusts engage it')
   for (let block of [1, 64, 997, 1024, 5000]) {
     let d = run(block), m = 0
     for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(d[i] - ref[i]))
@@ -528,9 +932,28 @@ test('dewind — improves SNR on intermittent gusts (design center)', () => {
 
 // =================== deplosive ===================
 
-test('deplosive — complementary split leaves non-plosive content untouched', () => {
-  // No LF burst → gain stays 1 → HF = x − LF makes output identical to input.
-  // The old independent LP+HP Butterworth split notched content near the crossover.
+// a pop: a pressure pulse with no period, a half-sine of `ms`
+function pulse(n, at, ms, amp = 1) {
+  let p = new Float32Array(n), D = Math.round(ms * fs / 1000)
+  for (let i = 0; i < D; i++) p[at + i] = amp * Math.sin(Math.PI * i / D)
+  return p
+}
+// a bass line: E1–E2 notes, harmonics under 2 kHz at 1/k, 5 ms attack, 0.6 s decay, two a second
+function bassline() {
+  let notes = [41.2, 55, 61.7, 49, 82.4, 73.4, 55, 41.2], n = fs / 2, y = new Float32Array(n * notes.length), pk = 0
+  notes.forEach((f, k) => { for (let i = 0; i < n; i++) { let t = i / fs, v = 0; for (let h = 1; h < 12 && f * h < 2000; h++) v += Math.sin(2 * Math.PI * f * h * t) / h; y[k * n + i] = v * Math.min(1, t / 0.005) * Math.exp(-t / 0.6) } })
+  for (let v of y) pk = Math.max(pk, Math.abs(v))
+  return y.map(v => 0.3 * v / pk)
+}
+function goertzel(d, f, a = 0, b = d.length) {
+  let w = 2 * Math.PI * f / fs, c = 2 * Math.cos(w), s1 = 0, s2 = 0
+  for (let i = a; i < b; i++) { let s = d[i] + c * s1 - s2; s2 = s1; s1 = s }
+  return Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - c * s1 * s2))
+}
+function energy(d, a = 0, b = d.length) { let s = 0; for (let i = a; i < b; i++) s += d[i] * d[i]; return s }
+
+test('deplosive – no pop: output equals input sample for sample', () => {
+  // No pop → gain stays 1 → out = x − 0·(x − HP(x)) = x
   let x = sine(200, fs, 0.3)                              // sits right at the 200 Hz crossover
   let out = deplosive(copy(x), { fs })
   almost(rms(out), rms(x), rms(x) * 0.02, '200 Hz preserved — no crossover notch')
@@ -539,19 +962,50 @@ test('deplosive — complementary split leaves non-plosive content untouched', (
   ok(md < 1e-5, 'output equals input sample-for-sample when no plosive fires')
 })
 
-test('deplosive — ducks a dominant LF burst, preserves the high band', () => {
-  // LF burst must dominate the high band by > triggerRatio (4) to fire. A strong
-  // 90 Hz burst over a quiet 1.5 kHz reference triggers ducking on the LF band only.
-  let n = fs
-  let hi = sine(1500, n, 0.05)                            // quiet high-band reference
-  let at = Math.floor(fs * 0.3), blen = Math.floor(0.08 * fs)
-  let burst = new Float32Array(n)
-  for (let i = 0; i < blen; i++) burst[at + i] = Math.sin(2 * Math.PI * 40 * i / fs)   // 40 Hz thump, amp 1.0
-  let dirty = add(hi, burst)
-  let clean = deplosive(copy(dirty), { fs })
-  let seg = (d, f) => { let w = 2 * Math.PI * f / fs, c = 2 * Math.cos(w), s1 = 0, s2 = 0; for (let i = at; i < at + blen; i++) { let s = d[i] + c * s1 - s2; s2 = s1; s1 = s } return Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - c * s1 * s2)) / blen }
-  ok(seg(clean, 40) < seg(dirty, 40) * 0.5, 'LF burst ducked ≥6 dB')
-  almost(narrowEnergy(clean, 1500), narrowEnergy(dirty, 1500), narrowEnergy(dirty, 1500) * 0.03, 'high band preserved')
+test('deplosive – ducks a pop, keeps the high band', () => {
+  let n = fs, at = Math.floor(0.3 * fs), D = Math.round(0.03 * fs)
+  let hi = sine(1500, n, 0.05), dirty = add(hi, pulse(n, at, 30))
+  let clean = deplosive(copy(dirty), { fs }), before = 0, after = 0
+  for (let i = at; i < at + D + fs * 0.05; i++) { before += (dirty[i] - hi[i]) ** 2; after += (clean[i] - hi[i]) ** 2 }
+  ok(before / after > 10 ** 0.9, `pop error ${(10 * Math.log10(before / after)).toFixed(1)} dB down (≥ 9)`)
+  almost(goertzel(clean, 1500), goertzel(hi, 1500), goertzel(hi, 1500) * 0.01, 'high band kept')
+})
+
+// 0.1.10 ducked any low end over 4× the high band: a voice's, a bass line's (−3.4 dB on this one), a sine bass note's
+// (−8.7 dB). Theirs repeats at a pitch; a pop's does not.
+test('deplosive – a periodic low end passes: bass line, sine bass notes, speech', () => {
+  let bass = bassline(), notes = new Float32Array(2 * fs)
+  for (let k = 0; k < 4; k++) for (let i = 0; i < fs / 2; i++) notes[k * fs / 2 + i] = 0.5 * Math.sin(2 * Math.PI * 50 * i / fs) * Math.exp(-i / fs / 0.4)
+  let b = 10 * Math.log10(energy(deplosive(copy(bass), { fs })) / energy(bass))
+  let s = 10 * Math.log10(energy(deplosive(copy(notes), { fs })) / energy(notes))
+  ok(b > -0.3, `bass line ${b.toFixed(2)} dB`)
+  ok(s > -1, `sine notes, sharp attack ${s.toFixed(2)} dB`)
+  let y = deplosive(copy(lena), { fs }), md = 0
+  for (let i = 0; i < lena.length; i++) md = Math.max(md, Math.abs(y[i] - lena[i]))
+  is(md, 0, 'speech: untouched')
+})
+
+// The duck was g·LP + (x − LP), and x − LP is no high-pass: under a pop it lifted 250 Hz by 1.7 dB
+test('deplosive – the duck never lifts a band', () => {
+  let n = fs, at = Math.floor(0.3 * fs), tone = sine(250, n, 0.1)
+  let y = deplosive(add(tone, pulse(n, at, 100)), { fs })
+  let a = at + Math.round(0.03 * fs), b = at + Math.round(0.07 * fs), g = 20 * Math.log10(goertzel(y, 250, a, b) / goertzel(tone, 250, a, b))
+  ok(g < 0, `250 Hz under the pop ${g.toFixed(2)} dB`)
+})
+
+test('deplosive – any chunking, empty, one sample, silence', () => {
+  let n = fs, x = add(sine(1500, n, 0.05), pulse(n, Math.floor(0.3 * fs), 30), sine(110, n, 0.1))
+  let ref = deplosive(copy(x), { fs })
+  for (let block of [1, 64, 997, 4096]) {
+    let d = copy(x), o = { fs }, m = 0
+    for (let i = 0; i < n; i += block) deplosive(d.subarray(i, Math.min(n, i + block)), o)
+    for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(d[i] - ref[i]))
+    is(m, 0, `block ${block} ≡ one call`)
+  }
+  is(deplosive(new Float32Array(0), { fs }).length, 0, 'empty')
+  is(deplosive(new Float32Array([0.5]), { fs })[0], 0.5, 'one sample')
+  ok(deplosive(new Float32Array(fs), { fs }).every(v => v === 0), 'silence stays silent')
+  ok(deplosive(noise(fs, 0.5), { fs }).every(Number.isFinite), 'finite on noise')
 })
 
 // =================== deesser ===================
@@ -582,6 +1036,57 @@ test('debreath — attenuates non-speech far more than speech', () => {
   let retSpeech = rms(debreath(copy(speech), { fs })) / rms(speech)
   ok(retNoise < 0.6, 'pure non-speech attenuated (VAD inactive)')
   ok(retSpeech > retNoise * 1.5, 'speech retained far more than noise')
+})
+
+test('debreath — speech under noise is not turned down', () => {
+  // 0.1 turned down what lay under 9 dB over the input's 10th-percentile frame energy: under noise that is the noise,
+  // and at 5 dB SNR it took 56 % of lena's loud frames down by over 3 dB
+  let { x, n, loud } = lenaInNoise(5), y = debreath(copy(x), { fs }), cut = 0, all = 0
+  loud.forEach((l, k) => {
+    if (!l) return
+    let a = 0, b = 0
+    for (let i = k * n; i < (k + 1) * n; i++) { a += x[i] * x[i]; b += y[i] * y[i] }
+    all++; cut += b < a / 2
+  })
+  ok(cut / all < 0.01, `loud speech frames turned down over 3 dB at 5 dB SNR: ${(100 * cut / all).toFixed(2)} %`)
+  ok(y.every(Number.isFinite), 'finite output')
+})
+
+test('debreath — a breath between phrases goes down by `range`; the phrases, and a held note, stay as they were', () => {
+  // two phrases of lena, a 1.2 s pause on a -70 dB floor, in its middle a breath: noise through three wide resonances
+  // (500, 1500, 2500 Hz) under a 350 ms Hann envelope, 30 dB under the loudest speech
+  let gap = Math.round(1.2 * fs), half = Math.round(2.5 * fs), L = Math.round(0.35 * fs), at = half + (gap - L >> 1)
+  let x = pinkNoise(2 * half + gap, 11).map(v => 3e-4 * v), br = new Float32Array(L), w = pinkNoise(L, 13)
+  x.set(lena.subarray(0, half).map((v, i) => v + x[i])); x.set(lena.subarray(half, 2 * half).map((v, i) => v + x[half + gap + i]), half + gap)
+  for (let [f, bw] of [[500, 300], [1500, 400], [2500, 500]]) {
+    let R = Math.exp(-Math.PI * bw / fs), c = 2 * R * Math.cos(2 * Math.PI * f / fs), y1 = 0, y2 = 0
+    for (let i = 0; i < L; i++) { let v = (1 - R) * w[i] + c * y1 - R * R * y2; y2 = y1; y1 = v; br[i] += v }
+  }
+  let top = 0, n = fs / 100
+  for (let k = 0; k + n <= lena.length; k += n) { let e = 0; for (let i = k; i < k + n; i++) e += lena[i] * lena[i]; top = Math.max(top, e / n) }
+  let g = Math.sqrt(top * 1e-3) / rms(br)
+  for (let i = 0; i < L; i++) x[at + i] += g * br[i] * Math.sin(Math.PI * i / L) ** 2
+  let y = debreath(copy(x), { fs }), e = (d, a, b) => { let s = 0; for (let i = a; i < b; i++) s += d[i] * d[i]; return s }
+  almost(10 * Math.log10(e(y, at, at + L) / e(x, at, at + L)), -12, 1, 'the breath down by range')
+  let loudKept = true
+  for (let k = 0; k + n <= x.length; k += n) if ((k < half || k >= half + gap) && e(x, k, k + n) > top * n / 100) loudKept &&= e(y, k, k + n) === e(x, k, k + n)
+  ok(loudKept, 'every loud 10 ms of both phrases untouched')
+  // nothing between phrases: a note held 3 s with vibrato, no pause anywhere, comes out bit-exact
+  let note = new Float32Array(3 * fs)
+  for (let i = 0, ph = 0; i < note.length; i++) { ph += 2 * Math.PI * 150 * (1 + 0.01 * Math.sin(2 * Math.PI * 5 * i / fs)) / fs; for (let h = 1; h <= 10; h++) note[i] += 0.2 * Math.sin(h * ph) / h }
+  let out = debreath(copy(note), { fs }), dev = 0
+  for (let i = 0; i < note.length; i++) dev = Math.max(dev, Math.abs(out[i] - note[i]))
+  is(dev, 0, 'a held note passes untouched')
+})
+
+test('debreath — empty, a single sample, shorter than a frame, digital silence', () => {
+  is(debreath(new Float32Array(0), { fs }).length, 0, 'empty')
+  for (let x of [Float32Array.of(0.5), new Float32Array(1000).fill(0.25)]) {
+    let y = debreath(copy(x), { fs })
+    ok(y.every((v, i) => v === x[i]), `${x.length} samples: nothing to analyse, nothing changed`)
+  }
+  let z = debreath(new Float32Array(fs), { fs })
+  ok(z.every(v => v === 0), 'digital silence stays silent, finite')
 })
 
 // =================== dereverb ===================
@@ -631,13 +1136,40 @@ test('dereverb: the writer equals the batch, look-ahead included, under any chun
 
 // =================== denoise auto-classifier ===================
 
+const lcg = seed => { let s = seed >>> 0; return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296 }
+// a voice: 120–180 Hz glottal pulses through formants at 700 and 1200 Hz, in syllables of 0.2 s with 0.15 s between
+function syllables(n) {
+  let d = new Float32Array(n), y1 = 0, y2 = 0, z1 = 0, z2 = 0, ph = 0
+  for (let i = 0; i < n; i++) {
+    let t = i / fs, on = t % 0.35 < 0.2
+    ph += (120 + 60 * Math.sin(2 * Math.PI * 0.7 * t)) / fs
+    let x = on && ph >= 1 ? 1 : 0
+    if (ph >= 1) ph -= 1
+    let y = x + 1.9 * Math.cos(2 * Math.PI * 700 / fs) * 0.95 * y1 - 0.9025 * y2; y2 = y1; y1 = y
+    let z = y + 2 * Math.cos(2 * Math.PI * 1200 / fs) * 0.93 * z1 - 0.8649 * z2; z2 = z1; z1 = z
+    d[i] = on ? z * 0.01 * Math.sin(Math.PI * (t % 0.35) / 0.2) : 0
+  }
+  return d
+}
+// a dense mix: a chord every 0.5 s (three voices, harmonics 1–8 at 1/k, struck and held) over a bass, no noise
+function chords(n) {
+  let d = new Float32Array(n), cs = [[261.6, 329.6, 392], [220, 261.6, 329.6], [174.6, 220, 261.6], [196, 246.9, 293.7]]
+  for (let i = 0; i < n; i++) {
+    let t = i / fs, c = cs[Math.floor(t / 0.5) % 4], s = 2 * Math.sin(2 * Math.PI * c[0] / 4 * t) + Math.sin(Math.PI * c[0] * t)
+    for (let f of c) for (let k = 1; k <= 8; k++) s += Math.sin(2 * Math.PI * f * k * t) / k
+    let u = t % 0.5
+    d[i] = (0.05 * Math.exp(-3 * u) + 0.02) * Math.min(1, u / 0.005, (0.5 - u) / 0.01) * s   // 5 ms in, 10 ms out
+  }
+  return d
+}
+
 test('classify — 60Hz hum routes to dehum', () => {
   let x = add(sine(60, fs, 0.3), sine(120, fs, 0.15))
   is(classify(x, fs).method, 'dehum')
 })
 
 test('classify — clicks route to declick', () => {
-  let x = add(noise(fs, 0.05), clicks(fs, 12, 0.9))
+  let x = add(noise(fs, 0.02), clicks(fs, 12, 0.9))
   is(classify(x, fs).method, 'declick')
 })
 
@@ -665,9 +1197,18 @@ test('classify — sibilance routes to deesser', () => {
   is(classify(x, fs).method, 'deesser')
 })
 
-test('classify — rumble routes to dewind', () => {
-  let x = add(sine(40, fs, 0.4), noise(fs, 0.05))
-  is(classify(x, fs).method, 'dewind')
+// Wind is aperiodic low end in gusts (Nelke & Vary 2014); a low tone repeats at its period and is no wind (dewind 0.2
+// leaves it alone), here the noise under it is the defect
+test('classify — gusts of low noise route to dewind; a 40 Hz tone is no wind', () => {
+  let v = syllables(fs * 4), w = new Float32Array(v.length), r = lcg(5), a = Math.exp(-2 * Math.PI * 150 / fs), l1 = 0, l2 = 0, g = 0
+  for (let i = 0; i < w.length; i++) {          // noise under 150 Hz, gusting 0.6 s of every second
+    l1 = a * l1 + (1 - a) * (r() * 2 - 1); l2 = a * l2 + (1 - a) * l1; g = 0.999 * g + 0.001 * ((i / fs) % 1 < 0.6)
+    w[i] = l2 * g * 4 * rms(v) / 0.0577
+  }
+  let c = classify(add(v, w), fs)
+  is(c.method, 'dewind', `wind in ${(100 * c.scores.wind).toFixed(0)}% of the blocks`)
+  let tone = classify(add(sine(40, fs, 0.4), noise(fs, 0.05)), fs)
+  ok(tone.method !== 'dewind' && tone.scores.wind === 0, `40 Hz tone: ${tone.method}, wind ${tone.scores.wind}`)
 })
 
 test('classify — broadband noise routes to wiener', () => {
@@ -686,6 +1227,34 @@ test('classify — wandering (non-stationary) noise bed routes to omlsa', () => 
   let bed = noise(speech.length, 0.06)
   for (let i = 0; i < bed.length; i++) bed[i] *= 1 + 0.8 * Math.sin(2 * Math.PI * 0.35 * i / fs)
   is(classify(add(speech, bed), fs).method, 'omlsa', 'wandering floor → omlsa')
+})
+
+// Each route needs evidence. 0.3 routed every recording somewhere: clean speech and music to omlsa (its floor statistic
+// read a program's own dynamics as a wandering bed), a bass-heavy mix to dewind. A voice pauses into silence; a chord
+// sequence never pauses, but its quietest frames hold partials, never a noise floor; the same chords with white noise
+// 20 dB under them show the noise in steady bands.
+test('classify — clean voice and clean music route to none; the music under white noise to wiener', () => {
+  let v = syllables(fs * 4), m = chords(fs * 4)
+  let cv = classify(v, fs), cm = classify(m, fs), n = noise(m.length, rms(m) * 0.1 * Math.sqrt(3))
+  is(cv.method, 'none', `voice: bed ${cv.scores.snr.toFixed(1)} dB under`)
+  is(cm.method, 'none', `music: bed ${cm.scores.snr.toFixed(1)} dB under`)
+  let cn = classify(add(m, n), fs)
+  is(cn.method, 'wiener', `music + white noise 20 dB under: bed ${cn.scores.snr.toFixed(1)} dB under`)
+})
+
+test('denoise — nothing evidenced: the sound comes back as it was', () => {
+  let m = chords(fs * 2), { out, plan } = denoise(m, { fs, returnPlan: true })
+  is(plan.method, 'none')
+  ok(out !== m && out.length === m.length && out.every((v, i) => v === m[i]), 'a copy, sample for sample')
+  is(denoise(copy(m), { fs, force: 'none' }).length, m.length, 'forced none')
+})
+
+test('classify — empty, one sample, shorter than a frame, silence: none, nothing changed', () => {
+  for (let [name, x] of [['empty', new Float32Array(0)], ['one sample', new Float32Array([0.5])], ['short', noise(1000, 0.1)], ['silence', new Float32Array(fs)]]) {
+    is(classify(x, fs).method, 'none', name)
+    let y = denoise(copy(x), { fs })
+    ok(y.length === x.length && y.every((v, i) => v === x[i]), name + ': unchanged')
+  }
 })
 
 test('denoise — returnPlan exposes routing decision', () => {
@@ -895,6 +1464,42 @@ test('repair: every tier on gaps of 5 ms to 1 s against the original; auto picks
 	console.log('SNR / LSD (dB)\n' + table.join('\n'))
 })
 
+// Each fill joins the program in a crossfade over the good audio at each edge, as short as the seams allow
+// (scripts/repair.js "Seams"): none for AR, 15 ms for the bridge, 30 ms for spectral, 5 ms for a transplant that
+// repeats the program; a looser transplant keeps the frame-long one. 0.2 crossfaded the bridge over 23 ms and every
+// transplant over 46 ms either side, and wrote the spectral tier's frames back whole (35–39 ms).
+test('repair: good audio beyond each tier\'s crossfade comes back bit-exact; the edges add no click', () => {
+	let reach = (d, y, a, b) => { let lo = a, hi = b; for (let i = 0; i < d.length; i++) if (y[i] !== d[i]) lo = Math.min(lo, i), hi = Math.max(hi, i + 1); return [(a - lo) / fs * 1000, (hi - b) / fs * 1000] }
+	// a click stands out of the AR residual (Vaseghi & Rayner 1990): its strongest 1 ms from 8 ms outside an edge to
+	// 1 ms inside, over the original's there, dB (a hard splice of another passage: 13–38 dB)
+	let click = (x, y, s, side) => {
+		let M = Math.round(fs / 1000), g0 = side < 0 ? s - 110 * M : s + 10 * M, A = arFit(Float64Array.from(x.subarray(g0, g0 + 100 * M)), 32).a
+		let peak = v => { let m = 0; for (let p = s - (side < 0 ? 8 : 1) * M; p + M <= s + (side < 0 ? 1 : 8) * M; p += M >> 2) { let e = 0; for (let n = p; n < p + M; n++) { let r = 0; for (let k = 0; k <= 32; k++) r += A[k] * v[n - k]; e += r * r } m = Math.max(m, e) } return m }
+		return 10 * Math.log10(peak(y) / peak(x))
+	}
+	let a = 2 * fs, b = a + Math.round(0.1 * fs), d = copy(lena).fill(0, a, b), regions = [{ at: 2, duration: 0.1 }]
+	for (let [m, X] of [['ar', 0], ['sinusoidal', 15], ['spectral', 30], ['similarity', 2048 / fs * 1000]]) {   // lena has no repeat: the frame
+		let y = repair(d, { fs, regions, method: m }), [l, r] = reach(d, y, a, b), c = Math.max(click(lena, y, a, -1), click(lena, y, b, 1))
+		ok(l <= X + 0.03 && r <= X + 0.03, `${m}: rewrites ${l.toFixed(1)} / ${r.toFixed(1)} ms of good audio either side (≤ ${X.toFixed(1)})`)
+		ok(c < 3, `${m}: the edges' residual burst ${c.toFixed(1)} dB over the original's`)
+	}
+	// the phrase under noise 40 dB down: a near-exact repeat 1.5 s away, joined in 5 ms
+	let r = (s => () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296)(5), loop = phrase(6 * fs).map(v => v + 0.003 * (r() * 2 - 1))
+	let la = Math.round(3.2 * fs), lb = la + fs, ld = copy(loop).fill(0, la, lb), [l, h] = reach(ld, repair(ld, { fs, regions: [{ at: 3.2, duration: 1 }], method: 'similarity' }), la, lb)
+	ok(l <= 5.03 && h <= 5.03, `a repeat transplanted: ${l.toFixed(1)} / ${h.toFixed(1)} ms rewritten either side`)
+})
+
+test('repair: edge cases: empty, one sample, shorter than a frame, silence, a zero-length region; finite always', () => {
+	let cases = [[new Float32Array(0), 0, 0.01], [Float32Array.of(0.5), 0, 0.01], [sine(300, 1000, 0.5), 0.005, 0.005], [new Float32Array(fs), 0.4, 0.1], [sine(300, fs, 0.5), 0.5, 0]], bad = []
+	for (let [x, at, duration] of cases) for (let method of ['ar', 'sinusoidal', 'similarity', 'spectral', 'auto']) for (let band of [{}, { from: 300, to: 3000 }]) {
+		let y = repair(x, { fs, regions: [{ at, duration, ...band }], method }), tag = `${x.length} samples, ${duration * 1000} ms, ${method}${band.from ? ', band' : ''}`
+		if (y.length !== x.length || !y.every(Number.isFinite)) bad.push(`${tag}: not finite`)
+		if (!duration && !y.every((v, i) => v === x[i])) bad.push(`${tag}: changed`)
+		if (x.every(v => v === 0) && !y.every(v => Math.abs(v) < 1e-6)) bad.push(`${tag}: silence not silent`)
+	}
+	ok(!bad.length, bad.join('; ') || `${cases.length * 10} cases: finite, silence silent, a zero-length region untouched`)
+})
+
 test('stft stream — long-run ring compaction preserves OLA tails (regression)', () => {
 	// >N·8 samples through take() triggers ring compaction; the old fill(0, pos) erased
 	// the last frame's partial overlap-add tail → sample-level corruption mid-stream
@@ -962,18 +1567,82 @@ test('desilence — shortens long pauses in a burst/pause scene, keeps speech le
   is(splitSilence(x, { fs }).length, speech.length, 'split gives one array per phrase')
 })
 
-test('dewow — flattens a synthetic 2 % wow on a sustained chord; wowFlutter reports it', () => {
-  let n = 4 * fs, clean = new Float32Array(n)
-  for (let i = 0; i < n; i++) clean[i] = 0.3 * (Math.sin(2 * Math.PI * 220 * i / fs) + Math.sin(2 * Math.PI * 330 * i / fs) + Math.sin(2 * Math.PI * 440 * i / fs))
-  // apply wow by variable-rate resampling: speed = 1 + 0.02 sin(2π 0.8 t)
-  let wowed = new Float32Array(n), pos = 0
-  for (let i = 0; i < n; i++) { let p = Math.floor(pos), f = pos - p; wowed[i] = p + 1 < n ? clean[p] * (1 - f) + clean[p + 1] * f : 0; pos += 1 + 0.02 * Math.sin(2 * Math.PI * 0.8 * i / fs) }
-  let a = wowFlutter(wowed, { fs })
+test('desilence — speech under noise keeps every word', () => {
+  // 0.1 read silence under 11 dB over the input's 10th-percentile frame energy: under noise that is the noise, and at
+  // 5 dB SNR `shorten` cut 7.4 s of lena's 12.3 s, 54 % of her loud frames
+  let { x, n, loud } = lenaInNoise(5), r = desilence(x, { fs }), keep = new Uint8Array(loud.length), lost = 0
+  for (let s of r.segments) for (let k = Math.floor(s.start * 100); k < Math.ceil(s.end * 100) && k < keep.length; k++) keep[k] = 1
+  loud.forEach((l, k) => lost += l && !keep[k])
+  is(lost, 0, `loud speech frames cut at 5 dB SNR: ${lost} (${r.removed.toFixed(2)} s removed)`)
+  ok(r.data.every(Number.isFinite), 'finite output')
+})
+
+test('desilence — a held note is not a pause; nothing to cut, nothing changed', () => {
+  // a note held 3 s between two 0.7 s silences: the silences shorten, the note stays whole
+  let x = pinkNoise(Math.round(4.4 * fs), 17).map(v => 3e-4 * v), a = Math.round(0.7 * fs), b = a + 3 * fs
+  for (let i = a, ph = 0; i < b; i++) { ph += 2 * Math.PI * 150 / fs; for (let h = 1; h <= 10; h++) x[i] += 0.2 * Math.sin(h * ph) / h }
+  let r = desilence(x, { fs })
+  ok(r.segments.some(s => s.start <= a / fs && s.end >= b / fs), 'the note is one kept span: ' + JSON.stringify(r.segments.map(s => [+s.start.toFixed(2), +s.end.toFixed(2)])))
+  ok(r.removed > 0.5 && r.removed < 1, `the two silences shortened: ${r.removed.toFixed(2)} s removed`)
+  // continuous speech-like sound with no pause: the output is the input
+  let note = x.subarray(a, b), out = desilence(note, { fs })
+  ok(out.removed === 0 && out.data.every((v, i) => v === note[i]), 'no pause: bit-exact')
+  // empty, a single sample, shorter than a frame: whole, unchanged
+  for (let y of [new Float32Array(0), Float32Array.of(0.5), new Float32Array(1000).fill(0.25)]) {
+    let o = desilence(y, { fs, mode: 'remove' })
+    ok(o.data.length === y.length && o.removed === 0, `${y.length} samples: unchanged`)
+  }
+})
+
+// wow by variable-rate resampling: x read at speed s(t), linear interpolation
+function wowed(x, s) {
+  let y = new Float32Array(x.length), pos = 0
+  for (let i = 0; i < x.length; i++) { let p = Math.floor(pos), f = pos - p; y[i] = p + 1 < x.length ? x[p] * (1 - f) + x[p + 1] * f : 0; pos += s(i / fs) }
+  return y
+}
+// independent notes: equal-tempered C4 E4 G♯4 D5, no two in a ratio of small whole numbers
+const notes = n => add(...[261.63, 329.63, 415.3, 587.33].map(f => sine(f, n, 0.2)))
+// a voice, harmonics 1..8 at 1/k, at pitch f(t)
+function voice(f, n) { let x = new Float32Array(n), ph = 0; for (let i = 0; i < n; i++) { ph += 2 * Math.PI * f(i / fs) / fs; for (let h = 1; h <= 8; h++) x[i] += 0.2 / h * Math.sin(h * ph) } return x }
+const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i])
+
+test('dewow — flattens a synthetic 2 % wow on independent notes; wowFlutter reports it', () => {
+  let x = wowed(notes(4 * fs), t => 1 + 0.02 * Math.sin(2 * Math.PI * 0.8 * t))
+  let a = wowFlutter(x, { fs })
   ok(a.wow > 1 && a.wow < 3, 'wow % measured ' + a.wow.toFixed(2))
-  let fixed = dewow(copy(wowed), { fs })
-  is(fixed.length, wowed.length, 'length preserved')
+  let fixed = dewow(copy(x), { fs })
+  is(fixed.length, x.length, 'length preserved')
   let a2 = wowFlutter(fixed, { fs })
   ok(a2.wow < a.wow / 3, 'residual wow ' + a2.wow.toFixed(2) + ' % < ' + (a.wow / 3).toFixed(2))
+})
+
+test('dewow — a performer\'s pitch movement is not wow: a vibrato voice and a glide come back bit-exact', () => {
+  // 0.1 took a voice's own vibrato and glides for speed (each track against its own median): the ±50-cent vibrato
+  // came out at a fifth of its depth, the held note before a glide 89 cents sharp
+  let vib = voice(t => 220 * 2 ** (50 / 1200 * Math.sin(2 * Math.PI * 5.5 * t)), 4 * fs)
+  let glide = voice(t => t < 1.5 ? 220 : t < 2.5 ? 220 * 1.5 ** (t - 1.5) : 330, 4 * fs)
+  ok(same(dewow(copy(vib), { fs }), vib), 'vibrato voice untouched')
+  ok(same(dewow(copy(glide), { fs }), glide), 'glide untouched')
+  is(wowFlutter(vib, { fs }).confidence, 0, 'one source: no evidence of speed')
+})
+
+test('dewow — clean pass-through: speech and steady notes untouched, bit-exact', () => {
+  let speech = lena.subarray(0, 4 * fs), chord = notes(4 * fs)
+  ok(same(dewow(copy(speech), { fs }), speech), 'speech')
+  ok(same(dewow(copy(chord), { fs }), chord), 'independent notes, no wow')
+  let st = [copy(chord), copy(speech)], out = dewow(st, { fs })
+  ok(same(out[0], chord) && same(out[1], speech), 'stereo')
+})
+
+test('dewow — edge cases: empty, a single sample, shorter than a frame, silence; finite output', () => {
+  is(dewow(new Float32Array(0), { fs }).length, 0, 'empty')
+  is(dewow(Float32Array.of(0.25), { fs })[0], 0.25, 'one sample')
+  let short = sine(440, 1000, 0.5)
+  ok(same(dewow(copy(short), { fs }), short), 'shorter than the 4096-sample frame')
+  ok(dewow(new Float32Array(fs), { fs }).every(v => v === 0), 'silence')
+  let x = wowed(add(notes(2 * fs), noise(2 * fs, 0.05)), t => 1 + 0.03 * Math.sin(2 * Math.PI * 1.1 * t))
+  ok(dewow(x, { fs }).every(Number.isFinite), 'noisy wowed notes: no NaN')
+  ok(dewow(x, { fs, mode: 'reference', refFreq: 50 }).every(Number.isFinite) && dewow(x, { fs, mode: 'pitch' }).every(Number.isFinite), 'reference, pitch modes: no NaN')
 })
 
 // Manifests (audio.js) — the host's view: fixed blocks in, equal blocks out.
@@ -1008,7 +1677,7 @@ test('STFT manifests — output is the kernel stream delayed by exactly the decl
   let cases = [
     [specsubAtom, () => specsubKernel({ alpha: 0, beta: f(0.05), fs })],
     [dereverbAtom, () => dereverbKernel({ lookahead: f(0.25), fs })],
-    [omlsaAtom, () => omlsaKernel({ alphaDD: f(0.98), xiMin: 10 ** (-25 / 10), qPrior: 0, gMin: -15, fs })],
+    [omlsaAtom, () => omlsaKernel({ alphaDD: f(0.97), xiMin: 10 ** (-25 / 10), qPrior: 0, gMin: -15, fs })],
     [wienerAtom, () => wienerKernel({ rule: 'mmse-lsa', alphaDD: f(0.98), xiMin: 10 ** (-15 / 10), fs })],
   ]
   for (let [atom, kernel] of cases) {

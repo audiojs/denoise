@@ -1,32 +1,26 @@
 /** Voice Activity Detection + Speech Presence Probability. */
 
 export interface VadOptions {
-  /** STFT frame, default 1024 */
+  /** STFT frame, default the power of two over 3 periods of 75 Hz (2048 at 44.1 and 48 kHz) */
   frameSize?: number
-  /** OLA hop, default frameSize/2 */
+  /** hop between frames, default frameSize/4 */
   hopSize?: number
   /** sample rate, default 44100 */
   fs?: number
-  /** dB above floor to count as active, default 6 */
-  snrTh?: number
-  /** spectral-flatness ceiling for "tonal", default 0.4 */
-  flatTh?: number
-  /** frames in the min-tracker window, default 64 */
-  window?: number
-  /** dB added to the percentile floor, default 5 */
-  bias?: number
 }
 
 export interface VadResult {
-  /** 1 where speech is present, per frame */
+  /** 1 where speech is: voicing, and the sound over the noise floor next to it, per frame */
   active: Uint8Array
+  /** 1 where the frame is voiced, per frame */
+  voiced: Uint8Array
   /** frame-start time (s), per frame */
   times: Float32Array
   hop: number
   frameSize: number
 }
 
-/** Frame-level speech/non-speech decision from energy + spectral flatness. */
+/** Frame-level speech decision: Sohn's likelihood ratio over a minimum-statistics noise floor, anchored on voicing. */
 export function vad(data: Float32Array | Float64Array, opts?: VadOptions): VadResult
 
 export interface SppOptions {

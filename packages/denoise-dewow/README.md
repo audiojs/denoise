@@ -10,47 +10,65 @@ npm install @audio/denoise-dewow
 import dewow, { analyze } from '@audio/denoise-dewow'
 ```
 
-Estimates the transport's instantaneous speed over time and corrects it by variable-rate resampling — the classical (non-ML) counterpart of Celemony Capstan. Three estimators: track the phase-vocoder instantaneous frequency of stable spectral partials (`'partial'`, default — McAulay & Quatieri 1986 partial tracking + Godsill & Rayner, *Digital Audio Restoration*, 1998, ch. 6), lock onto one known tone such as mains hum or a calibration tone (`'reference'` — Czyżewski et al., *Wow detection and compensation employing spectral processing of audio*, JAES 2007), or track monophonic pitch (`'pitch'` — `@audio/pitch-pyin`). See Howarth & Wolfe, *Correction of Wow and Flutter Effects in Analogue Tape Transfers*, AES 117th/118th Convention, 2004/2005, and Nichols, *The Digital Restoration of Wow and Flutter Distorted Gramophone Recordings*, 1999.
+Corrects wow and flutter: measures the speed of the tape or disc over time and reads the sound back at the inverse speed (variable-rate windowed sinc). A speed change moves every frequency by one ratio at one instant; a performer's vibrato, glide or melody moves one note and its harmonics. The estimator measures only the first:
+
+- `'partial'` (default) — tracks the partials (STFT peaks, McAulay & Quatieri 1986 linking, phase-vocoder frequency over the 93 ms frame), groups each note's harmonics into one source, and takes as speed only what at least two independent sources agree on, hop to hop: Godsill & Rayner, *Digital Audio Restoration*, 1998, ch. 8 (log-frequency tracks `f = f0 + p + v`, a zero-mean smoothness prior on `p`), with sources in place of tracks, robust (Tukey biweight) weights, and the speed solved on hop-to-hop increments so no track's centre needs estimating. A Wiener gate keeps of the curve only what stands above its own measured uncertainty. Where nothing is evidence nothing is corrected; a clip with none comes back bit-exact.
+- `'reference'` — locks onto one known steady tone (mains hum, a pilot or calibration tone): evidence on its own. The method to reach for when such a tone is there. Czyżewski et al., *Wow detection and compensation employing spectral processing of audio*, AES 117th Convention, 2004.
+- `'pitch'` — one voice's f0 (`@audio/pitch-pyin`) against its own smoothed trend: takes the performer's own pitch movement for speed; opt-in.
+
+See also Howarth & Wolfe, *Correction of Wow and Flutter Effects in Analogue Tape Transfers*, AES 117th/118th Convention, 2004/2005; Nichols, *The Digital Restoration of Wow and Flutter Distorted Gramophone Recordings*, 1999.
 
 ```js
-let corrected = dewow(recording, { fs: 44100 })                       // default: track partials
-let corrected = dewow(recording, { fs, mode: 'reference', refFreq: 50 }) // lock onto 50 Hz mains hum
-let corrected = dewow(recording, { fs, mode: 'pitch', smooth: 3 })    // monophonic voice/instrument
+let corrected = dewow(recording, { fs: 44100 })                          // from the music's own partials
+let corrected = dewow(recording, { fs, mode: 'reference', refFreq: 50 }) // from 50 Hz mains hum
+let corrected = dewow(recording, { fs, mode: 'pitch', smooth: 3 })       // one voice, its vibrato taken too
 
 let meter = analyze(recording, { fs })
 // → { speed, times, hop, wow, flutter, wowPeak, flutterPeak, confidence, tracks? }
 ```
 
-`recording` is a mono `Float32Array` or an array of channels (`[L, R, …]`); analysis always runs on the mono mix, and one shared curve corrects every channel, so a stereo pair stays sample-aligned. Returns new arrays — never in place.
+`recording` is a mono `Float32Array` or an array of channels (`[L, R, …]`); analysis runs on the mono mix, and one shared curve corrects every channel, so a stereo pair stays sample-aligned. Returns new arrays — never in place.
 
 | Param | Default | |
 |---|---|---|
 | `fs` | `44100` | Sample rate |
 | `mode` | `'partial'` | `'partial'` \| `'reference'` \| `'pitch'` |
 | `refFreq` | — | Known tone/hum frequency (Hz) — required for `mode: 'reference'` |
-| `frameSize` | `4096` | STFT frame for peak-picking / track continuity |
-| `hopSize` | `512` | STFT hop — also the per-hop curve's own sample rate (its Nyquist, `fs/(2·hopSize)`, caps flutter frequency) |
-| `smooth` | `0.05` | Zero-phase smoothing time constant (s) separating wow (below) from flutter (residual) |
-| `wow` | `true` | Correct the low-passed (`<~6 Hz`) component |
-| `flutter` | `true` | Correct the residual (faster) component |
+| `frameSize` | `4096` | STFT frame; `'partial'` reads each partial's frequency over it (wow, not flutter) |
+| `hopSize` | `512` | STFT hop — the curve's own sample rate |
+| `smooth` | `0.05` | Zero-phase smoothing time constant (s) separating wow (slower) from flutter |
+| `wow` | `true` | Correct the slower component |
+| `flutter` | `true` | Correct the faster component |
 | `maxDeviation` | `0.05` | Clamp the corrected speed ratio to `[1−x, 1+x]` |
-| `minTrack` | `0.5` | Shortest partial kept, in seconds — `'partial'` mode only |
-| `minFreq` / `maxFreq` | `50` / `2000` | f0 search range — `'pitch'` mode only |
+| `minTrack` | `0.1` | Shortest partial used, in seconds — `'partial'` mode |
+| `minFreq` / `maxFreq` | `50` / `2000` | Where partials (`'partial'`) or the f0 (`'pitch'`) are looked for, Hz |
 | `keepLength` | `true` | Output length equals input length |
 
-`analyze()` is the estimator alone — the "wow & flutter meter" — with no audio output. `wow`/`flutter` are the **unweighted RMS** deviation in %; `wowPeak`/`flutterPeak` are the **unweighted peak** deviation in %. These are *not* the IEC 60386 / DIN 45507 figure, which applies a psychoacoustic weighting curve (peaking near 4 Hz) before measuring — that weighting filter isn't implemented here, so a reading from this meter isn't directly comparable to a spec-sheet wow-and-flutter number. `confidence` is the fraction of hops with a usable estimate (a stable track, a present reference tone, or voiced pitch); `tracks` (mode `'partial'` only) lists the accepted partials.
+`analyze()` is the estimator alone — the "wow & flutter meter". `wow`/`flutter` are the **unweighted RMS** deviation in %, `wowPeak`/`flutterPeak` the **unweighted peak**; *not* the IEC 60386 / DIN 45507 figure, which weights the deviation (peaking near 4 Hz) first. `confidence` is the fraction of hops with evidence (two independent sources agreeing, the reference tone present, or voiced pitch); `tracks` (`'partial'` only) lists the partials used. `times` are each hop's frame centre.
 
-**Resolution trade-offs, measured, not assumed:**
-- **Flutter ceiling.** The per-hop curve is itself sampled at `fs/hopSize` (86 Hz at the defaults) — anything above its Nyquist, `fs/(2·hopSize)` ≈ 43 Hz, can't be represented at all. Below that, the *phase-vocoder* estimate needs the analysed signal to be roughly stationary across its whole analysis window, not just one hop — a 4096-sample window (93 ms) averages away a 30 Hz flutter almost entirely (measured: a synthetic ±0.4% 30 Hz flutter reads back as ~0, correlation −0.18 against the true curve). `'partial'` mode works around this with a second, short window (1024 samples, 23.2 ms) purely for the frequency reading, while the long window still does peak-picking / track continuity (which needs the frequency resolution to keep this repo's own test chord's 220/330/440/660 Hz partials from crosstalking). That recovers 30 Hz flutter to within the tolerances below, but a shorter `hopSize` is the honest fix for tracking flutter closer to the nominal 100 Hz ceiling.
-- **`'reference'` mode and low reference frequencies.** A 50/60 Hz mains hum needs a much longer reading window than a musical partial does — one cycle of 50 Hz is 20 ms, comparable to the flutter-tracking window above, so `'reference'` mode scales its window to the target frequency (~4.5 cycles) instead of using the fixed one. It also band-passes (Q 5) around `refFreq` before reading phase: program content sharing that band (speech has real energy down at 50 Hz) otherwise corrupts the reading (measured: 50 Hz hum at −30 dB under 6 s of speech, curve correlation 0.94 unfiltered → 0.97 filtered).
-- **`'pitch'` mode and real speech/instruments.** `smooth` doubles as the mode's own vibrato/prosody-vs-drift cutoff (`speed = f0 / lowpass(f0, smooth)`): the default 0.05 s tracks pitch fast enough that genuine slow wow gets absorbed into the baseline and cancels out of the ratio, leaving only fast flutter as a visible deviation. A `smooth` of several seconds recovers slow wow, at the cost of also absorbing real vibrato/prosody as if it were flutter — natural speech intonation moves far more (measured: tens of percent) than a 2% wow defect, so this mode is a functional correction, not a precision one, on unpitched or lightly-inflected material. It's also frame-independent (`@audio/pitch-pyin` has no Viterbi/HMM smoothing across frames — see that package's own README) — no octave-jump correction is applied.
+`node scripts/dewow.js` (in the [@audio/denoise](https://github.com/audiojs/denoise) repo) reads clean speech (audio-lena, two Spoken Wikipedia narrations), music ("Vibe Ace", "Dance of the Sugar Plum Fairy", Brahms' Hungarian Dance No. 5, a trumpet loop, three GuitarSet takes) and singing (five VocalSet excerpts) at a varying speed — an off-centre disc (0.55 Hz sine) or tape (0.3–3 Hz random) at 0.3, 1 and 2 % peak — and measures the pitch error left after dewow on the audio itself (local lag against the clean sound, differentiated; cents RMS, mean over clips; doing nothing leaves the wow):
 
-**Correction.** Once the speed curve is built, correction is a single windowed-sinc read (`@audio/resample-sinc`, 16 zero-crossings) per output sample at a warped position — `pos[n] = pos[n-1] + 1/speed(pos[n-1])`, narrowing the anti-alias cutoff whenever the local read rate exceeds 1×. Measured on the synthetic 2%-wow-@0.8 Hz + 0.4%-flutter-@30 Hz defect used in the tests: the 440 Hz partial's own residual frequency deviation drops from 1.4% to 0.18% RMS (target ≤0.2%); a clean, undistorted input passes through at ≥40 dB SNR (the estimator finds `speed≈1` and a sinc read at near-integer positions is near-identity). A plain sample-domain SNR against the pristine original is *not* meaningful after correction, even a mathematically exact one — see the source comment on `localSnr` in `test.js` for why, and use `analyze()`'s own residual-deviation-style check instead if you need a number.
+| | wow | 0.3 % | 1 % | 2 % |
+|---|---|---:|---:|---:|
+| speech | disc | 3.7 → 3.7 | 12.4 → 12.4 | 25.5 → 25.5 |
+| | tape | 1.3 → 1.3 | 4.4 → 4.4 | 9.1 → 9.1 |
+| music | disc | 3.7 → 3.6 | 12.3 → 10.8 | 24.5 → 18.2 |
+| | tape | 1.3 → 1.4 | 4.2 → 4.2 | 8.5 → 8.2 |
+| singing | disc | 3.7 → 3.7 | 12.2 → 12.2 | 24.7 → 24.7 |
+| | tape | 1.3 → 1.3 | 4.4 → 4.4 | 8.9 → 8.9 |
+| steady notes (C4 E4 G♯4 D5) | disc | 3.7 → 0.2 | 12.3 → 0.6 | 24.7 → 1.2 |
+| | tape | 1.2 → 0.2 | 4.1 → 0.3 | 8.3 → 0.6 |
 
-**Not implemented:** azimuth/head-alignment error (a *frequency-independent* time skew across the stereo image, not a speed error — out of scope), dropout/gap repair (`@audio/denoise-repair`), or anything ML-based. Celemony Capstan and similar tools additionally use trained models to separate genuine musical vibrato from mechanical wow on program material with no stable partial or reference tone at all; this package only ever measures speed from spectral evidence actually present in the signal.
+Clean, the speech and singing come back bit-exact, five of the seven music clips too; a comped guitar gains 0.85 cents (its strings move together after each chord, as under a speed change), and a strummed one with 0.3 % tape wow comes out 1.3 → 2.4 cents, the one clip left less steady. A vibrato voice (±50 cents at 5.5 Hz), a 220 → 330 Hz glide and a vibrato voice over steady notes come back untouched. 0.1 took every partial's movement for speed: clean speech gained 8 cents of pitch wobble, music 16, singing 34; the glide came out 120 cents off, the vibrato at a fifth of its depth; with wow, 3 to 7 of the 7 music clips and all 5 singing clips came out worse than they went in (singing at 1 % disc: 12 → 48 cents). What dewow cannot do, measured: one voice or instrument alone, whatever its harmonics, gives no evidence — its own pitch movement and wow are the same observation; in real music it corrects only where notes hold steady (the guitars and the Sugar Plum Fairy most; Brahms' strings, "Vibe Ace" and the trumpet little or nothing) and leaves 0.3 % wow as it is, under the music's own pitch jitter; flutter needs a reference tone.
 
-**Use when:** tape hiss/wobble on cassette or reel-to-reel transfers, turntable speed instability (belt/motor wear), 16mm/optical-track flutter — anything with a stable tone, a mains-hum residual, or several seconds of sustained pitched content to lock onto.<br>
-**Not for:** dropouts, azimuth error, or program material with no stable partial and no reference tone (a cappella breath, pure noise, hard cuts) — the estimator has nothing to track.
+Held out (never tuned on): the 824 clean VoiceBank+DEMAND test utterances all come back bit-exact (0.1: none, the worst at −3.3 dB SNR against the input); five MUSDB18 mixes, three more GuitarSet takes and four more VocalSet singers: clean, all within 0.1 cent (all but one bit-exact), and with wow none came out worse — but only two mixes were corrected at all, at 2 % disc wow (24.4 → 22.1 and 21.8 cents); 0.1 added 10–51 cents to each of the music and singing clips, clean, and left 47 of 48 music and 23 of 24 singing cases with wow worse than it found them.
+
+**Resolution.** `'partial'` reads frequency over the 93 ms frame: wow (< 6 Hz) is resolved, flutter averaged away — a shorter frame lets neighbouring partials of dense music into each other's reading. `'reference'` band-passes the tone (Q 5) and reads it over ~4.5 of its cycles, at least 1024 samples (23 ms): a 1 kHz calibration tone gives flutter too (30 Hz flutter read at 80 % of its depth, up to the hop rate's Nyquist, `fs/(2·hopSize)` ≈ 43 Hz), a 50 Hz hum is read over 90 ms and gives wow only. `'pitch'` mode's `smooth` doubles as its vibrato/drift cutoff (`speed = f0 / lowpass(f0, smooth)`): the 0.05 s default absorbs slow wow into the trend; several seconds recover it and take vibrato and intonation for speed with it.
+
+**Not implemented:** azimuth/head-alignment error (a time skew across the stereo image, not a speed error), dropout repair (`@audio/denoise-repair`), anything ML-based. Celemony Capstan and similar tools use trained models to tell vibrato from wow on a solo voice; this package only measures speed from evidence present in the signal.
+
+**Use when:** tape, cassette, vinyl and film transfers with audible wow over sustained, steady notes; any transfer with a hum, pilot or calibration tone (`'reference'`).<br>
+**Not for:** a solo voice or instrument without a reference tone, speech (use `'reference'` on its hum, or leave it); dropouts; azimuth error; flutter from the music itself.
 
 ---
 

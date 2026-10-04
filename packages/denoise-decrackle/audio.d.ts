@@ -10,18 +10,10 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 
 /** Chainable-host options for 'decrackle' */
 export interface DecrackleOptions {
-  /** 4..200 (default 50) */
-  "order"?: Auto
-  /** 256..8192 (default 2048) */
-  "windowSize"?: Auto
-  /** 64..4096 (default 1024) */
-  "hopSize"?: Auto
-  /** 1..20 (default 2.5) */
+  /** 2..20 (default 4) */
   "threshold"?: Auto
-  /** 0..16 (default 1) */
-  "guard"?: Auto
-  /** 1..512 (default 12) */
-  "maxBurst"?: Auto
+  /** 8..100 (default 32) */
+  "order"?: Auto
   at?: number | string
   duration?: number | string
 }
@@ -32,17 +24,9 @@ export declare const decrackle: {
   streaming: false
   tail: 0
   params: {
-    /** 4..200 (default 50) */
-    "order": { type: "number", default: 50 }
-    /** 256..8192 (default 2048) */
-    "windowSize": { type: "number", default: 2048 }
-    /** 64..4096 (default 1024) */
-    "hopSize": { type: "number", default: 1024 }
-    /** 1..20 (default 2.5) */
-    "threshold": { type: "number", default: 2.5 }
-    /** 0..16 (default 1) */
-    "guard": { type: "number", default: 1 }
-    /** 1..512 (default 12) */
-    "maxBurst": { type: "number", default: 12 }
+    /** 2..20 (default 4) */
+    "threshold": { type: "number", default: 4 }
+    /** 8..100 (default 32) */
+    "order": { type: "number", default: 32 }
   }
 }

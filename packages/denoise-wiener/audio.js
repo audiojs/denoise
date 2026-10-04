@@ -6,7 +6,8 @@
 // alphaDD/xiFloor are baked into the per-frame gain closure once at construction
 // (makeProcess reads opts.* once, not per call), so all three carry flags:['restart'].
 // xiFloor is exposed in dB (xiMin is a linear power-ratio floor internally, xiMin =
-// 10**(xiFloor/10) — matches the kernel's own default of 0.0316 == -15dB exactly).
+// 10**(xiFloor/10) — matches the kernel's own default of 0.0316 == -15dB exactly). alphaDD
+// is per 8 ms of frame step (Ephraim & Malah 1984's), rescaled to the step: the same at any rate.
 //
 // Same primed FIFO as denoise-spectral (see its audio.js header): a constant frame − 1
 // delay under any block size.
