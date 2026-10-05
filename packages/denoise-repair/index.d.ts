@@ -19,7 +19,7 @@ export interface RepairRegion {
 export interface RepairOptions {
   /** time×frequency regions to rebuild, required */
   regions: RepairRegion[]
-  /** default 'auto': 'similarity' when a passage within `window` joins seamlessly (aligned correlation ≥ 0.4; ≥ 0.995 up to 50 ms), else 'ar' up to 70 ms and 'sinusoidal' beyond; band-limited regions alike */
+  /** default 'auto': 'similarity' when a passage within `window` joins seamlessly (aligned correlation ≥ 0.4; ≥ 0.995 up to 30 ms), else 'ar' up to 30 ms and 'sinusoidal' beyond; band-limited regions alike */
   method?: RepairMethod
   /** similarity search: seconds either side of a region, default 10 */
   window?: number

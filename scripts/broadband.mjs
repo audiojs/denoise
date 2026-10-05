@@ -39,7 +39,7 @@ import { processor as specsub } from '@audio/denoise-spectral'
 import { omlsa as omlsaM } from '@audio/denoise-omlsa/audio'
 import { wiener as wienerM } from '@audio/denoise-wiener/audio'
 import { specsub as specsubM } from '@audio/denoise-spectral/audio'
-import { wav } from './speech.mjs'
+import { wav, lead } from './speech.mjs'
 
 let args = process.argv.slice(2), train = args.includes('--train'), beforePath = args.find(a => !a.startsWith('--'))
 const omlsaBefore = beforePath && (await import(new URL(beforePath, `file://${process.cwd()}/`))).processor
@@ -59,11 +59,6 @@ const SYSTEMS = {
 // 20 ms frame powers; the active speech level (P.56-like: frames within 40 dB of the loudest)
 const powers = (x, fs) => { let L = Math.round(0.02 * fs), p = []; for (let i = 0; i + L <= x.length; i += L) { let e = 0; for (let j = i; j < i + L; j++) e += x[j] * x[j]; p.push(e / L) } return p }
 const asl = (x, fs) => { let p = powers(x, fs), mx = Math.max(...p), a = p.filter(v => v > mx * 1e-4); return a.reduce((s, v) => s + v, 0) / a.length }
-// seconds before the speaker starts (audio's bench/denoise.mjs `lead`)
-function lead(x, fs) {
-  let e = powers(x, fs).map(v => db(v + 1e-20)), fl = [...e].sort((a, b) => a - b)[Math.floor(0.1 * (e.length - 1))], j = e.findIndex(v => v > fl + 15)
-  return Math.max(0.1, (j < 0 ? e.length : j) * 0.02 - 0.05)
-}
 // pink Gaussian noise: Irwin–Hall normals from a Park–Miller generator through Kellet's filter (as speech.mjs's)
 function pink(n, seed) {
   let x = new Float32Array(n), r = () => (seed = seed * 16807 % 2147483647) / 2147483647, b = [0, 0, 0, 0, 0, 0, 0]

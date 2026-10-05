@@ -1,163 +1,180 @@
-// De-wind. Wind is turbulence at the microphone: its energy lies under a few hundred Hz and it has no period (Nelke &
-// Vary, IWAENC 2014), where a voice's or an instrument's low end repeats at its pitch. So the energy under 200 Hz is
-// weighed by how aperiodic it is, 1 − r (r its periodicity, below: a harmonic H in noise N reads H / (H + N), Boersma
-// 1993, so 1 − r of the band is noise), against the 300–2000 Hz band, floored at a hundredth of that band's peak over
-// the last seconds: the room's own rumble in a pause, over a silent mid band, is no wind. Every 5 ms that ratio ρ sets
-// the cutoff, cutoffMin + (cutoffMax − cutoffMin)·clamp((ln(1 + ρ) − 1) / 2): from ρ = e − 1 up, cutoffMax by ρ ≈ 19.
+// De-wind. Wind is turbulence at the microphone: noise under a few hundred Hz with no period, in gusts (Nelke & Vary,
+// IWAENC 2014), where a voice's or an instrument's low end is a row of harmonics. A time-domain high-pass can only take
+// everything under its cutoff, the voice's low harmonics with the wind; here each STFT bin under `cutoff` is weighed
+// against a wind spectrum read from the frame itself, so the harmonics stay and the wind between and under them goes.
 //
-// The high-pass (Butterworth, −3 dB at the cutoff, `order` sections of 12 dB/oct) crossfades in over `attack` once
-// ρ > 1, the low band's noise outweighing the mid band, with the low end aperiodic for 30 ms: wind blows on, a drum hit
-// or a note's onset is over sooner. It goes back out over `release`, or within 5 ms once the low end turns periodic (a
-// voice or a note began). Out, the input comes back sample for sample.
+// The wind spectrum, per frame (Hann, the power of two nearest 85 ms, so a 100 Hz voice's harmonics stand 8 bins apart
+// with valleys between them; a quarter-frame hop):
+//   P̄      the periodogram averaged with the last frame's
+//   floor  P̄'s morphological opening (erosion, then dilation) over 5 bins: what is left once every peak narrower than
+//          5 bins is cut, and a stationary sinusoid under a Hann window is 4 bins wide, so the harmonics go and the
+//          broad wind stays (the inverse harmonic mask of Nelke, Naylor & Vary, ICASSP 2015, without a pitch track); ×
+//          1.64, the opening's mean on Gaussian noise (measured), so it reads a noise at its power. Under 20 Hz, where
+//          no harmonic lies, P̄ itself
+//   cap    in a voice's valleys, onsets and unvoiced sounds the floor is the voice. Wind keeps its shape across the
+//          band while it gusts (its level and slope follow the wind speed, Mirabilii et al., IWAENC 2022), so over
+//          100 Hz the floor is held to 4 × a·S: a the floor's energy at 20–100 Hz this frame, S the least floor/a seen
+//          at each bin over the last 1.5 s (minimum statistics, Martin 2001, on the level-normalized floor): where no
+//          voice was
+// The gain, OM-LSA's form (Cohen & Berdugo 2001): G = G_H1^p · G_min^(1−p), G_H1 the Wiener gain on the
+// decision-directed a priori SNR (Ephraim & Malah 1984, α 0.9 per frame) floored at G_min = `attenuation`, p the speech
+// presence probability at a fixed a priori SNR of 15 dB (Gerkmann & Hendriks 2012) with an a priori absence of 0.2 on a
+// harmonic, 0.9 elsewhere: a harmonic is a local peak of P̄ standing 6 dB over the wind, its 5 bins. So a harmonic
+// keeps what of it stands over the wind, and the wind's own random peaks, which a Wiener gain lets through as musical
+// noise, go.
+//
+// Wind is there when the low band, 20–300 Hz, is aperiodic and outweighs the 300–2000 Hz band, floored 20 dB under its
+// peak over the last seconds (a room's quiet rumble in a pause is no wind next to a voice), in three frames in a row:
+// three hops, so a gap of 150 ms between words shows it. Aperiodic: the low band's normalized autocorrelation, taken
+// through the frame's own spectrum over the window's (Boersma 1993), peaks under ½ at 2.5–25 ms (a harmonic H in noise
+// N reads H / (H + N)); a bass line, a kick drum's body or a voice's low end repeats. Its energy counts as 1 − r. Once
+// found, wind is held 1 s, through the words, whose low end hides it; the gain comes in within a frame and goes out
+// over 0.2 s. With no wind the removal is zero: the output is the input, sample for sample, N − 1 samples later.
 
-import { cascade, highpass } from '@audio/biquad'
+import { stftBatch, stftStream } from '@audio/stft'
+import { ifft } from 'fourier-transform'
 
-const FLOOR = 0.01                                 // mid-band floor, × its peak (−20 dB)
-const PEAK = 2                                     // s, the peak's decay
-const HOLD = 0.03                                  // s the low end stays aperiodic before it is taken for wind
-const QUICK = 0.005                                // s, the release once the low end turns periodic
-const TAU = 0.04                                   // s, the autocorrelation's memory
+const writer = s => chunk => chunk ? s.write(chunk) : s.flush()
 
-export default function dewind(data, params = {}) {
-  let fs = params.fs || 44100
-  let cutoffMin = params.cutoffMin ?? 60
-  let cutoffMax = params.cutoffMax ?? 250
-  let order = params.order ?? 2                    // sections, 12 dB/oct each
-  let attack = params.attack ?? 0.05               // s, how fast it comes in
-  let release = params.release ?? 0.4              // s, how slowly it goes
-  let blockSize = Math.max(1, params.blockSize ?? Math.round(0.005 * fs))   // re-estimated every N samples
+// the power of two nearest 85 ms: 4096 at 44.1 and 48 kHz, 2048 at 22.05 and 32, 1024 at 16
+export const frame = fs => 2 ** Math.round(Math.log2(0.085 * fs))
 
-  if (!params._state || params._state.length !== order) {
-    params._state = Array.from({ length: order }, () => [0, 0])
-    params._fc = cutoffMin
-    params._coefs = butterworth(cutoffMin, order, fs)
-    params._lfDc = [0, 0]
-    params._mfDc = [0, 0]
-    params._acc = [0, 0, 0]                        // LF energy, MF energy, samples measured
-    params._ac = autocorr(fs)
-    params._peak = 0                               // MF energy's recent peak
-    params._aper = 0                               // samples the low end has stayed aperiodic
-    params._quick = false                          // the low end is periodic: go quickly
-    params._w = 0                                  // the filter's share, and its target
-    params._wT = 0
+const H = 2                                        // the opening's half-width, bins: 5 bins
+const BIAS = 1.64                                  // E[P] / E[opening(P̄)] on white Gaussian noise
+const SUB = 20, LEVEL = 100, LOW = 300, MID = 2000 // Hz: subsonic, the level band's top, the low band's, the mid band's
+const CAP = 4, SPAN = 1.5, SUBS = 6, AR = 0.7      // shape cap: × the shape, its memory (s) in sub-windows, smoothing
+const ADD = 0.9, XI_MIN = 1e-3                     // decision-directed α per frame, a priori SNR floor (−30 dB)
+const XI_H1 = 10 ** 1.5, PEAK = 4                  // SPP's a priori SNR (15 dB), a harmonic's standing over the wind
+const Q_PEAK = 0.2, Q_ELSE = 0.9                   // a priori speech absence on a harmonic, elsewhere
+const R_MAX = 0.5, FLOOR = 0.01, DECAY = 2         // periodic above; the mid band's floor × its peak, which decays (s)
+const ARM = 3, HOLD = 1, UP = 0.02, DOWN = 0.2     // frames in a row; s held, in, out
+
+function framing(opts) {
+  let fs = opts.fs || 44100, N = opts.frameSize || frame(fs)
+  return { ...opts, fs, frameSize: N, hopSize: opts.hopSize || N >> 2 }
+}
+
+/** Batch: takes the wind out of `data` in place and returns it. Stream: `dewind(opts)` returns write(chunk) → the
+ *  samples done so far (N − 1 behind), write() → the rest. */
+export default function dewind(dataOrOpts, opts) {
+  if (dataOrOpts instanceof Float32Array || dataOrOpts instanceof Float64Array) {
+    let data = dataOrOpts, o = framing(opts || {}), r = stftBatch(data, removal(o), o)
+    for (let i = 0; i < data.length; i++) data[i] -= r[i]
+    return data
   }
-
-  let lfLp = lowpassNum(200, fs)
-  let mfBp = bandpassNum(300, 2000, fs)
-  // Measurement-filter states persist across calls so the LF/MF ratio is continuous
-  // at chunk boundaries in streaming mode (fresh [0,0] each call would re-ring).
-  let lfState = params._lfDc, mfState = params._mfDc, acc = params._acc, ac = params._ac
-
-  let aA = Math.exp(-blockSize / (attack * fs)), aR = Math.exp(-blockSize / (release * fs)), aQ = Math.exp(-blockSize / (QUICK * fs))
-  let wA = Math.exp(-1 / (attack * fs)), wR = Math.exp(-1 / (release * fs)), wQ = Math.exp(-1 / (QUICK * fs))
-  let aPk = Math.exp(-blockSize / (PEAK * fs))
-  let n = data.length
-  let pos = 0
-
-  // Analysis blocks run on the stream's own clock: a block begun in one call finishes in
-  // the next, and each block's cutoff filters the block after it. Output is the same
-  // under any chunking, and the attack/release ballistics hold at any host block size.
-  while (pos < n) {
-    let end = Math.min(n, pos + blockSize - acc[2])
-    for (let i = pos; i < end; i++) {
-      let lf = lfLp(data[i], lfState), mf = mfBp(data[i], mfState)
-      acc[0] += lf * lf
-      acc[1] += mf * mf
-      feed(ac, lf)
-    }
-    acc[2] += end - pos
-    mix(data.subarray(pos, end), params, wA, params._quick ? wQ : wR)
-    pos = end
-    if (acc[2] < blockSize) break
-
-    let r = periodicity(ac)
-    params._peak = Math.max(acc[1], aPk * params._peak)
-    let ratio = (1 - r) * acc[0] / Math.max(acc[1], FLOOR * params._peak, 1e-12)
-    acc[0] = acc[1] = acc[2] = 0
-    let m = Math.min(1, Math.max(0, (Math.log(ratio + 1) - 1) / 2))
-    params._quick = r >= 0.5
-    params._aper = params._quick ? 0 : params._aper + blockSize
-    params._wT = ratio > 1 && params._aper >= HOLD * fs ? 1 : 0
-    let target = cutoffMin + (cutoffMax - cutoffMin) * m
-    let prev = params._fc
-    let aRate = target > prev ? aA : params._quick ? aQ : aR
-    params._fc = aRate * prev + (1 - aRate) * target
-    params._coefs = butterworth(params._fc, order, fs)
-  }
-  return data
+  let live = dataOrOpts || {}
+  return writer(stream(framing(live), live))
 }
 
-// The high-pass, crossfaded in by its share w: at w = 0 the input passes sample for sample. The filter runs throughout,
-// so it comes in without a start-up transient.
-function mix(y, p, up, down) {
-  if (!(p._wet?.length >= y.length)) p._wet = new Float64Array(y.length)
-  let wet = p._wet.subarray(0, y.length), w = p._w, T = p._wT
-  wet.set(y)
-  cascade(wet, p._coefs, p._state)
-  if (!w && !T) return
-  for (let i = 0; i < y.length; i++) {
-    let a = T > w ? up : down
-    w = a * w + (1 - a) * T
-    if (!T && w < 1e-6) w = 0                      // out: exactly
-    y[i] += w * (wet[i] - y[i])
-  }
-  p._w = w
-}
+/** The part taken away, as a frame process (mag, phase) → { mag, phase }, for a host running @audio/stft's framing
+ *  (`frameSize`, `hopSize` a quarter of it); the output is the input less its overlap-add. One per channel. */
+export const processor = opts => removal(framing(opts || {}))
 
-// `order` sections of a Butterworth high-pass of order 2·order: Q = 1 / (2 sin((2k − 1)π / (4·order)))
-function butterworth(fc, order, fs) {
-  return Array.from({ length: order }, (_, k) => highpass(fc, 1 / (2 * Math.sin((2 * k + 1) * Math.PI / (4 * order))), fs))
-}
-
-// The low band's autocorrelation at ~2 kHz, exponentially weighted: s[t] = Σ λ^k·x[n−k]·x[n−k−t] for lags up to
-// 25 ms, e[n] = s[0] at n. A 40 ms memory reads as steadily as an 80 ms window, and sooner.
-function autocorr(fs) {
-  let dec = Math.max(1, Math.round(fs / 2000)), rate = fs / dec, hi = Math.round(rate / 40)
-  return { dec, lo: Math.round(rate / 400), hi, full: hi + Math.round(TAU * rate), lam: Math.exp(-1 / (TAU * rate)), x: new Float64Array(128), e: new Float64Array(128), s: new Float64Array(hi + 1), n: 0, sum: 0, k: 0 }
-}
-function feed(a, v) {
-  a.sum += v
-  if (++a.k < a.dec) return
-  let x = a.x, s = a.s, n = a.n++, u = a.sum / a.dec
-  a.sum = a.k = 0
-  x[n & 127] = u
-  for (let t = 0; t <= a.hi; t++) s[t] = a.lam * s[t] + u * x[(n - t) & 127]
-  a.e[n & 127] = s[0]
-}
-// Periodicity: the normalized cross-correlation (Talkin 1995), s[t] / √(s[0]·e[n−t]), at lags of 2.5–25 ms (pitches
-// of 400–40 Hz), its peak past the first lag where it turns negative. A smooth pulse stays correlated at short lags;
-// only a periodic sound comes back at its period. Until the longest lag and the memory have filled, no reading: the
-// low end counts as periodic, and nothing is taken for wind on no evidence.
-function periodicity(a) {
-  let { s, e, n, lo, hi } = a, best = 0, dipped = false
-  if (n < a.full) return 1
-  if (!(s[0] > 1e-20)) return 0
-  for (let t = 1; t <= hi; t++) {
-    let c = s[t] / Math.sqrt(s[0] * e[(n - 1 - t) & 127] + 1e-30)
-    if (c < 0) dipped = true
-    else if (dipped && t >= lo && c > best) best = c
-  }
-  return best
-}
-
-// One-pole low-pass (single sample, in-place state).
-function lowpassNum(fc, fs) {
-  let a = Math.exp(-2 * Math.PI * fc / fs)
-  return (x, s) => {
-    let y = (1 - a) * x + a * s[0]
-    s[0] = y
+// output = input − removal, the input held until its removal is done; `cutoff`, `attenuation` read from `live` per frame
+function stream(o, live) {
+  let s = stftStream(removal(o, live), o), buf = new Float32Array(o.frameSize * 2), len = 0
+  let take = r => {
+    let y = new Float32Array(r.length)
+    for (let i = 0; i < r.length; i++) y[i] = buf[i] - r[i]
+    buf.copyWithin(0, r.length, len); len -= r.length
     return y
   }
+  return {
+    write(chunk) {
+      if (len + chunk.length > buf.length) { let b = new Float32Array(2 * (len + chunk.length)); b.set(buf.subarray(0, len)); buf = b }
+      buf.set(chunk, len); len += chunk.length
+      return take(s.write(chunk))
+    },
+    flush: () => take(s.flush())
+  }
 }
 
-// Band-pass = HP(fLo) followed by LP(fHi) one-poles.
-function bandpassNum(fLo, fHi, fs) {
-  let aL = Math.exp(-2 * Math.PI * fLo / fs)
-  let aH = Math.exp(-2 * Math.PI * fHi / fs)
-  return (x, s) => {
-    s[0] = aL * s[0] + (1 - aL) * x                // LP
-    let hp = x - s[0]                              // HP residual
-    s[1] = aH * s[1] + (1 - aH) * hp               // LP again — net BP
-    return s[1]
+function removal(o, live = o) {
+  let fs = o.fs, N = o.frameSize, hop = o.hopSize, half = N >> 1, K = half + 1, bin = fs / N
+  let k20 = Math.min(half, Math.ceil(SUB / bin)), kA = Math.round(LEVEL / bin), kL = Math.min(half, Math.round(LOW / bin)), kM = Math.min(half, Math.round(MID / bin))
+  let Pb = new Float64Array(K), fl = new Float64Array(K), lam = new Float64Array(K), e = new Float64Array(K)
+  let q = new Float64Array(K), Gp = new Float64Array(K).fill(1), gp = new Float64Array(K), out = new Float64Array(K)
+  let rb = new Float64Array(K), cur = new Float64Array(K).fill(Infinity), subs = [], V = Math.max(1, Math.round(SPAN * fs / hop / SUBS)), t = 0
+  let ar = new Float64Array(K), ai = new Float64Array(K), tLo = Math.round(0.0025 * fs), tHi = Math.min(half - 1, Math.round(0.025 * fs)), rw = winAc(N, tHi)
+  let aPk = Math.exp(-hop / (DECAY * fs)), up = Math.exp(-hop / (UP * fs)), down = Math.exp(-hop / (DOWN * fs)), hold = Math.round(HOLD * fs / hop)
+  let peak = 0, run = 0, left = 0, w = 0
+
+  return (mag, phase) => {
+    let kHi = Math.min(half, Math.round((live.cutoff ?? 1500) / bin)), n = Math.min(K, kHi + H + 1)
+    let gMin = 10 ** (Math.min(0, live.attenuation ?? -20) / 20)
+    for (let k = 0; k < K; k++) { let p = mag[k] * mag[k]; Pb[k] = t ? (Pb[k] + p) / 2 : p }
+
+    // the wind spectrum
+    for (let k = 0; k < k20; k++) lam[k] = Pb[k]
+    opening(Pb, k20, n, e, fl)
+    let a = 0
+    for (let k = k20; k < n; k++) lam[k] = BIAS * fl[k]
+    for (let k = k20; k <= kA && k < n; k++) a += lam[k]
+    if (a > 0) {
+      for (let k = kA + 1; k < n; k++) { let r = lam[k] / a; rb[k] = t ? AR * rb[k] + (1 - AR) * r : r; if (rb[k] < cur[k]) cur[k] = rb[k] }
+      for (let k = kA + 1; k < n; k++) { let m = cur[k]; for (let u of subs) if (u[k] < m) m = u[k]; if (CAP * a * m < lam[k]) lam[k] = CAP * a * m }
+    }
+    if (++t % V === 0) { subs.push(Float64Array.from(cur)); if (subs.length > SUBS) subs.shift(); cur.fill(Infinity) }
+
+    // is it wind: the low band aperiodic and over the mid band, for ARM frames in a row; then held
+    let El = 0, Em = 0
+    for (let k = k20; k <= kL; k++) El += mag[k] * mag[k]
+    for (let k = kL + 1; k <= kM; k++) Em += mag[k] * mag[k]
+    peak = Math.max(Em, aPk * peak)
+    let r = periodicity(mag, k20, kL, ar, ai, rw, tLo, tHi)
+    run = r < R_MAX && (1 - r) * El > Math.max(Em, FLOOR * peak) ? run + 1 : 0
+    if (run >= ARM) left = hold
+    else if (left > 0) left--
+    let T = left > 0 ? 1 : 0, c = T > w ? up : down
+    w = c * w + (1 - c) * T
+    if (!T && w < 1e-3) w = 0
+
+    // the gain
+    q.fill(Q_ELSE, 0, kHi + 1)
+    for (let k = 1; k < kHi; k++) if (Pb[k] > Pb[k - 1] && Pb[k] >= Pb[k + 1] && Pb[k] > PEAK * lam[k])
+      for (let j = Math.max(0, k - H), J = Math.min(kHi, k + H); j <= J; j++) q[j] = Q_PEAK
+    out.fill(0)
+    for (let k = 0; k <= kHi; k++) {
+      let g = lam[k] > 0 ? mag[k] * mag[k] / lam[k] : 1e6
+      let xi = Math.max(ADD * Gp[k] * Gp[k] * gp[k] + (1 - ADD) * Math.max(g - 1, 0), XI_MIN)
+      let G = Math.min(1, Math.max(xi / (1 + xi), gMin))
+      Gp[k] = G; gp[k] = g
+      let p = 1 / (1 + q[k] / (1 - q[k]) * (1 + XI_H1) * Math.exp(-g * XI_H1 / (1 + XI_H1)))
+      if (w) out[k] = w * (1 - G ** p * gMin ** (1 - p)) * mag[k]
+    }
+    return { mag: out, phase }
   }
+}
+
+// erosion then dilation over 2H + 1 bins of P[lo..n): every peak narrower than that cut, broader shapes kept
+function opening(P, lo, n, e, d) {
+  for (let k = lo; k < n; k++) { let m = Infinity; for (let j = Math.max(lo, k - H), J = Math.min(n - 1, k + H); j <= J; j++) if (P[j] < m) m = P[j]; e[k] = m }
+  for (let k = lo; k < n; k++) { let m = 0; for (let j = Math.max(lo, k - H), J = Math.min(n - 1, k + H); j <= J; j++) if (e[j] > m) m = e[j]; d[k] = m }
+}
+
+// the band's normalized autocorrelation from the frame's power spectrum over the window's, its peak at lags tLo..tHi past
+// the first lag where it turns negative: a smooth noise stays correlated at short lags, only a periodic sound comes back
+function periodicity(mag, lo, hi, ar, ai, rw, tLo, tHi) {
+  ar.fill(0); ai.fill(0)
+  for (let k = lo; k <= hi; k++) ar[k] = mag[k] * mag[k]
+  let c = ifft(ar, ai), c0 = c[0], best = 0, dipped = false
+  if (!(c0 > 1e-30)) return 0
+  for (let t = 1; t <= tHi; t++) {
+    let v = c[t] / c0 / rw[t]
+    if (v < 0) dipped = true
+    else if (dipped && t >= tLo && v > best) best = v
+  }
+  return Math.min(1, best)
+}
+
+// the Hann window's circular autocorrelation, normalized: what a white noise's would read
+let acs = new Map()
+function winAc(N, tHi) {
+  let key = N * 65536 + tHi
+  if (acs.has(key)) return acs.get(key)
+  let w = Float64Array.from({ length: N }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)), r = new Float64Array(tHi + 1)
+  for (let t = 0; t <= tHi; t++) { let s = 0; for (let i = 0; i < N; i++) s += w[i] * w[(i + t) % N]; r[t] = s }
+  for (let t = tHi; t >= 0; t--) r[t] /= r[0]
+  acs.set(key, r)
+  return r
 }

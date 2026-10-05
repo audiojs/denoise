@@ -13,6 +13,9 @@ export interface OmlsaOptions {
   xiMin?: number
   /** a fixed a-priori speech absence; omitted or 0: estimated from ξ's spread (Cohen & Berdugo 2001 §4) */
   qPrior?: number
+  /** the a priori SNR the speech absence is estimated from: 'cts' (default), smoothed in the cepstrum (Breithaupt,
+   *  Gerkmann & Martin 2008); 'dd', the decision-directed one, as the paper and Cohen's omlsa.m */
+  qFrom?: 'cts' | 'dd'
   /** STFT frame, default `frame(fs)`: the power of two nearest 32 ms */
   frameSize?: number
   /** OLA hop, default frameSize/4 */
@@ -22,7 +25,8 @@ export interface OmlsaOptions {
   /** IMCRA options (see @audio/noise-estimate `imcra`) */
   estimator?: Record<string, number>
   /** a known noise PSD, `frameSize/2+1` bins (noise-estimate's `noiseProfile` of a noise-only stretch): held, not tracked;
-   *  speech presence then read from γ at a fixed a priori SNR of 15 dB (Gerkmann & Hendriks 2012) */
+   *  speech presence then read from γ averaged over neighbouring bins, at fixed priors (Gerkmann, Breithaupt
+   *  & Martin 2008) */
   profile?: ArrayLike<number>
   /** batch: the first noise-only frames, to learn the profile from */
   noiseFrames?: number

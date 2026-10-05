@@ -160,7 +160,9 @@ for (let [dmg, gen] of ARGS.length || SEAMS ? [] : [['cough, 300–3000 Hz', cou
 // residual, where a click stands out (Vaseghi & Rayner 1990; fitted on the original's 100 ms of good audio beside the
 // edge). "New onsets": the share of edges where the output's onset there tops every onset the original has within
 // ±150 ms (after the slash, the original's own share: its edge against the rest of the window); "clicks": the mean
-// excess of the output's residual burst over the original's at the same place, dB.
+// excess of the output's residual burst over the original's at the same place, dB; "level at the edges": the output's
+// power over the 10 ms of fill beside each edge against the original's there, pooled over the edges, dB (a fill short
+// of the program's level reads below 0).
 const kernel = SEAMS && process.argv[3] ? (await import(new URL(process.argv[3], `file://${process.cwd()}/`))).default : repair
 const db = v => 10 * Math.log10(v)
 const MEL = (F => {
@@ -207,14 +209,15 @@ if (SEAMS || !ARGS.length) {
         let b = a + Math.round(ms / 1000 * fs), d = Float32Array.from(x).fill(0, a, b), regions = [{ at: a / fs, duration: (b - a) / fs }]
         for (let m of METHODS) {
           if (m === 'ar' && ms > 100) continue   // O(m²): AR on long gaps is in the tables above
-          let y = kernel(d, { fs, regions, method: m }), q = acc[m] ??= { gaps: 0, n: 0, s: 0, e: 0, edges: 0, onset: 0, own: 0, click: 0, snr: 0, lsd: 0 }
+          let y = kernel(d, { fs, regions, method: m }), q = acc[m] ??= { gaps: 0, n: 0, s: 0, e: 0, edges: 0, onset: 0, own: 0, click: 0, snr: 0, lsd: 0, px: 0, py: 0 }
           for (let i = 0; i < x.length; i++) if ((i < a || i >= b) && y[i] !== d[i]) q.n++, q.s += x[i] ** 2, q.e += (x[i] - y[i]) ** 2
           for (let [s, side] of [[a, -1], [b, 1]]) { let r = edge(x, y, s, side); q.edges++; q.onset += r.onset; q.own += r.own; q.click += r.click }
+          for (let i of [a, b - Math.round(0.01 * fs)]) for (let j = i; j < i + Math.round(0.01 * fs); j++) q.px += x[j] ** 2, q.py += y[j] ** 2
           q.gaps++; q.snr += snr(x, y, a, b); q.lsd += lsd(x, y, a, b)
         }
       }
     })
-    console.log(`\n### Seams, ${kind}: gaps of ${SG.join(', ')} ms\n\n| tier | good audio rewritten | its SNR | new onsets | clicks | gap SNR / LSD |\n|---|---:|---:|---:|---:|---:|`)
-    for (let [m, q] of Object.entries(acc)) console.log(`| ${m}${m === 'ar' ? ' (≤ 100 ms)' : ''} | ${(q.n / q.gaps / fs * 1000).toFixed(0)} ms | ${q.e ? db(q.s / q.e).toFixed(1) + ' dB' : '–'} | ${(100 * q.onset / q.edges).toFixed(0)}% / ${(100 * q.own / q.edges).toFixed(0)}% | ${(q.click / q.edges).toFixed(1)} dB | ${(q.snr / q.gaps).toFixed(1)} / ${(q.lsd / q.gaps).toFixed(2)} |`)
+    console.log(`\n### Seams, ${kind}: gaps of ${SG.join(', ')} ms\n\n| tier | good audio rewritten | its SNR | new onsets | clicks | level at the edges | gap SNR / LSD |\n|---|---:|---:|---:|---:|---:|---:|`)
+    for (let [m, q] of Object.entries(acc)) console.log(`| ${m}${m === 'ar' ? ' (≤ 100 ms)' : ''} | ${(q.n / q.gaps / fs * 1000).toFixed(0)} ms | ${q.e ? db(q.s / q.e).toFixed(1) + ' dB' : '–'} | ${(100 * q.onset / q.edges).toFixed(0)}% / ${(100 * q.own / q.edges).toFixed(0)}% | ${(q.click / q.edges).toFixed(1)} dB | ${db(q.py / q.px).toFixed(1)} dB | ${(q.snr / q.gaps).toFixed(1)} / ${(q.lsd / q.gaps).toFixed(2)} |`)
   }
 }

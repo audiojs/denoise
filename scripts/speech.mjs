@@ -8,6 +8,8 @@
 //     PARAMS: JSON manifest params for the systems
 //   node scripts/speech.mjs hum                            dehum's hum reduction, dB
 //   e.g. node scripts/speech.mjs vbtrain omlsa 0/1 g12 '{"gMin":-12}'
+//   omlsa-learned (vbdemand, vbtrain, vbclean): omlsa on the noise learned from the lead-in before the speaker starts, as
+//   audio's denoise() runs it
 //
 // Systems run through the packages' audio.js manifests, as `audio` runs them: the host's default parameters (or
 // PARAMS; Float32 like a host's param buffers), 1024-sample blocks (the whole clip when a manifest is streaming: false),
@@ -36,6 +38,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { highpass, cascade } from '@audio/biquad'
 import { omlsa } from '@audio/denoise-omlsa/audio'
+import omlsaKernel from '@audio/denoise-omlsa'
 import { wiener } from '@audio/denoise-wiener/audio'
 import { specsub } from '@audio/denoise-spectral/audio'
 import { dehum } from '@audio/denoise-dehum/audio'
@@ -75,12 +78,25 @@ export function host(m, x, fs, opts = {}) {
 	return out.slice(L, L + x.length)
 }
 
+// seconds of noise before the speaker starts, from the clean reference: up to 50 ms before its first 20 ms frame 15 dB
+// over the 10th percentile of its frame energies, at least 0.1 s (audio's bench/denoise.mjs `lead`; median 0.55 s on the
+// test set)
+export function lead(x, fs) {
+	let n = Math.round(0.02 * fs), m = Math.floor(x.length / n), e = []
+	for (let j = 0; j < m; j++) { let s = 0; for (let i = j * n; i < (j + 1) * n; i++) s += x[i] * x[i]; e.push(10 * Math.log10(s / n + 1e-20)) }
+	let floor = [...e].sort((a, b) => a - b)[Math.floor(0.1 * (m - 1))], j = e.findIndex(v => v > floor + 15)
+	return Math.max(0.1, (j < 0 ? m : j) * n / fs - 0.05)
+}
+
 // audio's highpass(80): order 2, one Butterworth biquad (RBJ cookbook, Q = 1/√2)
 const hp80 = (x, fs) => cascade(Float32Array.from(x), [highpass(80, Math.SQRT1_2, fs)])
 
 export const SYSTEMS = {
 	raw: (x) => x,
 	omlsa: (x, fs, p) => host(omlsa, x, fs, p),
+	// the noise learned from the lead-in before the speaker starts, G_min −12 dB, as audio's denoise() runs omlsa
+	// (its bench/denoise.mjs); VoiceBank sets only (the lead-in is read off the clean reference)
+	'omlsa-learned': (x, fs, p, item) => omlsaKernel(x, { fs, gMin: -12, ...p, profileFrom: 0, profileTo: Math.round(lead(item.clean(), fs) * fs) }),
 	wiener: (x, fs, p) => host(wiener, x, fs, p),
 	specsub: (x, fs, p) => host(specsub, x, fs, p),
 	dehum: (x, fs, p) => host(dehum, x, fs, p),
@@ -128,7 +144,7 @@ function each(inputs, list, out, tag, params) {
 		for (let [name, get] of inputs) {
 			let file = path.join(dir, name + '.f32')
 			if (existsSync(file)) continue
-			let { x, fs } = get(), y = SYSTEMS[s](x, fs, params)
+			let item = get(), { x, fs } = item, y = SYSTEMS[s](x, fs, params, item)
 			if (y.length !== x.length) throw new Error(`${s} ${name}: ${y.length} samples for ${x.length}`)
 			writeFileSync(file, new Uint8Array(y.buffer, y.byteOffset, y.length * 4))
 			dur += x.length / fs
@@ -139,9 +155,9 @@ function each(inputs, list, out, tag, params) {
 }
 
 export const SETS = {
-	vbdemand: () => { let d = path.join(DATA, 'vbdemand'); return [d, readdirSync(path.join(d, 'noisy_testset_wav')).filter(f => f.endsWith('.wav')).sort().map(f => [f.slice(0, -4), () => wav(path.join(d, 'noisy_testset_wav', f))])] },
-	vbclean: () => { let d = path.join(DATA, 'vbdemand'); return [path.join(d, 'out-clean'), readdirSync(path.join(d, 'clean_testset_wav')).filter(f => f.endsWith('.wav')).sort().map(f => [f.slice(0, -4), () => wav(path.join(d, 'clean_testset_wav', f))])] },
-	vbtrain: () => { let d = path.join(DATA, 'vbdemand-train'); return [d, readdirSync(path.join(d, 'noisy')).filter(f => f.endsWith('.wav')).sort().map(f => [f.slice(0, -4), () => wav(path.join(d, 'noisy', f))])] },
+	vbdemand: () => { let d = path.join(DATA, 'vbdemand'); return [d, readdirSync(path.join(d, 'noisy_testset_wav')).filter(f => f.endsWith('.wav')).sort().map(f => [f.slice(0, -4), () => ({ ...wav(path.join(d, 'noisy_testset_wav', f)), clean: () => wav(path.join(d, 'clean_testset_wav', f)).x })])] },
+	vbclean: () => { let d = path.join(DATA, 'vbdemand'); return [path.join(d, 'out-clean'), readdirSync(path.join(d, 'clean_testset_wav')).filter(f => f.endsWith('.wav')).sort().map(f => [f.slice(0, -4), () => { let c = wav(path.join(d, 'clean_testset_wav', f)); return { ...c, clean: () => c.x } }])] },
+	vbtrain: () => { let d = path.join(DATA, 'vbdemand-train'); return [d, readdirSync(path.join(d, 'noisy')).filter(f => f.endsWith('.wav')).sort().map(f => [f.slice(0, -4), () => ({ ...wav(path.join(d, 'noisy', f)), clean: () => wav(path.join(d, 'clean', f)).x })])] },
 	noise: noiseOnly,
 	vbreverb: () => reverb('test-reverb', 'out'),
 	'vbreverb-train': () => reverb('train-reverb', 'out-train'),

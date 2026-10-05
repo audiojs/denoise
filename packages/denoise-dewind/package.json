@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-dewind",
-  "version": "0.2.0",
-  "description": "De-wind / de-rumble — adaptive high-pass that opens wider when low-frequency",
+  "version": "0.3.0",
+  "description": "De-wind / de-rumble — per STFT bin, the wind between and under the harmonics taken, the harmonics kept",
   "type": "module",
   "sideEffects": false,
   "main": "dewind.js",
@@ -23,7 +23,8 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/biquad": "^1.1.0"
+    "@audio/stft": "^2.0.0",
+    "fourier-transform": "^2.4.0"
   },
   "keywords": [
     "audio",

@@ -1,6 +1,6 @@
-// Tests synthesize a known speed defect s(t) = 1 + 0.02·sin(2π·0.8t) + 0.004·sin(2π·30t)
-// (2% wow at 0.8 Hz + 0.4% flutter at 30 Hz — Howarth & Wolfe 2004/2005 report
-// consumer-tape wow/flutter in this range) by reading a clean signal through the
+// Tests synthesize a known speed defect s(t) = 1 + 0.02·sin(2π·0.75t) + 0.004·sin(2π·30t)
+// (2% wow at 0.75 Hz, a 45 rpm disc turning off-centre, + 0.4% flutter at 30 Hz — Howarth
+// & Wolfe 2004/2005 report wow/flutter in this range) by reading a clean signal through the
 // SAME windowed-sinc kernel dewow() uses for correction (@audio/resample-sinc,
 // r=16), at a warped position that integrates s(t) — the round-trip methodology
 // this repo's siblings use (dereverb's convolve-then-correct, denoise-repair's
@@ -44,11 +44,11 @@ function harmonicTone(f0, n, amps) {
 }
 function rms(d) { let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i]; return Math.sqrt(s / d.length) }
 
-// The defect curve: 2% wow @ 0.8 Hz + 0.4% flutter @ 30 Hz, both well inside the
+// The defect curve: 2% wow @ 0.75 Hz + 0.4% flutter @ 30 Hz, both well inside the
 // analyser's representable range (wow ≪ 6 Hz; flutter's ceiling is the per-hop
 // curve's own Nyquist fs/(2·hop) = 43 Hz at the defaults, and 30 Hz sits under it
 // with margin — see README for why 100 Hz flutter needs a smaller hopSize).
-const sOfT = tt => 1 + 0.02 * Math.sin(PI2 * 0.8 * tt) + 0.004 * Math.sin(PI2 * 30 * tt)
+const sOfT = tt => 1 + 0.02 * Math.sin(PI2 * 0.75 * tt) + 0.004 * Math.sin(PI2 * 30 * tt)
 
 // Applies s(t) with the same primitive (and r=16 kernel) dewow() corrects with —
 // see file header. `sFn` is evaluated in the *output* (distorted) timeline, so
@@ -138,7 +138,7 @@ const env6 = envelope(N6)
 // 2nd–6th harmonics of one 110 Hz note: one witness, which by design measures nothing.)
 const chord = mul(add(sine(261.63, N6, 0.25), sine(329.63, N6, 0.25), sine(415.30, N6, 0.25), sine(587.33, N6, 0.25)), env6)
 const tone = mul(harmonicTone(110, N6, [0.3, 0.2, 0.12, 0.08, 0.05, 0.03]), env6) // one note, six harmonics
-const wowOnly = tt => 1 + 0.02 * Math.sin(PI2 * 0.8 * tt)
+const wowOnly = tt => 1 + 0.02 * Math.sin(PI2 * 0.75 * tt)
 const dirtyChord = warp(chord, sOfT)
 const dirtyTone = warp(tone, sOfT)
 function voice(fn, n = N6) { // a voice, harmonics 1..8 at 1/k, its pitch fn(t)
@@ -151,12 +151,22 @@ const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i])
 // =================== analyze() — speed curve recovery ===================
 
 t('analyze — recovers the wow on independent notes (correlation ≥ 0.95)', () => {
-	// 'partial' reads frequency over the 93 ms analysis frame: the 0.8 Hz wow, not the 30 Hz flutter (reference mode
-	// below resolves that), so the curve is compared with the wow alone
+	// 'partial' reads frequency over the 0.19 s analysis frame and applies the rotation-rate line it finds: the 0.75 Hz
+	// wow, not the 30 Hz flutter (reference mode below resolves that), so the curve is compared with the wow alone
 	let a = analyze(dirtyChord, { fs })
 	let c = corr(a.speed, Array.from(a.times).map(wowOnly))
 	ok(c >= 0.95, `correlation ${c.toFixed(4)}`)
-	is(a.tracks.length, 4, 'one track per note')
+	// tracks are steady pieces of partials, cut where one moves faster than wow can; the 30 Hz flutter's FM sidebands
+	// (−28 dB) are tracked too and move with the speed like any partial
+	let notesHz = [261.63, 329.63, 415.30, 587.33], on = t => notesHz.some(f => Math.abs(t.freq / f - 1) < 0.03), time = ts => ts.reduce((s, t) => s + t.length, 0)
+	ok(notesHz.every(f => a.tracks.some(t => Math.abs(t.freq / f - 1) < 0.03)), 'every note tracked')
+	ok(time(a.tracks.filter(on)) > 0.75 * time(a.tracks), `${a.tracks.length} pieces, ${(100 * time(a.tracks.filter(on)) / time(a.tracks)).toFixed(0)} % of their time on the notes`)
+})
+
+t('analyze — a disc turning off-centre at 33⅓ rpm: the line found and fitted (0.5 %, the chord)', () => {
+	let s = tt => 1 + 0.005 * Math.sin(PI2 * 100 / 180 * tt), a = analyze(warp(add(chord, chord), s), { fs })
+	ok(a.lines.length && Math.abs(a.lines[0].rpm / (100 / 3) - 1) < 0.02, 'line at ' + a.lines.map(l => l.rpm.toFixed(2) + ' rpm').join(', '))
+	ok(Math.abs(a.lines[0].depth - 0.5) < 0.05, `depth ${a.lines[0].depth.toFixed(3)} %`)
 })
 
 t('analyze — wow amplitude within 15% of the injected 2%', () => {
@@ -249,9 +259,15 @@ t('analyze — reference mode resolves 30 Hz flutter on a 1 kHz calibration tone
 	ok(a.wowPeak >= 1.7 && a.wowPeak <= 2.3, `wowPeak ${a.wowPeak.toFixed(3)}%`)
 })
 
-t('reference mode — requires refFreq, rejects an out-of-range one', () => {
-	throws(() => analyze(dirtyChord, { fs, mode: 'reference' }), null, 'missing refFreq throws')
-	throws(() => analyze(dirtyChord, { fs, mode: 'reference', refFreq: 30000 }), null, 'refFreq above Nyquist/2-ish range throws')
+t('reference mode — without refFreq a tone is looked for: none in a chord, a 19 kHz pilot found; an out-of-range one throws', () => {
+	let a = analyze(dirtyChord, { fs, mode: 'reference' })
+	ok(a.reference === null && a.speed.every(v => v === 1), 'no tone: no curve')
+	let speech = new Float32Array(raw).subarray(0, N6), pilot = sine(19000, N6, rms(speech) * 0.01 * Math.SQRT2)
+	let b = analyze(warp(add(speech, pilot), sOfT), { fs, mode: 'reference' })
+	ok(Math.abs(b.reference / 19000 - 1) < 0.002, `found ${b.reference.toFixed(1)} Hz`)
+	let c = corr(b.speed, Array.from(b.times).map(sOfT))
+	ok(c >= 0.95, `curve correlation ${c.toFixed(4)} (wow and 30 Hz flutter, the latter read over 23 ms)`)
+	throws(() => analyze(dirtyChord, { fs, mode: 'reference', refFreq: 30000 }), null, 'refFreq above Nyquist throws')
 })
 
 t('unknown mode throws', () => {

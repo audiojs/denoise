@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-dereverb",
-  "version": "0.2.0",
-  "description": "De-reverb: late reverberation off speech by weighted prediction error (WPE, Nakatani et al. 2010), recursive",
+  "version": "0.3.0",
+  "description": "De-reverb: late reverberation off a voice, one channel: weighted prediction error (WPE, Nakatani et al. 2010) fitted over the take, then the late power its taps predict taken by a gain",
   "type": "module",
   "sideEffects": false,
   "main": "dereverb.js",

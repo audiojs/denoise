@@ -1,7 +1,7 @@
-/** Weighted prediction error (WPE) dereverberation, recursive, one channel (Nakatani et al. 2010; Yoshioka & Nakatani 2012). */
+/** Late reverberation off a voice, one channel, the whole take at once: weighted prediction error (WPE, Nakatani et al. 2010) fitted over the take, then the late power its taps predict taken by a log-spectral-amplitude gain. */
 export interface DereverbOptions {
-  /** how far ahead of each frame its filter has learned (s), default 0.25; the writer's latency grows by it, 0: the frame's alone */
-  lookahead?: number
+  /** scale of the late-reverberation estimate, default 1; 0: the linear prediction alone, 2: twice the estimate (more of the tail, more of the voice) */
+  strength?: number
   /** STFT frame, default `frame(fs)`: the power of two nearest 40 ms */
   frameSize?: number
   /** OLA hop, default frameSize/4 */
@@ -10,9 +10,7 @@ export interface DereverbOptions {
   fs?: number
 }
 
-/** Process a whole buffer. Returns a new Float32Array of the same length. */
+/** Process a whole take (the fit needs all of it). Returns a new Float32Array of the same length. */
 export default function dereverb(data: Float32Array | Float64Array, options?: DereverbOptions): Float32Array
-/** Streaming form: returns a writer; call it with chunks, then with no argument to flush. Its output equals the batch. */
-export default function dereverb(options?: DereverbOptions): (chunk?: Float32Array) => Float32Array
 /** The default frame at a rate: the power of two nearest 40 ms (512 at 16 kHz, 1024 at 22.05, 2048 at 44.1 and 48). */
 export function frame(fs: number): number

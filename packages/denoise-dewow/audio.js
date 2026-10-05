@@ -10,9 +10,9 @@
 // length must be a pure function of the input length unless it declares `frames`,
 // and dewow's whole point is correcting pitch drift without changing duration.
 //
-// refFreq only matters in mode:'reference'; its default (50, mains-hum
-// convention) mirrors denoise-dehum's `freq` default so switching to that mode
-// with no override doesn't need a second edit.
+// refFreq only matters in mode:'reference'; 0 (the default) has the kernel look
+// for the tone itself — a pilot above 5 kHz, else 50 or 60 Hz mains hum — as
+// mode:'partial' does for a pilot.
 
 import dewow_ from './dewow.js'
 
@@ -39,7 +39,7 @@ dewow.streaming = false
 dewow.tail = 0
 dewow.params = {
 	mode:         { type: 'enum', values: ['partial', 'reference', 'pitch'], default: 'partial' },
-	refFreq:      { type: 'number', min: 20, max: 20000, default: 50, unit: 'Hz' },
+	refFreq:      { type: 'number', min: 0, max: 20000, default: 0, unit: 'Hz' },
 	smooth:       { type: 'number', min: 0.001, max: 5, default: 0.05, unit: 's' },
 	maxDeviation: { type: 'number', min: 0, max: 0.5, default: 0.05 },
 	wow:          { type: 'bool', default: true },

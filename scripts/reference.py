@@ -18,8 +18,8 @@
 #             capped at the window's mean.
 #   specsub   Berouti, Schwartz & Makhoul, ICASSP 1979: power subtraction, over-subtraction α(SNR), floor β.
 #   wpe       Nakatani, Yoshioka, Kinoshita, Miyoshi & Juang, IEEE TASLP 18(7), 2010: variance-normalized delayed
-#             linear prediction, one channel; recursive least squares as in Yoshioka & Nakatani, IEEE TASLP 20(10),
-#             2012, and Caroselli et al., Interspeech 2017, with dereverb's look-ahead, λ floor and silence rule.
+#             linear prediction, one channel, fitted over the whole take (eq. 13–15, iterated), with dereverb's λ floor
+#             and silence rule; then the late power its taps predict taken by Ephraim & Malah's LSA gain (1985).
 #
 # Time constants are quoted for Cohen's 8 ms frames (512 samples, 128 hop at 16 kHz) and rescaled to the actual
 # frame step Δt as a^(Δt/8 ms); the minimum window keeps its length in seconds.
@@ -216,31 +216,40 @@ def specsub(P, lam, alpha=None, beta=0.05, floor='noise'):
         G[l] = np.sqrt(np.where(y > 0, s / np.maximum(y, 1e-300), 0))
     return G
 
-def wpe(F, D, K, L, alpha, delta=10):
-    """Recursive WPE over STFT frames F (T, bins): d(t) = y(t) − gᴴ ȳ(t), ȳ(t) = [y(t−D) … y(t−D−K+1)], g the
-    α-forgetting least-squares fit of y from ȳ weighted by 1/λ, λ = |y|² floored 100 dB under the loudest bin so far;
-    RLS from P = I/δ, g = 0. Frame t updates g after frame t − L has left through it (out at t, zero while t < L);
-    a bin whose ȳ holds nothing over the floor neither learns nor forgets."""
-    T, B = F.shape; P = np.tile(np.eye(K, dtype=complex) / delta, (B, 1, 1)); g = np.zeros((B, K), complex)
-    past = lambda t: np.stack([F[t - D - i] if t - D - i >= 0 else np.zeros(B, complex) for i in range(K)], 1)
-    out = np.zeros_like(F); top = 0.0
-    for t in range(T):
-        top = max(top, float(np.max(np.abs(F[t]) ** 2))); floor = top * 1e-10 + 1e-30
-        if t >= L: out[t] = F[t - L] - np.einsum('bk,bk->b', g.conj(), past(t - L))
-        yb = past(t); on = np.sum(np.abs(yb) ** 2, 1) > floor * K
-        d = F[t] - np.einsum('bk,bk->b', g.conj(), yb)
-        u = np.einsum('bkl,bl->bk', P, yb)
-        den = alpha * np.maximum(np.abs(F[t]) ** 2, floor) + np.einsum('bk,bk->b', yb.conj(), u).real
-        g = np.where(on[:, None], g + u * (d.conj() / den)[:, None], g)
-        P = np.where(on[:, None, None], (P - np.einsum('bk,bl->bkl', u, u.conj()) / den[:, None, None]) / alpha, P)
-    return out
+def wpe(F, D, K, iters=3):
+    """WPE over the whole take, STFT frames F (T, bins): g = R⁻¹ r, R = Σ ȳȳᴴ/λ, r = Σ ȳ y*/λ, ȳ(t) = [y(t−D) …
+    y(t−D−K+1)] (zero before the take), λ = |y|², then |d|² of the previous fit, d = y − gᴴȳ, floored 100 dB under the
+    loudest bin (the loudest so far in the first fit); bins at or under the floor (digital silence) left out; R loaded
+    by 10⁻⁶ of its mean diagonal. Returns g (bins, K) and ȳ (T, bins, K)."""
+    T, B = F.shape; g = np.zeros((B, K), complex)
+    Y = np.stack([np.concatenate([np.zeros((D + i, B), complex), F[:max(0, T - D - i)]])[:T] for i in range(K)], 2)
+    P = np.abs(F) ** 2; run = np.maximum.accumulate(P.max(1))
+    for it in range(iters):
+        fl = (run if it == 0 else np.full(T, run[-1]))[:, None] * 1e-10 + 1e-30
+        d = F - np.einsum('bk,tbk->tb', g.conj(), Y)
+        w = np.where(P > fl, 1 / np.maximum(np.abs(d) ** 2, fl), 0)
+        R = np.einsum('tb,tbi,tbj->bij', w, Y, Y.conj()); r = np.einsum('tb,tbi,tb->bi', w, Y, F.conj())
+        tr = np.real(np.trace(R, axis1=1, axis2=2)); on = tr > 0
+        R = R + np.eye(K)[None] * (tr / K * 1e-6)[:, None, None]
+        g = np.zeros((B, K), complex); g[on] = np.linalg.solve(R[on], r[on][..., None])[..., 0]
+    return g, Y
 
-def dereverb(x, fs, N, hop, first=None, delay=0.03, order=0.11, memory=1.06, lookahead=0.25):
-    """@audio/denoise-dereverb in batch: the input and L·hop of silence through wpe, the output shifted back L·hop."""
+def dereverb(x, fs, N, hop, first=None, strength=1.0, delay=0.05, order=0.11, beta=4.0, gmin=0.2, alpha_dd=0.92, xi_min=1e-3, tilt=500):
+    """@audio/denoise-dereverb: wpe's output d = y − gᴴȳ through the LSA gain (Ephraim & Malah 1985, eq. 20; ξ
+    decision-directed, 1984, eq. 51, its memory Â²/λᵣ from 0) against λᵣ = β(f) Σₖ |gₖ|² |y(t−D−k)|²,
+    β(f) = strength·beta·min(1, f/tilt), floored at gmin; no bin louder than it came."""
     dt = hop / fs; r = lambda v: int(np.floor(v + 0.5))                 # Math.round
-    D, K, L = max(1, r(delay / dt)), max(1, r(order / dt)), max(0, r(lookahead / dt))
-    xp = np.concatenate([x, np.zeros(L * hop)])
-    return overlap_add(wpe(frames(xp, N, hop, first), D, K, L, np.exp(-dt / memory)), N, hop, len(xp), first)[L * hop:]
+    D, K = max(1, r(delay / dt)), max(1, r(order / dt)); F = frames(x, N, hop, first)
+    g, Y = wpe(F, D, K)
+    d = F - np.einsum('bk,tbk->tb', g.conj(), Y); lr = np.einsum('bk,tbk->tb', np.abs(g) ** 2, np.abs(Y) ** 2)
+    bf = strength * beta * np.minimum(1, np.arange(F.shape[1]) * fs / N / tilt)
+    a = alpha_dd ** (dt / REF_DT); eta = np.zeros(F.shape[1]); out = np.empty_like(F)
+    for t in range(len(F)):
+        G = np.ones(F.shape[1]); on = (lr[t] > 0) & (bf > 0)
+        gm = np.abs(d[t, on]) ** 2 / (bf[on] * lr[t, on]); xi = np.maximum(a * eta[on] + (1 - a) * np.maximum(gm - 1, 0), xi_min)
+        G[on] = np.clip(xi / (1 + xi) * np.exp(0.5 * exp1(np.maximum(gm * xi / (1 + xi), 1e-300))), gmin, 1); eta[on] = G[on] ** 2 * gm
+        out[t] = np.minimum(G * np.abs(d[t]), np.abs(F[t])) * np.exp(1j * np.angle(d[t]))
+    return overlap_add(out, N, hop, len(x), first)
 
 def signal(n=20000):
     """test.js's synthetic 'speech in noise' at 8 kHz, in arithmetic only so JS makes the same doubles: Park–Miller

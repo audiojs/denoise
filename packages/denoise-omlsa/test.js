@@ -1,5 +1,6 @@
 // OM-LSA on a held noise (`profile`): the noise learned where it plays alone, held rather than tracked (noise-estimate's
-// `known`), speech presence read from γ at a fixed a priori SNR (Gerkmann & Hendriks 2012) under Cohen's absence gate.
+// `known`), speech presence read from γ averaged over neighbouring bins at fixed priors (Gerkmann, Breithaupt
+// & Martin 2008) under Cohen's absence gate.
 // Steady Gaussian noise and a harmonic "voice" with gaps, deterministic; audio-lena for real speech.
 
 import test, { ok, is, throws } from 'tst'

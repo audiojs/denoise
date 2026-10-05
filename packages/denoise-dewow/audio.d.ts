@@ -12,7 +12,7 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 export interface DewowOptions {
   /** default "partial" */
   "mode"?: "partial" | "reference" | "pitch"
-  /** 20..20000 Hz (default 50) */
+  /** 0..20000 Hz (default 0) */
   "refFreq"?: Auto
   /** 0.001..5 s (default 0.05) */
   "smooth"?: Auto
@@ -34,8 +34,8 @@ export declare const dewow: {
   params: {
     /** default "partial" */
     "mode": { type: "enum", values: ["partial","reference","pitch"], default: "partial" }
-    /** 20..20000 Hz (default 50) */
-    "refFreq": { type: "number", default: 50 }
+    /** 0..20000 Hz (default 0) */
+    "refFreq": { type: "number", default: 0 }
     /** 0.001..5 s (default 0.05) */
     "smooth": { type: "number", default: 0.05 }
     /** 0..0.5 (default 0.05) */

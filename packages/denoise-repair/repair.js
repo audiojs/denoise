@@ -13,8 +13,9 @@
 //                 correlation, transplanted
 //   'spectral'    log-magnitude interpolation between the clean frames either side, each frame's
 //                 phase advanced from the nearer side (phase vocoder), so both edges line up
-// Each fill joins the program by a crossfade over the good audio at each edge, as short as the
-// seams allow (XF). Band-limited regions take only their band from the joined fill, frame by frame.
+// Each fill but AR's is first brought to the program's level and spectrum at both edges (match), then
+// joins it by a crossfade over the good audio at each edge, as short as the seams allow (XF).
+// Band-limited regions take only their band from the joined fill, frame by frame.
 // Samples beyond the crossfades, or beyond the frames overlapping a band-limited region, are
 // returned untouched.
 
@@ -27,18 +28,20 @@ const PI2 = 2 * Math.PI
 const princ = x => x - PI2 * Math.round(x / PI2)
 const clamp = (x, lo, hi) => x < lo ? lo : x > hi ? hi : x
 
-// 'auto' routing, measured (README "Measured"): a similarity transplant when the aligned passage
-// correlates with the gap's surroundings by R_LONG, or up to SHORT s by R_SHORT (r = 0.995 is a
-// match to 20 dB SNR, −10·log10(1 − r²): only a near-exact repeat beats AR there); failing that,
-// AR up to AR_MAX s, the sinusoidal bridge beyond. Band-limited regions route alike.
-const SHORT = 0.05, R_SHORT = 0.995, R_LONG = 0.4, AR_MAX = 0.07
+// 'auto' routing, measured (README "Measured"): AR up to AR_MAX s, the sinusoidal bridge beyond, unless
+// a similarity transplant correlates with the gap's surroundings, once aligned, by R_LONG, or by R_SHORT
+// up to AR_MAX (r = 0.995 is a match to 20 dB SNR, −10·log10(1 − r²): only a near-exact repeat beats AR
+// there). Band-limited regions route alike.
+const AR_MAX = 0.03, R_SHORT = 0.995, R_LONG = 0.4
 // Crossfade at each edge, s: the shortest after which the seams show no more onsets (mel onset
 // strength, as librosa's) or clicks (bursts of the AR residual) than the original has around them,
-// on speech and music (README "Seams"); 2 ms already ends the clicks, the rest hides how the fill's
-// level and timbre differ from the program's. AR's least-squares fill is continuous with its context
-// and needs none. A transplant joins in 5 ms only when it repeats the program (aligned r ≥ R_REPEAT);
-// a looser match shows at any shorter length, and keeps the frame-long transition of Perraudin et al.
-const XF = { ar: 0, sinusoidal: 0.015, similarity: 0.005, spectral: 0.03 }, R_REPEAT = 0.9
+// on speech and music (README "Seams"). 2 ms ends the clicks; once match() has brought the fill to the
+// program's level and spectrum at the edges, 5 ms ends the bridge's onsets too (15 ms without it). AR's
+// least-squares fill is continuous with its context and needs none. What shows past 5 ms is the content
+// itself: a transplant joins in 5 ms only when it repeats the program (aligned r ≥ R_REPEAT), a looser
+// match keeps the frame-long transition of Perraudin et al.; spectral keeps 30 ms. GAIN: the most, dB,
+// match() lifts or cuts a band at an edge.
+const XF = { ar: 0, sinusoidal: 0.005, similarity: 0.005, spectral: 0.03 }, R_REPEAT = 0.9, GAIN = 12
 const METHODS = ['auto', 'ar', 'sinusoidal', 'similarity', 'spectral']
 
 function options(opts) {
@@ -71,7 +74,7 @@ function resolve(x, r, o) {
 	let { a, b } = span(r, o, x.length), D = (b - a) / o.fs
 	if (method === 'similarity' || method === 'auto') {
 		let m = similar(x, a, b, o)
-		if (m && (method === 'similarity' || m.r >= (D <= SHORT ? R_SHORT : R_LONG))) return { method: 'similarity', source: (a + m.d) / o.fs }
+		if (m && (method === 'similarity' || m.r >= (D <= AR_MAX ? R_SHORT : R_LONG))) return { method: 'similarity', source: (a + m.d) / o.fs }
 		if (method === 'similarity') return { method: 'sinusoidal' }   // no passage to copy within the window
 	}
 	if (method !== 'auto') return { method }
@@ -102,9 +105,11 @@ export default function repair(data, opts = {}) {
 			if (a + d < 0 || b + d > n || (d < b - a && d > a - b)) throw new RangeError('repair: similarity source must be a clean passage as long as the region')
 			if (corr(out, a, b, d, o.N) < R_REPEAT) X = o.N
 			X = Math.max(0, Math.min(X, a, n - b, a + d, n - b - d, Math.abs(d) - (b - a)))
+			// the passage with its surroundings a frame either side, where they are clean: match() reads them beside the edges
 			fill = Float32Array.from(out)
-			for (let i = a - X; i < b + X; i++) fill[i] = out[i + d]
+			for (let i = Math.max(0, a - o.N, -d); i < Math.min(n, b + o.N, n - d); i++) if ((i >= a && i < b) || i + d < a || i + d >= b) fill[i] = out[i + d]
 		}
+		if (method !== 'ar') fill = match(out, fill, a, b, o)
 		let y = full ? out : Float32Array.from(out)
 		splice(y, fill, a, b, X)
 		if (!full) bandSplice(out, y, a, b, f0, f1, o)
@@ -125,6 +130,49 @@ function splice(x, fill, a, b, X) {
 	}
 }
 const rho = (x, y, p, q) => { let s = 0, u = 0, v = 0; for (let n = p; n < q; n++) s += x[n] * y[n], u += x[n] * x[n], v += y[n] * y[n]; return clamp(s / Math.sqrt(u * v + 1e-30), 0, 1) }
+
+// The fill meets the program at both edges in level and spectrum before it joins: per 1/3-octave band, the program's
+// power over the N/4 + N/16 samples of good audio beside an edge (15 ms at 44.1 kHz: two N/4 frames, N/16 apart) against
+// the fill's there gives that edge's gain (within ±GAIN dB), and the gain runs log-linearly from the left edge's to the
+// right's across the gap, on the fill's STFT. A transplant from a quieter or darker passage, a bridge measured a frame
+// from the edge, a spectral fill short of power: each arrives at the program's level, and the crossfade has only the
+// waveform left to join. AR's fill is the program itself outside the gap, so it has nothing to match.
+function match(x, fill, a, b, { fs, N, hop }) {
+	let M = N >> 2, win = hannWindow(M), E = bands(M, fs), lim = GAIN / 20 * Math.LN10
+	let gain = side => {   // ln amplitude per band
+		let px = new Float64Array(E.length - 1), pf = new Float64Array(E.length - 1)
+		for (let i = 0; i < 2; i++) { let s = side < 0 ? a - M - i * (M >> 2) : b + i * (M >> 2); bandPower(x, s, win, E, px); bandPower(fill, s, win, E, pf) }
+		return Float64Array.from(px, (p, q) => p > 0 && pf[q] > 0 ? clamp(0.5 * Math.log(p / pf[q]), -lim, lim) : 0)
+	}
+	// per bin of the N-point frame: linear between band centres
+	let cen = E.slice(0, -1).map((e, q) => (e + E[q + 1] - 1) / 2 * fs / M), perBin = g => Float64Array.from({ length: (N >> 1) + 1 }, (_, k) => {
+		let f = k * fs / N, q = 0
+		while (q + 1 < cen.length && cen[q + 1] <= f) q++
+		return q + 1 < cen.length && f > cen[q] ? g[q] + (g[q + 1] - g[q]) * (f - cen[q]) / (cen[q + 1] - cen[q]) : g[q]
+	})
+	let gL = perBin(gain(-1)), gR = perBin(gain(1)), s0 = Math.max(0, a - 2 * N), s1 = Math.min(x.length, b + 2 * N)
+	let y = stftBatch(fill.subarray(s0, s1), (mag, phase, state, ctx) => {
+		let u = clamp((s0 + ctx.pos + N / 2 - a) / Math.max(1, b - a), 0, 1)
+		for (let k = 0; k < mag.length; k++) mag[k] *= Math.exp((1 - u) * gL[k] + u * gR[k])
+		return { mag, phase }
+	}, { frameSize: N, hopSize: hop, fs })
+	let out = Float32Array.from(fill)
+	for (let n = Math.max(s0, a - N); n < Math.min(s1, b + N); n++) out[n] = y[n - s0]
+	return out
+}
+
+// 1/3-octave bands of an M-point spectrum as bin edges, the first from DC to 2 bins
+function bands(M, fs) {
+	let E = [0], f0 = fs / M
+	for (let f = 2 * f0; f < fs / 2; f *= 2 ** (1 / 3)) if (Math.round(f / f0) > E.at(-1)) E.push(Math.round(f / f0))
+	return [...E, (M >> 1) + 1]
+}
+function bandPower(x, s, win, E, acc) {
+	let M = win.length, f = new Float64Array(M)
+	for (let i = 0; i < M; i++) f[i] = (x[s + i] || 0) * win[i]
+	let [re, im] = fft(f)
+	for (let q = 0; q + 1 < E.length; q++) for (let k = E[q]; k < E[q + 1]; k++) acc[q] += re[k] * re[k] + im[k] * im[k]
+}
 
 // band-limited: STFT frames overlapping [a, b) take bins [f0, f1] from the fill, in place
 function bandSplice(x, fill, a, b, f0, f1, { fs, N, hop }) {
