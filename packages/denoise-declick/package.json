@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-declick",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "De-click: clicks found as outliers of the AR prediction error, each taken for a gap or a damped resonance by BIC, the resonance taken off, the gap rebuilt as its posterior mean under AR interpolation, everywhere or in given regions",
   "type": "module",
   "sideEffects": false,
@@ -22,6 +22,9 @@
     "index.d.ts",
     "audio.d.ts"
   ],
+  "scripts": {
+    "test": "node test.js"
+  },
   "dependencies": {
     "@audio/lpc": "^1.2.0"
   },
