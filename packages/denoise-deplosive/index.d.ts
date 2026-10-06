@@ -1,18 +1,27 @@
-/** Plosive (p/b thump) LF ducking: a sudden, aperiodic LF burst over the high band; untouched otherwise. */
+/** Plosive (p/b thump) removal: a sudden, aperiodic burst under `crossover`, taken away by a linear-phase low band;
+ *  untouched otherwise. */
 export interface DeplosiveOptions {
-  /** LF over high-band envelope a pop must exceed, default 4 */
+  /** LF (under 80 Hz) over the voice band (over 120 Hz) a pop must exceed, default 1; live */
   triggerRatio?: number
-  /** LF cut when triggered (dB), default -18 */
+  /** how far the band under `crossover` goes down in a pop (dB), default -40; live */
   attenuation?: number
-  /** LF/high split (Hz), default 200 */
+  /** the band a pop is taken from (Hz), default 120 */
   crossover?: number
-  /** duck attack (s), default 0.002 */
+  /** duck attack (s), default 0.0005; live */
   attack?: number
-  /** duck release (s), default 0.03 */
+  /** duck release (s), default 0.03; live */
   release?: number
   /** sample rate, default 44100 */
   fs?: number
 }
 
-/** Process in place; returns the same buffer. Pass the same options object across calls to persist state. */
-export default function deplosive(data: Float32Array, options?: DeplosiveOptions): Float32Array
+/** Batch: the pops out of `data` in place, aligned; returns the same buffer. */
+export default function deplosive<T extends Float32Array | Float64Array>(data: T, options?: DeplosiveOptions): T
+/** Stream: write(chunk) returns as many samples, `latency(fs)` behind the input; write() returns the last `latency(fs)`. */
+export default function deplosive(options?: DeplosiveOptions): (chunk?: Float32Array) => Float32Array
+
+/** The same stream as an object: `write` and `flush` as above, `latency` its delay in samples. */
+export function stream(options?: DeplosiveOptions): { latency: number, write(chunk: ArrayLike<number>): Float32Array, flush(): Float32Array }
+
+/** The output's delay at a rate, samples (~14 ms): the linear-phase low band's look-ahead. */
+export function latency(fs: number): number

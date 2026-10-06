@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-deplosive",
-  "version": "0.2.0",
-  "description": "De-plosive — detect short low-frequency bursts ('p', 'b' attacks on close mics)",
+  "version": "0.3.0",
+  "description": "De-plosive: close-mic 'p', 'b' pops found as sudden aperiodic bursts under 80 Hz and taken out as a linear-phase low band, ~14 ms look-ahead",
   "type": "module",
   "sideEffects": false,
   "main": "deplosive.js",

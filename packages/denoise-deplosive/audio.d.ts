@@ -10,15 +10,15 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 
 /** Chainable-host options for 'deplosive' */
 export interface DeplosiveOptions {
-  /** 1..20 (default 4) */
+  /** 0.25..20 (default 1) */
   "triggerRatio"?: Auto
-  /** -40..0 dB (default -18) */
+  /** -60..0 dB (default -40) */
   "attenuation"?: Auto
-  /** 0.001..0.2 s (default 0.002) */
+  /** 0.0001..0.2 s (default 0.0005) */
   "attack"?: Auto
   /** 0.005..1 s (default 0.03) */
   "release"?: Auto
-  /** 50..500 Hz (default 200) */
+  /** 50..300 Hz (default 120) */
   "crossover"?: Auto
   at?: number | string
   duration?: number | string
@@ -27,17 +27,18 @@ export interface DeplosiveOptions {
 export declare const deplosive: {
   (ctx: Ctx): Process
   channels: "any"
+  latency: (ctx: { sampleRate: number, params: Live }) => number
   tail: 0
   params: {
-    /** 1..20 (default 4) */
-    "triggerRatio": { type: "number", default: 4 }
-    /** -40..0 dB (default -18) */
-    "attenuation": { type: "number", default: -18 }
-    /** 0.001..0.2 s (default 0.002) */
-    "attack": { type: "number", default: 0.002 }
+    /** 0.25..20 (default 1) */
+    "triggerRatio": { type: "number", default: 1 }
+    /** -60..0 dB (default -40) */
+    "attenuation": { type: "number", default: -40 }
+    /** 0.0001..0.2 s (default 0.0005) */
+    "attack": { type: "number", default: 0.0005 }
     /** 0.005..1 s (default 0.03) */
     "release": { type: "number", default: 0.03 }
-    /** 50..500 Hz (default 200) [restart] */
-    "crossover": { type: "number", default: 200 }
+    /** 50..300 Hz (default 120) [restart] */
+    "crossover": { type: "number", default: 120 }
   }
 }

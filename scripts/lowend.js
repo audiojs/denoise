@@ -4,8 +4,8 @@
 // the outputs on speech under wind in DIR/now and DIR/before, its input in DIR/input, for `python scripts/wind.py score
 // DIR/now`). Prints the README's tables.
 //
-// Clean material through the op at its defaults, as the `audio` host runs it (deplosive in 1024-sample calls; dewind's
-// stream equals its batch sample for sample, so one call):
+// Clean material through the op at its defaults, one batch call (each op's stream equals its batch sample for sample,
+// latency aside):
 //   thinned   the share of voiced 10 ms frames (normalized autocorrelation ≥ 0.6 at a 60–400 Hz lag over 40 ms of the
 //             50–1000 Hz band; within 35 dB of the 99th-percentile frame) whose level under 250 Hz fell by over 3 dB;
 //             dewind: only those from the first to the last frame within 20 dB of it (a take's room tone before and
@@ -86,12 +86,7 @@ const clean = Object.entries({
 // ---- filters, the op as a host runs it
 const sos = (x, cs) => { let y = Float64Array.from(x); for (let c of cs) { let s = [0, 0]; for (let i = 0; i < y.length; i++) y[i] = step(c, s, y[i]) } return y }
 const lp4 = (f, fs) => [lowpass(f, 0.5412, fs), lowpass(f, 1.3066, fs)], hp4 = (f, fs) => [highpass(f, 0.5412, fs), highpass(f, 1.3066, fs)]
-function run(K, x, fs) {
-  if (op === 'dewind') return K(Float32Array.from(x), { fs })
-  let y = Float32Array.from(x), st = { fs }
-  for (let i = 0; i < y.length; i += 1024) K(y.subarray(i, Math.min(y.length, i + 1024)), st)
-  return y
-}
+const run = (K, x, fs) => K(Float32Array.from(x), { fs })
 
 // ---- measures
 function voiced(x, fs) {

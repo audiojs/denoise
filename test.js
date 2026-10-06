@@ -1261,23 +1261,45 @@ test('deplosive – a periodic low end passes: bass line, sine bass notes, speec
   is(md, 0, 'speech: untouched')
 })
 
-// The duck was g·LP + (x − LP), and x − LP is no high-pass: under a pop it lifted 250 Hz by 1.7 dB
-test('deplosive – the duck never lifts a band', () => {
+// The duck was g·LP + (x − LP), and x − LP is no high-pass: under a pop it lifted 250 Hz by 1.7 dB; 0.2.0's duck to a
+// high-pass at 200 Hz cut it by 2.1 dB. Now the band over twice the crossover passes as it was
+test('deplosive – the band over twice the crossover passes a pop as it was', () => {
   let n = fs, at = Math.floor(0.3 * fs), tone = sine(250, n, 0.1)
   let y = deplosive(add(tone, pulse(n, at, 100)), { fs })
   let a = at + Math.round(0.03 * fs), b = at + Math.round(0.07 * fs), g = 20 * Math.log10(goertzel(y, 250, a, b) / goertzel(tone, 250, a, b))
-  ok(g < 0, `250 Hz under the pop ${g.toFixed(2)} dB`)
+  ok(Math.abs(g) < 0.05, `250 Hz under the pop ${g.toFixed(3)} dB`)
 })
 
-test('deplosive – any chunking, empty, one sample, silence', () => {
-  let n = fs, x = add(sine(1500, n, 0.05), pulse(n, Math.floor(0.3 * fs), 30), sine(110, n, 0.1))
-  let ref = deplosive(copy(x), { fs })
+// 0.2.0 ducked the band under 200 Hz toward a causal high-pass of it, and only where the low band stood over 4× the band
+// above: a pop at a word's onset, under the word's own level, took 0–3.9 dB (here), the high-pass's response to the
+// pulse's edges left behind. Now a linear-phase low band is taken away, ~14 ms late.
+test('deplosive – a pop at a word onset, at half the speech peak, goes; the speech stays', () => {
+  let n = fs / 100, E = [], pk = 0, at = [], D = Math.round(0.04 * fs), up = Math.round(0.3 * D)
+  for (let v of lena) pk = Math.max(pk, Math.abs(v))
+  for (let k = 0; k * n + n <= lena.length; k++) E.push(energy(lena, k * n, k * n + n) / n)
+  let top = Math.max(...E)
+  for (let k = 6; k < E.length; k++) if (E[k] > top / 30 && E.slice(k - 6, k).every(e => e < top * 10 ** -2.2) && (!at.length || k - at[at.length - 1] > 50)) at.push(k)
+  let x = copy(lena)
+  for (let k of at) for (let i = 0; i < D; i++) x[k * n + i] += 0.5 * pk * (i < up ? Math.sin(Math.PI / 2 * i / up) ** 2 : Math.cos(Math.PI / 2 * (i - up) / (D - up)) ** 2)
+  let y = deplosive(copy(x), { fs }), gone = at.map(k => { let e0 = 0, e1 = 0; for (let i = k * n; i < k * n + D + fs / 10; i++) e0 += (x[i] - lena[i]) ** 2, e1 += (y[i] - lena[i]) ** 2; return 10 * Math.log10(e0 / e1) })
+  ok(at.length >= 5, `${at.length} word onsets`)
+  ok(gone.every(g => g > 20), `each pop's error taken away: ${gone.map(g => g.toFixed(1)).join(', ')} dB (> 20)`)
+})
+
+test('deplosive – stream ≡ batch at any block size, its latency declared; empty, one sample, silence', async () => {
+  let { stream, latency } = await import('@audio/denoise-deplosive'), { deplosive: manifest } = await import('@audio/denoise-deplosive/audio')
+  let n = fs, x = add(sine(1500, n, 0.05), pulse(n, Math.floor(0.3 * fs), 30), sine(110, n, 0.1)), ref = deplosive(copy(x), { fs }), L = latency(fs)
+  ok(L > 0.01 * fs && L < 0.02 * fs, `latency ${(L / fs * 1000).toFixed(1)} ms`)
+  is(manifest.latency({ sampleRate: fs }), L, 'the manifest declares it')
   for (let block of [1, 64, 997, 4096]) {
-    let d = copy(x), o = { fs }, m = 0
-    for (let i = 0; i < n; i += block) deplosive(d.subarray(i, Math.min(n, i + block)), o)
-    for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(d[i] - ref[i]))
-    is(m, 0, `block ${block} ≡ one call`)
+    let w = deplosive({ fs }), out = []
+    for (let i = 0; i < n; i += block) out.push(...w(x.subarray(i, Math.min(n, i + block))))
+    out.push(...w())
+    let m = 0
+    for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(out[i + L] - ref[i]))
+    is(m, 0, `block ${block}: the stream, ${L} samples late, ≡ the batch`)
   }
+  is(stream({ fs }).write(new Float32Array(5)).length, 5, 'a block comes back whole')
   is(deplosive(new Float32Array(0), { fs }).length, 0, 'empty')
   is(deplosive(new Float32Array([0.5]), { fs })[0], 0.5, 'one sample')
   ok(deplosive(new Float32Array(fs), { fs }).every(v => v === 0), 'silence stays silent')
