@@ -21,8 +21,12 @@
 //    `attenuation`, takes it from the remaining error, on sqrt-Hann frames of 2B at a hop of B. Removal = prediction
 //    + suppressed part; with no reference both are exactly zero and the output is the input, sample for sample.
 //
-// A path's prior, E|W_p(k)|² = level(k)·ρ^p, is what the filter knows about it before hearing it: a room's power
-// decay ρ per block (RT 0.25 s) and a level per band (a quarter of its frequency wide). Where the source first sounds
+// A path's prior, E|W_p(k)|² = level(k)·ρ^(p − p0), is what the filter knows about it before hearing it: a room's
+// power decay ρ per block (RT 0.25 s) from the partition p0 the bleed's lead falls in, and a level per band (a quarter
+// of its frequency wide). The batch call reads the lead from the whole take (the mic's cross-correlation with each
+// source, its first lag at half the peak where the peak stands out), and holds the partitions before it EARLY down: a
+// source tens of ms away is learned where its path is, and the empty partitions before it do not take up the wanted
+// sound; the stream, which cannot look ahead, starts the decay at once (p0 = 0). Where the source first sounds
 // in a band, the level starts at the most it can be: all the mic's power there from the source. Then it is learned as
 // it goes (empirical Bayes): the power coherent with the prediction (the short-time magnitude-squared coherence of
 // the two, Carter 1973, debiased, times the mic's power) over the source's power through the decay, averaged in dB,
@@ -62,6 +66,7 @@ const BETA = 0.5                                    // the wanted power's smooth
 const INFO = 0.5                                    // the information a block adds to the filter, × the diagonal model's
 const ADD = 0.9, XI_MIN = 1e-3                      // decision-directed α per block, a priori SNR floor (−30 dB)
 const DIVERGE = 2, DIV_T = 0.5                      // a band resets when its error outweighs its mic 2×, over 0.5 s
+const LEAD = 16, EARLY = 1e-3                       // the lead's peak over the far lags' median; the prior before it
 
 /** Batch: takes the bleed of `ref` (one channel, or an array of channels) out of `data` in place and returns it;
  *  two passes: the path learned over the whole take, then the removal from where it ended. Stream: `debleed(opts)`
@@ -69,10 +74,11 @@ const DIVERGE = 2, DIV_T = 0.5                      // a band resets when its er
  *  once the evidence proves the path there. */
 export default function debleed(data, ref, opts) {
   if (data instanceof Float32Array || data instanceof Float64Array) {
-    let refs = Array.isArray(ref) ? ref : ref ? [ref] : [], o = opts || {}
-    let learn = stream(o)
+    let refs = Array.isArray(ref) ? ref : ref ? [ref] : [], o = opts || {}, fs = o.fs || 44100, B = o.blockSize || block(fs)
+    let lag = lead(data, refs, parts(o, fs, B) * B)
+    let learn = stream(o, null, false, lag)
     learn.write(data, refs); learn.write()
-    let s = stream(o, learn.state())
+    let s = stream(o, learn.state(), false, lag)
     let y = s.write(data, refs), z = s.write()
     data.set(y); data.set(z, y.length)
     return data
@@ -80,10 +86,39 @@ export default function debleed(data, ref, opts) {
   return writer(stream(data || {}, null, true))
 }
 
+// the bleed's lead: per source, the mic's cross-correlation with it over the whole take (frames of 4·span, zero-padded
+// twice: no beat of a periodic source wraps in) at lags 0 to the span; where its peak stands LEAD times over the median
+// at the lags past it (span to 2·span, where no path reaches), the first lag at half the peak, the direct sound or
+// before it. The earliest of the sources; 0 if none stands out
+function lead(y, refs, L) {
+  let H = 1; while (H < 4 * L) H <<= 1
+  let N = 2 * H, K = H + 1, w = Float64Array.from({ length: H }, (_, n) => Math.sin(Math.PI * (n + 0.5) / H) ** 2)
+  let t = new Float64Array(N), Sr = new Float64Array(K), Si = new Float64Array(K), best = Infinity
+  for (let x of refs) {
+    Sr.fill(0); Si.fill(0)
+    for (let a = -H / 2; a < y.length; a += H / 2) {
+      t.fill(0); for (let n = 0; n < H; n++) t[n] = (y[a + n] || 0) * w[n]
+      let [yr, yi] = fft(t).map(v => Float64Array.from(v))
+      t.fill(0); for (let n = 0; n < H; n++) t[n] = (x[a + n] || 0) * w[n]
+      let [xr, xi] = fft(t)
+      for (let k = 0; k < K; k++) { Sr[k] += yr[k] * xr[k] + yi[k] * xi[k]; Si[k] += yi[k] * xr[k] - yr[k] * xi[k] }
+    }
+    let r = ifft(Sr, Si), pk = 0, far = []
+    for (let n = 0; n <= L; n++) if (Math.abs(r[n]) > Math.abs(r[pk])) pk = n
+    for (let n = L + 1; n <= 2 * L; n++) far.push(Math.abs(r[n]))
+    far.sort((p, q) => p - q)
+    let floor = far[far.length >> 1]
+    if (!(floor > 0) || !(Math.abs(r[pk]) > LEAD * floor)) continue
+    let on = 0; while (Math.abs(r[on]) < Math.abs(r[pk]) / 2) on++
+    best = Math.min(best, on)
+  }
+  return best < Infinity ? best : 0
+}
+
 const writer = s => (chunk, ref) => chunk ? s.write(chunk, ref == null ? [] : Array.isArray(ref) ? ref : [ref]) : s.write()
 
 // blocks of B in, B out a block behind; the core made on the first block, with as many references as it brings
-function stream(o, learned, gated) {
+function stream(o, learned, gated, lag = 0) {
   let fs = o.fs || 44100, B = o.blockSize || block(fs), core = null
   let inM = new Float64Array(B), inR = [], fill = 0, total = 0, sent = 0
   let run = (m, refs, n) => {
@@ -94,7 +129,7 @@ function stream(o, learned, gated) {
       for (let c = 0; c < inR.length; c++) inR[c][fill] = refs[c]?.[i] ?? 0
       if (++fill === B) {
         fill = 0
-        core ??= canceller(o, fs, B, inR.length, learned, gated)
+        core ??= canceller(o, fs, B, inR.length, learned, gated, lag)
         let y = core.block(inM, inR)
         if (y) out.push(y)
       }
@@ -111,15 +146,16 @@ function stream(o, learned, gated) {
     state: () => core?.state()
   }
 }
+const parts = (o, fs, B) => Math.max(1, Math.ceil((o.span ?? SPAN) * fs / B))
 const concat = a => { let n = 0; for (let x of a) n += x.length; let y = new Float32Array(n), k = 0; for (let x of a) y.set(x, k), k += x.length; return y }
 const arr = (n, f) => Array.from({ length: n }, f)
 const zeros = n => new Float64Array(n)
 const copy = a => a.map(b => b.map(v => Float64Array.from(v)))
 
 // one block in (B samples of the mic, B of each reference), B out once the suppressor's frame is done (null before)
-function canceller(o, fs, B, C, learned, gated) {
-  let M = 2 * B, K = B + 1, P = Math.max(1, Math.ceil((o.span ?? SPAN) * fs / B))
-  let fwd = path(fs, B, P, C, learned, gated)
+function canceller(o, fs, B, C, learned, gated, lag) {
+  let M = 2 * B, K = B + 1, P = parts(o, fs, B)
+  let fwd = path(fs, B, P, C, learned, gated, lag)
   let yh = zeros(B), yo = zeros(B), ep = zeros(B), e = zeros(B), any = false, blocks = 0
   let t = zeros(M), sp = [zeros(K), zeros(K)], win = Float64Array.from({ length: M }, (_, n) => Math.sin(Math.PI * (n + 0.5) / M))
   let eb = zeros(M), ola = zeros(M), Gp = zeros(K).fill(1), Ep = zeros(K)
@@ -173,9 +209,11 @@ function canceller(o, fs, B, C, learned, gated) {
 // a room path from C sources to one mic: a partitioned-block Kalman filter over P partitions of B taps (overlap-save),
 // the prior's level per band learned by coherence, the sources' power past the span (the tail). `learned`: the state
 // a first pass ended with, its levels held
-function path(fs, B, P, C, learned, gated) {
+function path(fs, B, P, C, learned, gated, lag) {
   let M = 2 * B, K = B + 1, r = B / M
-  let rho = 10 ** (-6 * B / fs / RT), dp = Float64Array.from({ length: P }, (_, p) => rho ** p), A2 = A * A
+  // the prior's decay starts at the partition the bleed's lead falls in (less half a block); before it, EARLY
+  let rho = 10 ** (-6 * B / fs / RT), p0 = Math.min(P - 1, Math.floor(Math.max(0, lag - B / 2) / B))
+  let dp = Float64Array.from({ length: P }, (_, p) => p < p0 ? EARLY : rho ** (p - p0)), A2 = A * A
 
   // bands a quarter of their frequency wide (≥ 2 bins), each with its level: log-mean, weight, heard yet, statistics
   let bands = [], k0 = 1
@@ -202,6 +240,9 @@ function path(fs, B, P, C, learned, gated) {
   let Pr = zeros(K), Pi = zeros(K), Rm = zeros(K)
 
   let Yr = zeros(K), Yi = zeros(K), Er = zeros(K), Ei = zeros(K), Ps = zeros(K), Phi = zeros(K), R = zeros(K)
+  // the sources' power through the decay from now (Z0, a ring of the last p0 + 1 blocks of it), the power of the
+  // p0 blocks before the lead (Ze)
+  let Z0 = arr(p0 + 1, () => zeros(K)), z0 = 0, Ze = zeros(K)
   let Y0 = zeros(K), Z = zeros(K), t = zeros(M), sp = [zeros(K), zeros(K)], sy = [zeros(K), zeros(K)], sh = [zeros(K), zeros(K)]
   let at = (p) => (head - p + P) % P
 
@@ -266,8 +307,16 @@ function path(fs, B, P, C, learned, gated) {
     // the level per band: the mic's power coherent with the prediction `yh`, over the sources' power through the
     // decay, at most the mic's whole power over the sources' (the last HOLD s)
     learn(y, yh) {
-      // the sources' power through the decay, Σ_p ρ^p |X_{l−p}|², the span and the tail together
-      for (let k = 0; k < K; k++) { let v = 0; for (let c = 0; c < C; c++) v += Xr[c][head][k] ** 2 + Xi[c][head][k] ** 2; Z[k] = rho * Z[k] + v }
+      // the sources' power through the prior, Σ_p dp_p |X_{l−p}|², the span and the tail together: the decay's sum
+      // from p0 blocks ago, and EARLY × the power since
+      let zn = Z0[z0], zl = Z0[z0 = (z0 + 1) % (p0 + 1)], q0 = at(p0)
+      for (let k = 0; k < K; k++) {
+        let v = 0, u = 0
+        for (let c = 0; c < C; c++) { v += Xr[c][head][k] ** 2 + Xi[c][head][k] ** 2; if (p0) u += Xr[c][q0][k] ** 2 + Xi[c][q0][k] ** 2 }
+        zl[k] = rho * zn[k] + v
+        if (p0) Ze[k] = Math.max(0, Ze[k] + v - u)
+        Z[k] = Z0[(z0 + 1) % (p0 + 1)][k] + EARLY * Ze[k]
+      }
       front(y, sy); front(yh, sh)
       // the bound: the mic's power over the sources' through the decay, in the blocks they sound in (RISE over their
       // least: a track's own noise before it plays says nothing of the path)

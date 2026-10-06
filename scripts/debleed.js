@@ -1,6 +1,7 @@
 // Measure @audio/denoise-debleed on bleed made from real recordings. Run: `node scripts/debleed.js [tune|test]
-// [static|moving]` (default: test, both; about 20 minutes a half on one core). Prints the README's tables; writes the
-// speech outputs for `python scripts/debleed.py`, which scores them (PESQ, STOI).
+// [static|moving]` (default: test, both; about 20 minutes a half on one core; SYSTEMS=debleed,stream runs those
+// alone). Prints the README's tables; writes the speech outputs for `python scripts/debleed.py`, which scores them
+// (PESQ, STOI).
 //
 // The bleed: a wanted sound w and another source r, each at one active level (RMS over 50 ms frames within 30 dB of
 // the loudest), the mic hearing y = w + g·(h ∗ r) + its own noise (−65 dB), where h is a room response from the MIT
@@ -231,7 +232,7 @@ function kurtosis(b, r, fs) {   // ln(kurt(residual)/kurt(bleed)) of 1024-point 
 }
 
 // ---- run
-const conds = only ? [only] : ['static', 'moving'], OUT = path.join(CACHE, 'out', half)
+const conds = only ? [only] : ['static', 'moving'], OUT = path.join(CACHE, 'out', half), RUN = process.env.SYSTEMS?.split(',')
 const avg = a => a.reduce((s, v) => s + v, 0) / a.length, fmt = v => (v >= 0 ? ' ' : '') + v.toFixed(1)
 // SI-SDRs pooled: their distortion-to-signal ratios averaged, back in dB (∞: every take untouched)
 const pool = a => { let m = avg(a.map(v => 10 ** (-v / 10))); return m > 0 ? (-db(m)).toFixed(1) : '∞' }
@@ -241,7 +242,7 @@ for (let cond of conds) {
     let { t, b, x, fs } = bleed(it.src, cond === 'moving'), id = `${it.name}${it.gain}-${it.k}`
     let mp = t.map((v, i) => v + b[i]), mm = t.map((v, i) => v - b[i]), xn = x.map(v => -v)
     if (it.speech) { mkdirSync(path.join(OUT, cond, 'clean'), { recursive: true }); writeFileSync(path.join(OUT, cond, 'clean', id + '.f32'), t); mkdirSync(path.join(OUT, cond, 'input'), { recursive: true }); writeFileSync(path.join(OUT, cond, 'input', id + '.f32'), mp) }
-    for (let [sys, run] of Object.entries(SYSTEMS)) {
+    for (let [sys, run] of Object.entries(SYSTEMS).filter(([s]) => !RUN || RUN.includes(s))) {
       let yp = run(mp, x, fs), ym = run(mm, xn, fs), w = yp.map((v, i) => (v + ym[i]) / 2), r = yp.map((v, i) => (v - ym[i]) / 2)
       let eb = 0, er = 0; for (let i = 0; i < b.length; i++) eb += b[i] ** 2, er += r[i] ** 2
       let row = { removed: db(eb / er), kept: sisdr(t, w), bands: BANDS.map(([lo, hi]) => sisdr(band(t, fs, lo, hi), band(w, fs, lo, hi))), kurt: kurtosis(b, r, fs) }
@@ -262,7 +263,7 @@ for (let cond of conds) {
 
 // the wanted sound alone, the reference present but never heard; and no reference at all
 console.log('\nThe wanted sound alone, its reference present but never reaching the mic: the error added (dB), and with a silent reference\n')
-for (let sys of ['debleed', 'stream']) {
+for (let sys of ['debleed', 'stream'].filter(s => !RUN || RUN.includes(s))) {
   let e = [], exact = 0, n = 0
   for (let it of items().filter(i => i.gain === -18)) {
     let { t, x, fs } = bleed(it.src, false), y = SYSTEMS[sys](t, x, fs), s = 0, d = 0
