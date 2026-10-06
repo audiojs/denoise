@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "type": "module",
   "description": "Noise reduction — gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, deesser, dereverb",
   "sideEffects": false,
@@ -69,7 +69,7 @@
     "@audio/quality": "^1.0.0",
     "@audio/stft": "^2.0.0",
     "@audio/denoise-desilence": "^0.2.1",
-    "@audio/denoise-debleed": "^0.1.0",
+    "@audio/denoise-debleed": "^0.2.0",
     "@audio/denoise-dewow": "^0.3.0"
   },
   "devDependencies": {

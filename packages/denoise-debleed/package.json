@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-debleed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "De-bleed: a source's spill taken out of another microphone, given that source's own track. A Kalman filter cancels it through the room path it learns, a Wiener gain takes the residual it predicts",
   "type": "module",
   "sideEffects": false,
@@ -23,7 +23,6 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/noise-estimate": "^2.3.0",
     "fourier-transform": "^2.4.0"
   },
   "keywords": [

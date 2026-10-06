@@ -1534,7 +1534,7 @@ test('debleed: no reference, or a silent one: the sound comes back bit for bit',
 
 test('debleed: a co-talker bleeding through a room (−10 dB, 7 ms, turns): the bleed taken, the voice kept', () => {
   let sc = bleedScene(), y = debleedKernel(copy(sc.m), sc.x, { fs }), d = bleedGone(sc, y)
-  ok(d > 8, `batch: ${d.toFixed(1)} dB of the error to the voice gone`)
+  ok(d > 15, `batch: ${d.toFixed(1)} dB of the error to the voice gone`)
   let z = bleedStream(sc.m, sc.x, 1024), dz = bleedGone(sc, z)
   ok(dz > 4, `stream: ${dz.toFixed(1)} dB`)
   ok(y.every(Number.isFinite) && z.every(Number.isFinite), 'finite')
@@ -1542,6 +1542,50 @@ test('debleed: a co-talker bleeding through a room (−10 dB, 7 ms, turns): the 
   let e = 0, p = 0, v = debleedKernel(copy(sc.s), sc.x, { fs })
   for (let i = 0; i < v.length; i++) e += (v[i] - sc.s[i]) ** 2, p += sc.s[i] ** 2
   ok(10 * Math.log10(e / p) < -30, `no bleed: the voice changed by ${(10 * Math.log10(e / p)).toFixed(1)} dB`)
+})
+
+// a source through a 3-tap path into lena over 3 s, each run twice, the bleed inverted (Hagerman & Olofsson 2004):
+// → the bleed left from 1 s on (dB under the bleed), the voice's error (dB under the voice)
+function bleedSplit(kind, run) {
+  let n = 3 * fs, r = bleedLcg(3), x = new Float32Array(n), a = kind.endsWith('cohost') ? 0 : fs, s = lena.slice(a, a + n)
+  let hits = (step, len, f) => { for (let t = 0; t + 1 < n; t += step) for (let i = 0; i < len && t + i < n; i++) x[Math.round(t) + i] += f(i) }
+  let taps = kind === 'click' ? [[220, 3], [400, 1.2], [590, 0.5]] : kind === 'drums' ? [[130, 1.5], [400, 0.6], [1200, 0.2]] : [[265, 0.3], [400, 0.12], [590, 0.05]]
+  if (kind === 'click') hits(fs / 2, 400, i => 0.5 * Math.sin(2 * Math.PI * 1500 * i / fs) * Math.exp(-i / 80))
+  else if (kind === 'drums') hits(0.3 * fs, 6000, i => 0.3 * (r() * Math.exp(-i / 700) + Math.sin(2 * Math.PI * 55 * i / fs) * Math.exp(-i / 2000)))
+  else { x.set(lena.subarray(5 * fs, 5 * fs + n)); if (kind === 'rare cohost') for (let i = 0; i < n; i++) if (i % (2 * fs) > 0.6 * fs) x[i] = 0 }
+  let b = new Float32Array(n); for (let [d, g] of taps) for (let i = d; i < n; i++) b[i] += g * x[i - d]
+  let yp = run(s.map((v, i) => v + b[i]), x), ym = run(s.map((v, i) => v - b[i]), x.map(v => -v)), e0 = 0, e1 = 0, d = 0, p = 0
+  for (let i = 0; i < n; i++) { let left = (yp[i] - ym[i]) / 2, kept = (yp[i] + ym[i]) / 2; if (i >= fs) e0 += b[i] ** 2, e1 += left * left; d += (kept - s[i]) ** 2; p += s[i] ** 2 }
+  return [10 * Math.log10(e0 / e1), 10 * Math.log10(d / p)]
+}
+
+// 0.1.0 took 2.7 / 0.4 dB of the click (batch / stream), drums 11.4 / 8.4, a rare co-host 8.0 / 3.0, a constant one 8.3 / 3.8.
+// The stream cancels a band only once its evidence proves the path there: a talker under a louder voice takes it
+// seconds to prove, so it takes less of a co-host than the batch call does
+test('debleed: a click track (its path +10 dB), drum hits, a co-host rarely or always talking: the batch call cancels them, the voice kept', () => {
+  for (let [kind, least] of [['click', 10], ['drums', 10], ['rare cohost', 3], ['cohost', 3]]) {
+    let [bb, vb] = bleedSplit(kind, (m, x) => debleedKernel(m, x, { fs })), [bs, vs] = bleedSplit(kind, (m, x) => bleedStream(m, x, 1000))
+    ok(bb > 15 && bs > least, `${kind}: ${bb.toFixed(1)} dB of the bleed gone (batch), ${bs.toFixed(1)} (stream), from 1 s on`)
+    ok(vb < -18 && vs < -18, `${kind}: the voice's error ${vb.toFixed(1)} dB (batch), ${vs.toFixed(1)} (stream)`)
+  }
+})
+
+// the stream before its gate (0.2.0 in development) changed lena by −20.9 dB under a talker's track that never
+// reached the mic, −26.6 under a click track's, and a MUSDB18 vocal by +3.5 dB under its own song's "other" stem
+const MUSDB = path.join(os.homedir(), '.cache', 'audiojs', 'data', 'debleed', 'musdb')
+test('debleed: the stream leaves a voice alone when its reference never reached the mic', () => {
+  let n = 3 * fs, s = lena.slice(fs, fs + n), click = new Float32Array(n)
+  for (let t = 0; t < n; t += fs / 2) for (let i = 0; i < 400 && t + i < n; i++) click[t + i] = 0.5 * Math.sin(2 * Math.PI * 1500 * i / fs) * Math.exp(-i / 80)
+  let change = (v, y) => { let e = 0, p = 0; for (let i = 0; i < v.length; i++) e += (y[i] - v[i]) ** 2, p += v[i] ** 2; return 10 * Math.log10(e / p) }
+  let talk = change(s, bleedStream(s, lena.slice(5 * fs, 5 * fs + n), 1000)), tick = change(s, bleedStream(s, click, 1000))
+  ok(talk < -30 && tick < -30, `a talker's track: the voice changed by ${talk.toFixed(1)} dB, a click track's ${tick.toFixed(1)}`)
+})
+test('debleed: the stream on a MUSDB18 vocal, its song\'s "other" stem never heard: its first seconds left alone', { skip: !existsSync(path.join(MUSDB, 'test-10-vocals.f32')) }, () => {
+  let f32 = p => { let b = readFileSync(path.join(MUSDB, p)); return new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)) }
+  let n = 3 * 44100, r = bleedLcg(7), v = f32('test-10-vocals.f32').slice(0, n).map(u => u + 1e-4 * r()), x = f32('test-10-other.f32').slice(0, n).map(u => u + 1e-3 * r())
+  let y = bleedStream(v, x, 1000, { fs: 44100 }), e = 0, p = 0
+  for (let i = 0; i < n; i++) e += (y[i] - v[i]) ** 2, p += v[i] ** 2
+  ok(10 * Math.log10(e / p) < -30, `the vocal changed by ${(10 * Math.log10(e / p)).toFixed(1)} dB`)
 })
 
 test('debleed: two mics hearing each other (the wanted voice 10 dB down in the reference): the voice is not taken', () => {
@@ -1569,21 +1613,17 @@ test('debleed: chunking does not change the stream; edge cases', () => {
   ok(debleedKernel(hot, loud, { fs }).every(Number.isFinite), 'full-scale noise on both: finite')
 })
 
-test('debleed manifest: the kernel stream with the reference on bus 1, delayed by the declared latency, any block size', () => {
+test('debleed manifest: whole-render, the mic on bus 0 and the reference on bus 1: the kernel\'s batch call', () => {
   let sc = bleedScene(), x = sc.m.subarray(0, 2 * fs), k = sc.x.subarray(0, 2 * fs)
   let params = Object.fromEntries(Object.entries(debleedAtom.params).map(([n, s]) => [n, Float32Array.of(s.default)]))
-  let L = debleedAtom.latency({ sampleRate: fs, params }), ref = bleedStream(x, k, 1000, { fs, attenuation: params.attenuation[0], span: params.span[0] })
-  is(L, 2 * debleedBlock(fs) - 1, `latency ${L}`)
-  for (let block of [2048, 997, 128]) for (let key of [true, false]) {
-    let process = debleedAtom({ sampleRate: fs, maxBlockSize: block, maxChannels: 1, params }), out = new Float32Array(x.length)
-    for (let i = 0; i < x.length; i += block) {
-      let n = Math.min(block, x.length - i), o = new Float32Array(n)
-      process([[x.subarray(i, i + n)], key ? [k.subarray(i, i + n)] : undefined], [[o]], params); out.set(o, i)
-    }
-    let err = 0, want = key ? ref : x
-    for (let i = 0; i < L; i++) err = Math.max(err, Math.abs(out[i]))
-    for (let i = L; i < x.length; i++) err = Math.max(err, Math.abs(out[i] - want[i - L]))
-    ok(err === 0, `block ${block}, ${key ? 'with' : 'without'} a reference: max deviation ${err}`)
+  is(debleedAtom.streaming, false, 'streaming: false')
+  let want = debleedKernel(copy(x), k, { fs, attenuation: params.attenuation[0], span: params.span[0] })
+  for (let key of [true, false]) {
+    let process = debleedAtom({ sampleRate: fs, maxBlockSize: x.length, maxChannels: 2, params }), o = [new Float32Array(x.length), new Float32Array(x.length)], mic = [copy(x), copy(x)]
+    process([mic, key ? [k] : undefined], [o], params)
+    let err = 0, ref = key ? want : x
+    for (let c = 0; c < 2; c++) for (let i = 0; i < x.length; i++) err = Math.max(err, Math.abs(o[c][i] - ref[i]))
+    ok(err === 0 && mic[0].every((v, i) => v === x[i]), `${key ? 'with' : 'without'} a reference: max deviation ${err}, the input untouched`)
   }
   is([16000, 22050, 44100, 48000, 96000].map(debleedBlock).join(), '128,256,512,512,1024', 'block per rate')
 })

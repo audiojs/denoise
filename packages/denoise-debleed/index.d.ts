@@ -17,11 +17,13 @@ export interface DebleedOptions {
 /** A reference: one channel, or several (a stereo source) heard together. */
 export type DebleedReference = Float32Array | Float64Array | (Float32Array | Float64Array)[]
 
-/** Batch: takes the bleed of `ref` out of `data` in place and returns the same buffer. Two passes: the path's level
- *  learned over the whole take, then the removal. */
+/** Batch: takes the bleed of `ref` out of `data` in place and returns the same buffer. Two passes: the path learned
+ *  over the whole take, then the removal from where it ended. */
 export default function debleed<T extends Float32Array | Float64Array>(data: T, ref: DebleedReference, options?: DebleedOptions): T
 /** Stream: write(chunk, refChunk) returns the samples done so far (up to 2·blockSize − 1 behind the input), write()
- *  returns the rest. It learns the path's level as it goes, so its first seconds take less than the batch call. */
+ *  returns the rest. It cancels a band only once the evidence proves the path there, and passes it
+ *  untouched until then: it takes less than the batch call (most of all of a talker under a louder voice), and a source
+ *  that never reached the mic leaves the sound as it was. */
 export default function debleed(options?: DebleedOptions): (chunk?: Float32Array, ref?: DebleedReference | null) => Float32Array
 
 /** The filter's block at a rate: the power of two nearest 10.7 ms (512 at 44.1 and 48 kHz). */

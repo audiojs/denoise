@@ -21,12 +21,12 @@ export interface DebleedOptions {
 export declare const debleed: {
   (ctx: Ctx): Process
   channels: {"inputs":[2,2],"outputs":[2]}
-  latency: (ctx: { sampleRate: number, params: Live }) => number
+  streaming: false
   tail: 0
   params: {
     /** -40..0 dB (default -20) */
     "attenuation": { type: "number", default: -20 }
-    /** 0.05..1 s (default 0.3) [restart] */
+    /** 0.05..1 s (default 0.3) */
     "span": { type: "number", default: 0.3 }
   }
 }
