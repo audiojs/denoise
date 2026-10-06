@@ -75,19 +75,20 @@ test('omlsa with a profile: speech kept, SNR up; the held noise beats the tracke
 })
 
 test('omlsa: profileFrom/profileTo is noiseProfile of that stretch; processor under stftBatch is the batch form', () => {
-  let { y } = take(), N = frame(fs)
+  let { y } = take(), N = frame(fs, true), M = frame(fs)
   let profile = noiseProfile(y, { from: 4410, to: 40000, frameSize: N, hopSize: N / 4 })
   let a = omlsa(y, { fs, profile }), b = omlsa(y, { fs, profileFrom: 4410, profileTo: 40000 })
   ok(a.every((v, i) => v === b[i]), 'the same samples')
   let c = stftBatch(y, processor({ fs, profile }), { frameSize: N, hopSize: N / 4, fs })
   ok(c.every((v, i) => v === a[i]), 'processor: the same gain, frame by frame')
-  let t = stftBatch(y, processor({ fs }), { frameSize: N, hopSize: N / 4, fs }), u = omlsa(y, { fs })
+  let t = stftBatch(y, processor({ fs }), { frameSize: M, hopSize: M / 4, fs }), u = omlsa(y, { fs })
   ok(t.every((v, i) => v === u[i]), 'and tracked, without a profile')
-  throws(() => omlsa(y, { fs, profile: new Float64Array(10) }), /profile has 10 bins, a 1024 frame has 513/, 'a profile for another frame is refused')
+  throws(() => omlsa(y, { fs, profile: new Float64Array(10) }), /profile has 10 bins, a 2048 frame has 1025/, 'a profile for no frame is refused')
+  throws(() => omlsa(y, { fs, profile, frameSize: 512 }), /profile has \d+ bins, a 512 frame has 257/, 'a profile for another frame is refused')
 })
 
 test('omlsa with a profile: the stream form equals the batch under any chunking', () => {
-  let { y } = take(), N = frame(fs), profile = noiseProfile(y, { to: fs, frameSize: N, hopSize: N / 4 })
+  let { y } = take(), N = frame(fs, true), profile = noiseProfile(y, { to: fs, frameSize: N, hopSize: N / 4 })
   let batch = omlsa(y, { fs, profile }), write = omlsa({ fs, profile }), parts = []
   for (let i = 0; i < y.length; i += 777) parts.push(write(y.subarray(i, i + 777)))
   parts.push(write())
@@ -96,4 +97,30 @@ test('omlsa with a profile: the stream form equals the batch under any chunking'
   is(out.length, y.length, 'stream length')
   let md = 0; for (let i = 0; i < y.length; i++) md = Math.max(md, Math.abs(out[i] - batch[i]))
   ok(md < 1e-6, `stream ≡ batch (max deviation ${md.toExponential(1)})`)
+})
+
+test('omlsa with a profile at 44.1 kHz: a 2048 frame (46 ms), so held partials under steady noise are kept as at 48 kHz', () => {
+  is(frame(44100, true), 2048, 'held: the power of two at or above 32 ms')
+  is(frame(44100), 1024, 'tracked: the nearest')
+  is([16000, 22050, 48000].map(r => frame(r, true)).join(), '512,1024,2048', 'at the other rates')
+  // eighteen harmonics of 110 Hz, each 57 dB under full scale, from 2 s, in white noise 40 dB under; the noise learned
+  // from its first second alone. What the gain does to the partials and to the noise, read apart by the phase-inversion
+  // method (Hagerman & Olofsson 2004): the take with the noise added and with it subtracted, their half sum and difference
+  let n = 6 * fs, nz = gauss(n, 0.01, 3), s = new Float32Array(n)
+  for (let h = 1; h <= 18; h++) for (let i = 2 * fs; i < n; i++) s[i] += 0.002 * Math.sin(2 * Math.PI * 110 * h * i / fs + h)
+  let o = { fs, profileFrom: 0, profileTo: fs, gMin: -12 }, yp = omlsa(s.map((v, i) => v + nz[i]), o), ym = omlsa(s.map((v, i) => v - nz[i]), o)
+  let half = (f, a, b) => { let e = 0; for (let i = a; i < b; i++) e += f(i) ** 2; return e }
+  let kept = 10 * Math.log10(half(i => (yp[i] + ym[i]) / 2, 3 * fs, n) / half(i => s[i], 3 * fs, n))
+  let down = 10 * Math.log10(half(i => nz[i], 0.2 * fs, 1.8 * fs) / half(i => (yp[i] - ym[i]) / 2, 0.2 * fs, 1.8 * fs))
+  ok(kept > -3, `partials kept: ${kept.toFixed(2)} dB (a 1024 frame: −4.2)`)
+  ok(Math.abs(down - 12) < 0.3, `the noise alone ${down.toFixed(2)} dB down`)
+})
+
+test('omlsa: threshold reads the noise louder, a held profile raised by it, the tracked estimate with it', () => {
+  let { y } = take(0.02), N = frame(fs, true), profile = noiseProfile(y, { to: fs, frameSize: N, hopSize: N / 4 })
+  let a = omlsa(y, { fs, profile, threshold: 6 }), b = omlsa(y, { fs, profile: profile.map(v => v * 10 ** 0.6) })
+  ok(a.every((v, i) => v === b[i]), 'held: the profile 6 dB up')
+  let t0 = omlsa(y, { fs }), t6 = omlsa(y, { fs, threshold: 6 }), lv = z => 10 * Math.log10(pw(z, fs) / pw(y, fs))
+  ok(lv(t6) < lv(t0) - 0.1, `tracked: what passes ${lv(t0).toFixed(1)} → ${lv(t6).toFixed(1)} dB re the input: more counted as noise`)
+  ok(omlsa(y, { fs, threshold: 0 }).every((v, i) => v === t0[i]), 'threshold 0: as without')
 })

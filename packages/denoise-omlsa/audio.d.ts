@@ -18,6 +18,8 @@ export interface OmlsaOptions {
   "gMin"?: Auto
   /** -30..0 dB (default -25) */
   "xiFloor"?: Auto
+  /** -10..20 dB (default 0) */
+  "threshold"?: Auto
   at?: number | string
   duration?: number | string
 }
@@ -36,5 +38,7 @@ export declare const omlsa: {
     "gMin": { type: "number", default: -15 }
     /** -30..0 dB (default -25) [restart] */
     "xiFloor": { type: "number", default: -25 }
+    /** -10..20 dB (default 0) [restart] */
+    "threshold": { type: "number", default: 0 }
   }
 }

@@ -41,6 +41,7 @@ export const omlsa = (ctx) => {
 				xiMin: 10 ** (ctx.params.xiFloor[0] / 10),
 				qPrior: ctx.params.qPrior[0],
 				gMin: ctx.params.gMin[0],
+				threshold: ctx.params.threshold[0],
 				frameSize: N, hopSize: N >> 2, fs: ctx.sampleRate
 			}),
 			fifo: makeFifo(N - 1)
@@ -64,4 +65,5 @@ omlsa.params = {
 	qPrior:  { type: 'number', min: 0, max: 0.95, default: 0, flags: ['restart'] },       // a-priori speech absence; 0: estimated
 	gMin:    { type: 'number', min: -40, max: 0, default: -15, unit: 'dB', flags: ['restart'] },
 	xiFloor: { type: 'number', min: -30, max: 0, default: -25, unit: 'dB', flags: ['restart'] },
+	threshold: { type: 'number', min: -10, max: 20, default: 0, unit: 'dB', flags: ['restart'] },   // the noise read this much louder
 }

@@ -31,7 +31,7 @@
 // values out over in (Uemura et al., IWAENC 2008; 0 when the noise is only scaled, above where isolated peaks survive),
 // 94 Hz–7.9 kHz, at G_min −12 and −20 dB, on pink noise 20 dB under each music track: 1 s of it alone (the print),
 // 10 s of the music over it (from 5 s in), 2 s of it alone; over the half second after the music stops and the last
-// second.
+// second. At 44.1 kHz the held noise's frame is 2048 (omlsa's `frame(fs, true)`), the tracking systems' 1024.
 
 import { readFileSync, readdirSync } from 'fs'
 import { homedir } from 'os'
@@ -133,7 +133,7 @@ const clean = ({ x, fs }, sec = Infinity) => ({ s: x.subarray(0, Math.min(x.leng
 function measure(name, make, takes) {
   let all = {}
   for (let { s, n, fs, lead: ld } of takes()) {
-    let y = n ? s.map((v, i) => v + n[i]) : s, N = frame(fs), o = { fs, frameSize: N, hopSize: N >> 2 }, t = {}
+    let y = n ? s.map((v, i) => v + n[i]) : s, N = frame(fs, name === 'omlsa learned'), o = { fs, frameSize: N, hopSize: N >> 2 }, t = {}
     if (name === 'omlsa learned') o.profile = noiseProfile(y, { from: 0, to: Math.round(ld * fs), frameSize: N, hopSize: N >> 2 })
     tally(t, shadow(make(o), y, s, n, fs))
     for (let [k, [a, b]] of Object.entries(t)) if (b > 0 && a > 0 || k === 'cut' && b > 0) (all[k] ??= []).push(k === 'cut' ? 100 * a / b : db(b / a))
@@ -158,7 +158,7 @@ const kurt = (x, y, a, b, fs, N) => {
   return Math.log(st(y) / st(x))
 }
 let after = (p, gMin) => {
-  let fs = 44100, N = frame(fs), r = [0, 0], names = ['brahms', 'nutcracker', 'trumpet', 'vibeace']
+  let fs = 44100, N = frame(fs, true), r = [0, 0], names = ['brahms', 'nutcracker', 'trumpet', 'vibeace']
   for (let [i, name] of names.entries()) {
     let m = f32(`${D}/repair/${name}.f32`).subarray(5 * fs, 15 * fs), s = new Float32Array(13 * fs); s.set(m, fs)
     let n = pink(s.length, 3 + i), g = Math.sqrt(asl(m, fs) / n.reduce((a, v) => a + v * v / n.length, 0) / 100), y = s.map((v, j) => v + g * n[j])

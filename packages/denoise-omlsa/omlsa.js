@@ -70,14 +70,24 @@ const writer = s => chunk => chunk ? s.write(chunk) : s.flush()
 const db2lin = db => Math.pow(10, db / 20)
 const REF_DT = 128 / 16000
 
-// The analysis frame: the power of two nearest 32 ms, the 2001 paper's (Table 1: 512 samples at 16 kHz), as omlsa.m
-// picks it at other rates: 512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48. The hop is a quarter frame (Table 1's
-// 75 % overlap).
-export const frame = fs => 2 ** Math.round(Math.log2(0.032 * fs))
+// The analysis frame. Tracking the noise, the power of two nearest 32 ms, the 2001 paper's (Table 1: 512 samples at
+// 16 kHz), as omlsa.m picks it at other rates: 512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48. On a held noise
+// (`held`: a profile, or a noise-only stretch to learn it from), the power of two at or above 32 ms: 512 at 16 kHz,
+// 1024 at 22.05, 2048 at 44.1 and 48. Nothing is tracked there, so the frame's length goes to frequency resolution,
+// 21.5 Hz bins at 44.1 kHz where the nearest power of two left 43 Hz, half what 48 kHz gets: two partials closer than
+// a bin, or one under steady noise, were cut with the noise between them. Music under steady noise at 44.1 kHz
+// (MUSDB18 training mixtures, audio's bench/rx/denoise.mjs): SDR 20.2 → 21.3 dB, music cut by more than 3 dB 2.4 →
+// 1.2 % (the test mixtures, once: 20.16 → 20.94 dB, 2.2 → 1.3 %); VoiceBank training speech at 44.1 kHz, its lead-in
+// learned: PESQ 1.875 → 1.872, STOI 0.830 → 0.835, OVRL 2.549 → 2.574. Tracking, the shorter frame stays: 2048 at
+// 44.1 kHz lost PESQ 0.053 on the same speech. The hop is a quarter frame (Table 1's 75 % overlap).
+export const frame = (fs, held) => 2 ** (held ? Math.ceil(Math.log2(fs * 32 / 1000)) : Math.round(Math.log2(0.032 * fs)))
 
-// frame, hop and rate an option set resolves to (the manifest, stream and batch forms agree)
+// frame, hop and rate an option set resolves to (the manifest, stream and batch forms agree); a profile of K bins without
+// a frameSize brings its own frame, 2(K − 1), where that is a power of two
 function framing(opts) {
-  let fs = opts.fs || 44100, N = opts.frameSize || frame(fs)
+  let held = !!opts.profile || opts.noiseFrames != null || opts.profileFrom != null || opts.profileTo != null
+  let K = opts.profile?.length, own = K > 2 && ((K - 1) & (K - 2)) === 0 ? 2 * (K - 1) : 0
+  let fs = opts.fs || 44100, N = opts.frameSize || own || frame(fs, held)
   return { ...opts, fs, frameSize: N, hopSize: opts.hopSize || N >> 2 }
 }
 
@@ -223,7 +233,14 @@ function makeProcess(opts) {
   let gMin = db2lin(opts.gMinDb ?? opts.gMin ?? -15) // `gMinDb` = documented name
   let qFixed = opts.qPrior || null                  // a fixed a priori speech absence; omitted (or 0): estimated
   if (held && opts.profile.length !== K) throw new RangeError(`omlsa: profile has ${opts.profile.length} bins, a ${N} frame has ${K}`)
-  let est = held ? known(opts.profile, { fs, hop, alphaDD, xiMin }) : imcra(half, { fs, hop, alphaDD, xiMin, partials: true, ...opts.estimator })
+  // `threshold` dB: the noise read that much louder (RX's Threshold), more of what is quiet counted as noise: a held
+  // profile raised by it, the tracked estimate's bias factor β (IMCRA's 1.47, Cohen 2003 eq. 12) multiplied by it.
+  // Tracking, +4 dB was the best PESQ on the VoiceBank+DEMAND training speech (2 to 10 dB; 1.823 → 1.858, STOI 0.834 →
+  // 0.822) and on the test set took PESQ 2.361 → 2.472, OVRL 2.854 → 2.905; it stays 0: clean music tracked lost
+  // 60 % of its time-frequency energy by more than 3 dB, not 42 %.
+  let thr = 10 ** ((opts.threshold ?? 0) / 10)
+  let est = held ? known(thr === 1 ? opts.profile : Float64Array.from(opts.profile, v => v * thr), { fs, hop, alphaDD, xiMin })
+    : imcra(half, { fs, hop, alphaDD, xiMin, partials: true, ...opts.estimator, ...thr !== 1 && { beta: (opts.estimator?.beta ?? 1.47) * thr } })
   // q from the cepstro-temporally smoothed a priori SNR, or (qFrom 'dd') from the decision-directed one, as the paper
   let snr = opts.qFrom === 'dd' ? null : cepstral(N, fs, hop, xiMin)
   let spp = held ? presence(N, fs) : null
