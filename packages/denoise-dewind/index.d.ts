@@ -1,7 +1,7 @@
 /** Spectral de-wind: under `cutoff`, each STFT bin weighed against a wind spectrum read from the frame (the floor
  *  between the harmonics), while aperiodic low end outweighs the mid band; the sound passes untouched otherwise. */
 export interface DewindOptions {
-  /** top of the band wind is taken from (Hz), default 1500; read every frame, so it can change while streaming */
+  /** top of the band wind is taken from (Hz), default 8000; read every frame, so it can change while streaming */
   cutoff?: number
   /** the most a bin is turned down (dB, ≤ 0), default -20; 0 takes nothing; read every frame */
   attenuation?: number

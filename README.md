@@ -14,13 +14,14 @@ Single-pass noise reduction. 13 specialised methods + an auto-classifier.
 | [omlsa](#omlsa) | freq | broadband non-stationary | ★★★★ | high | speech in changing noise |
 | [declick](#declick) | time | impulses | ★★★★ | medium | vinyl ticks, edit clicks, mouth clicks |
 | [decrackle](#decrackle) | time | dense impulses | ★★★ | medium | shellac crackle |
-| [declip](#declip) | time | hard clipping | ★★★★ | medium | clipped recordings, rails found by itself |
+| [declip](#declip) | time + freq | hard clipping | ★★★★ | high | clipped speech and music, rails found by itself |
 | [dewind](#dewind) | freq | wind, LF rumble | ★★★ | medium | wind under a voice, its harmonics kept |
 | [deplosive](#deplosive) | time | LF bursts | ★★★ | low | mic plosives (p, b) |
 | [deesser](#deesser) | time | sibilance | ★★★★ | low | voice (s, sh) |
 | [debreath](#debreath) | time | inter-word noise | ★★★ | low | breath / hiss in pauses |
 | [desilence](#desilence) | time | pauses | ★★★ | low | remove / shorten / trim silence, split by pause |
 | [dereverb](#dereverb) | freq | late reverb | ★★★ | high | speech in a room |
+| [debleed](#debleed) | freq | bleed of a source with its own track | ★★★ | high | click track, amp or co-host in a mic |
 | [dewow](#dewow) | time + freq | pitch drift | ★★★ | medium | disc wow (33⅓ / 45 / 78 rpm) in music; tape by its pilot tone |
 
 For broader DSP needs use [stretch](https://github.com/audiojs/stretch), [shift](https://github.com/audiojs/shift), [pitch](https://github.com/audiojs/pitch), [beat](https://github.com/audiojs/beat).
@@ -72,31 +73,71 @@ classify(data, fs)                                             // → { method, 
 1. **hum → `dehum`**: dehum's own measurement finds a mains series, and the lines it finds, A-weighted (IEC 61672-1), lie within 50 dB of the program's A-weighted level. A lone 60 Hz line 30 dB under a voice is there, and the ear hears 60 Hz 26 dB less than 1 kHz.
 2. **clicks → `declick`**: over 1 a second (`CLICK_RATE`) of impulses standing 32× out of the AR(30) error's local scale (the median of its 1.5 ms block RMS over ±12 ms, as declick judges), alone: no like of half its size 2.5–40 ms either side (a voice's pulses, creak down to 25 Hz), and no sound 10 dB louder after it than before (a plosive's burst, a note's attack).
 3. **sibilance → `deesser`**: 5–9 kHz over 0.2–2 kHz power over 8.
-4. **wind → `dewind`**: in over a tenth of the 0.15 s blocks, the low end (< 200 Hz) within 20 dB of the program, 6 dB over the 300–2000 Hz band, and without lines. Wind is turbulence at the microphone, without a period (Nelke & Vary, IWAENC 2014); a bass line or a voice's low end repeats at its pitch.
-5. **noise bed → `wiener` or `omlsa`**: a floor within 25 dB of the program (`BED_SNR`; the program: frames within 40 dB of the loudest), shown in its *pauses* (runs of 0.15 s or more within 6 dB of the frame level's 10th percentile, flat and without lines in the bands from 300 Hz; the bed: their median level) or in *steady bands* (a band whose quieter half varies no more than twice what Gaussian noise over its bins would, without lines). A line is a band's fine structure (log power less its ±4-bin mean) correlated with the frame N back, which shares no sample: a partial holds its bins, noise draws them anew. Steady bands → `wiener`; a bed seen in the pauses alone wanders → `omlsa`.
+4. **noise bed → `omlsa`**: a floor within 25 dB of the program (`BED_SNR`; the program: frames within 40 dB of the loudest), shown in its *pauses* or in *steady bands*. The pauses are runs of 0.15 s or more within 6 dB of the frame level's 10th percentile that hold noise or hold the floor; the bed is their median level. *Noise*: flat and without lines in the bands from 300 Hz. *The floor*: a bed lies under the program all the time, so in each band the pauses sit where the band sinks to over the whole take (its 5th percentile), no further over it than Gaussian noise's own spread puts them (1.645 · 4.34/√(n/1.5) dB over n bins) plus 3 dB for the bed's slow wander (the bands' median), and they hold no partials that come and go (median persistence under 0.1; babble reads 0.04–0.08). A line held through every pause and across the notes, an engine's, a fan's, a mains-like tone, is part of the floor; a quiet passage of music isn't: its notes come and go, and its pauses stand over the floors other passages sink to. *Steady bands*: a band whose quieter half varies no more than twice what Gaussian noise over its bins would, without lines. A line is a band's fine structure (log power less its ±4-bin mean) correlated with the frame N back, which shares no sample: a partial holds its bins, noise draws them anew.
+5. **wind → `dewind`**: in over a tenth of the 0.15 s blocks, the low end (< 200 Hz) within 20 dB of the program, 6 dB over the 300–2000 Hz band, and without lines, where no bed shows. Wind is turbulence at the microphone, without a period (Nelke & Vary, IWAENC 2014); a bass line or a voice's low end repeats at its pitch.
 6. otherwise **`none`**.
 
-0.3 had no `none`: every recording went somewhere. Its floor statistic (the spread of a rolling-minimum frame energy) read a program's own dynamics as a wandering noise bed, so clean speech and music went to `omlsa`; a bass-heavy mix went to `dewind` (low over mid power above 3); clean VoiceBank went to `declick`, its impulse count firing on lip smacks and plosive bursts. A blind SNR estimate can't stand in for the bed, each assuming a speech-like program: on the training material below, clean music read (median) 5.4 dB by WADA-SNR (Kim & Stern, Interspeech 2008), 15.4 dB by a NIST STNR-like frame histogram and 7.0 dB by minimum statistics (Martin 2001), under the noisy VoiceBank takes' 13.2, 22.3 and 13.0. A bed has to show itself as noise, where the program pauses or never reaches.
+Every bed goes to `omlsa`, and a bed outranks wind, by what each reducer made of the noisy speech the router sends them (`node scripts/detect.js tune reduce`, `python scripts/detect.py score tune`; PESQ wideband, STOI, DNSMOS SIG at 16 kHz as `scripts/speech.py` scores):
 
-`node scripts/detect.js tune|test` routes labelled material and prints what each class went to (sources and mixtures in the script); the share routed right, 0.3.2 → 0.4.0, thresholds chosen on `tune` (VoiceBank+DEMAND's training subset, Spoken Wikipedia narrations, repair/ music, VocalSet singers m1 f2 m2 f1, even Slakh mixes, MUSDB18 train), `test` run once (the VoiceBank+DEMAND test set, ten other narrations, other singers and tracks):
+| noise (takes) | PESQ: noisy · `wiener` · `omlsa` · `dewind` | STOI, the same | SIG, the same |
+|---|---|---|---|
+| VoiceBank+DEMAND, its ten training noises (504) | 1.47 · 1.84 · 1.83 · 1.68 | 0.841 · 0.833 · 0.842 · 0.828 | 3.00 · 3.18 · 3.18 · 2.98 |
+| of them car (43) | 2.43 · 3.27 · 3.32 · 3.06 | 0.959 · 0.954 · 0.961 · 0.949 | 3.49 · 3.50 · 3.50 · 3.45 |
+| DEMAND washing machine, field, park, river, hallway (126) | 1.77 · 2.25 · 2.26 · 1.98 | 0.883 · 0.879 · 0.887 · 0.870 | 3.28 · 3.42 · 3.43 · 3.27 |
+| white, pink noise 0–20 dB (168) | 1.42 · 1.86 · 1.85 · 1.62 | 0.809 · 0.811 · 0.820 · 0.787 | 3.20 · 3.33 · 3.32 · 3.15 |
+| six-talker babble 0–20 dB (84) | 1.53 · 1.57 · 1.57 · 1.55 | 0.761 · 0.753 · 0.756 · 0.752 | 2.78 · 2.94 · 2.93 · 2.76 |
+| recorded and generated wind 0, 10 dB (84) | 1.51 · 1.99 · 1.98 · 2.07 | 0.891 · 0.889 · 0.896 · 0.886 | 3.34 · 3.35 · 3.32 · 3.26 |
+| synthetic wind gusts 0, 10 dB (28) | 1.48 · 1.52 · 1.56 · 1.88 | 0.871 · 0.867 · 0.870 · 0.874 | 3.22 · 3.17 · 3.10 · 3.20 |
+
+Over all 994 takes `omlsa` kept STOI 0.007 over `wiener`'s (paired, ±0.001 at 95%; on each noise but six-talker babble and the synthetic gusts, its interval clear of 0) at the same PESQ (−0.001 ± 0.006) and SIG (−0.008 ± 0.012); `wiener`'s edge, BAK and OVRL on stationary noise (white, pink, speech-shaped: OVRL 0.02–0.09), lies in the noise left, not the speech. 0.4 sent a bed seen in steady bands to `wiener`. A steady low rumble is a bed: on a car, traffic, a metro, a field, a park `omlsa` took it 0.1–0.3 PESQ and 0.01–0.02 STOI over `dewind`, where 0.4 sent it, wind outranking the bed. Recorded and generated wind split them: `dewind` leads PESQ by 0.09, `omlsa` STOI by 0.010 and SIG by 0.06; synthetic gusts with calms between are `dewind`'s, and still go to it where their calms show no bed, about half (the `+ wind gusts` rows below). Run once on `test`'s 1628 takes (`score test`): STOI +0.008 ± 0.000 again, PESQ −0.006 ± 0.005 and SIG −0.010 ± 0.008 (on VoiceBank+DEMAND's test noises +0.002 and −0.013; `dewind` there 2.25 to `omlsa`'s 2.36), recorded wind as on `tune` (`dewind` PESQ 1.93, `omlsa` 1.74; STOI 0.885 and 0.902, SIG 3.14 and 3.24).
+
+0.3 had no `none`: every recording went somewhere. Its floor statistic (the spread of a rolling-minimum frame energy) read a program's own dynamics as a wandering noise bed, so clean speech and music went to `omlsa`; a bass-heavy mix went to `dewind` (low over mid power above 3); clean VoiceBank went to `declick`, its impulse count firing on lip smacks and plosive bursts. A blind SNR estimate can't stand in for the bed, each assuming a speech-like program: on the training material below, clean music read (median) 5.4 dB by WADA-SNR (Kim & Stern, Interspeech 2008), 15.4 dB by a NIST STNR-like frame histogram and 7.0 dB by minimum statistics (Martin 2001), under the noisy VoiceBank takes' 13.2, 22.3 and 13.0. A bed has to show itself, where the program pauses or never reaches.
+
+`node scripts/detect.js tune|test` routes labelled material and prints what each class went to (sources and mixtures in the script); the share routed right, 0.4.1 → 0.5.0, thresholds chosen on `tune` (VoiceBank+DEMAND's training subset, DEMAND's washing machine, field, park, river and hallway in the first half of each recording, Spoken Wikipedia narrations, repair/ music, VocalSet singers m1 f2 m2 f1, even Slakh mixes, MUSDB18 train, `scripts/wind.py`'s tune half), `test` run once (the VoiceBank+DEMAND test set, the second half of each DEMAND recording, ten other narrations, other singers, tracks and winds):
 
 | material | wanted | tune | test |
 |---|---|---:|---:|
-| clean speech, VoiceBank (84 · 138) | `none` | 0 → 93% | 0 → 96% |
-| narrations (20 · 20) | `none` | 0 → 90% | 0 → 85% |
-| clean music (62 · 56) | `none` | 0 → 98% | 0 → 93% |
-| VoiceBank+DEMAND noisy (84 · 138) | a reducer | 86 → 73% | 92 → 57% |
-| speech + white, pink noise 0–20 dB under | a reducer | 100 → 95% | 99 → 100% |
-| speech + babble 0–20 dB under | a reducer | 88 → 76% | 83 → 80% |
-| music + white noise 10–20 dB under | a reducer | 97 → 92% | 100 → 89% |
-| music + pink noise 10–20 dB under | a reducer | 97 → 68% | 100 → 68% |
-| speech, music + mains hum 20 dB under | `dehum` | 57 → 83% | 69 → 81% |
-| speech, music + clicks at 5× | `declick` | 100 → 94% | 99 → 90% |
-| speech + wind gusts 0–10 dB under | `dewind` | 4 → 93% | 0 → 89% |
-| music + wind gusts 0–10 dB under | `dewind` | 17 → 38% | 24 → 50% |
-| all scored | | 66.4 → 84.6% | 68.8 → 84.9% |
+| clean speech, VoiceBank (504 · 824) | `none` | 97 → 97% | 95 → 95% |
+| narrations (20 · 20) | `none` | 90 → 90% | 85 → 85% |
+| clean music (62 · 56) | `none` | 98 → 97% | 93 → 91% |
+| VoiceBank+DEMAND noisy (504 · 824) | a reducer | 75 → 91% | 59 → 76% |
+| speech + DEMAND 2.5–17.5 dB under (126 · 206) | a reducer | 55 → 79% | 63 → 78% |
+| speech + white, pink noise 0–20 dB under | a reducer | 95 → 96% | 100 → 100% |
+| speech + babble 0–20 dB under | a reducer | 76 → 79% | 80 → 80% |
+| music + white noise 10–20 dB under | a reducer | 92 → 92% | 89 → 89% |
+| music + pink noise 10–20 dB under | a reducer | 68 → 73% | 68 → 70% |
+| music + DEMAND 10, 20 dB under (124 · 112) | a reducer | 27 → 34% | 28 → 32% |
+| speech + recorded wind 0, 10 dB under (84 · 138) | `dewind` or a reducer | 92 → 92% | 91 → 91% |
+| speech, music + mains hum 20 dB under | `dehum` | 83 → 83% | 81 → 81% |
+| speech, music + clicks at 5× | `declick` | 94 → 94% | 90 → 90% |
+| speech + wind gusts 0–10 dB under | `dewind` | 93 → 64% | 89 → 54% |
+| music + wind gusts 0–10 dB under | `dewind` | 38 → 33% | 50 → 45% |
+| all scored | | 80.3 → 86.0% | 77.8 → 83.5% |
 
-Material with nothing to remove (tune 166, test 214): 0.3.2 processed all of it (median error −22.7 and −26.0 dB re the input); now 157 and 202 come back untouched. Of the 9 tune items processed, 5 VoiceBank takes go to `declick`, and they hold lip smacks 32–124× out of the error; a VoiceBank take and a metal track to `dehum`, each with a 50 Hz line 4–8 dB under its mean power; both excerpts of one narration to `omlsa`, its floor 21–23 dB under the voice, as audio-lena's is (22 dB). On test: `declick` 5, `omlsa` 2, `wiener` 2, `dewind` 2, `dehum` 1. Missed: noise holding a line through the pauses (an engine, a fan) unless it is steady elsewhere, so most of the test set's bus noise, and its office and living-room noise at 12.5–17.5 dB, stay; pink noise under a dense mix, masked where its power lies; a steady low rumble (traffic, a car) goes to `dewind` where its low end outweighs the mid band. ~10–17 ms per second of sound.
+Per noise, the noisy speech routed to a reducer (VoiceBank+DEMAND's training and test sets hold different noises):
+
+| tune | | test | |
+|---|---:|---|---:|
+| babble | 79 → 80% | bus | 38 → 55% |
+| cafeteria | 64 → 81% | cafe | 86 → 95% |
+| car | 33 → 77% | living room | 64 → 92% |
+| kitchen | 90 → 98% | office | 46 → 51% |
+| meeting | 71 → 91% | public square | 60 → 90% |
+| metro | 55 → 92% | | |
+| restaurant | 95 → 100% | | |
+| speech-shaped | 100 → 100% | | |
+| station | 98 → 98% | | |
+| traffic | 58 → 100% | | |
+
+| DEMAND under speech | tune | test |
+|---|---:|---:|
+| washing machine | 15 → 15% | 21 → 21% |
+| field | 24 → 100% | 29 → 71% |
+| park | 84 → 96% | 83 → 100% |
+| river | 100 → 100% | 100 → 100% |
+| hallway | 52 → 84% | 80 → 100% |
+
+Material with nothing to remove (tune 586, test 900): 565 and 854 come back untouched (0.4.1: 566, 855). Most of the rest goes to `declick` on VoiceBank's lip smacks (14 and 37 takes, 32–124× out of the error); to `omlsa` (5 and 6): three VoiceBank takes and one narration in each set whose floor reads 8–25 dB under the voice (audio-lena's: 22 dB), a GuitarSet mic take and a VocalSet one 19–25 dB over theirs, two MUSDB18 mixes (`wiener`'s in 0.4.1). Missed: a bed further under the program than `BED_SNR`, where VoiceBank's own clean takes sit (their room 28–41 dB under): DEMAND's bus and office noise holds its power under 63 Hz, so the test set's bus and office takes at 12.5 and 17.5 dB read 26–33 dB in the pauses, as do the training set's car at 15 dB, and the washing machine's drum at 16 Hz leaves almost nothing above; babble and cafeteria that wander more than 3 dB pause to pause; a bed under a dense mix, masked where its power lies. ~10–18 ms per second of sound.
 
 dereverb has no reliable single-pass signature, so auto-mode never selects it — reach it explicitly via `denoise(data, { force: 'dereverb' })` or `dereverb()`.
 
@@ -121,7 +162,7 @@ measure(data, fs)                                              // → { f0, harm
 
 The measurement is one Fourier transform over the signal (its first 80–90 s, taken down to 3 kHz), where a hum line, steady for minutes, gathers into a peak 1/T wide while speech spreads. Hum is there when the fundamental stands out by 20 dB over the median of the ±8 Hz around it, or two of the first six harmonics by 15 dB (searched within ±0.4 %, the mains tolerance), each 6 dB over any other peak within 3 Hz, all of them harmonics of one fundamental (p<sub>h</sub>/h within 0.01 Hz). A bar of music repeated exactly is a comb of lines 1/bar apart (every 2 Hz at 120 bpm), lines at 50 and 60 Hz among them: none stands alone. On 164 music clips (MUSDB18 excerpts, BabySlakh) this finds hum in one, which has it (0.2.0: in 19); on 504 clean and 504 noisy VoiceBank training utterances, in one, a steady 49.86 Hz tone at the speech's level; with hum 20 dB under the speech, in 95 % (50 Hz) and 92 % (60 Hz) of them, as before.
 
-Then the signal is cut into Hann frames four mains cycles long, two apart, and each harmonic's phasor taken per frame; the window's zeros fall on the other harmonics. Each harmonic's phasors are fitted over 2 s by weighted local-linear least squares (normalized convolution, Knutsson & Westin 1993), each frame weighted by the inverse of the program's power around the line there, so a passing voice or note is bridged from the frames around it rather than averaged in. The mains phase is tracked from the fitted phasors' turn, harmonics combined by h²·SNR (Hajj-Ahmad, Garg & Wu 2013) over 8 s, and the sinusoids are subtracted along it (harmonic subtraction, as power-line interference is taken out of ECG: Levkov et al. 2005). A cut in the recording jumps the hum's phase: within a second of it the fit blends the two phases and takes the hum ~10 dB down, not ~40. A note within ~0.5 Hz of a line for seconds is taken for hum. Whole clip (`streaming: false`), a second at least to measure; shorter, it removes the harmonics of a given `freq` as told and passes the audio through without one.
+Then the signal is cut into Hann frames four mains cycles long, two apart, and each harmonic's phasor taken per frame; the window's zeros fall on the other harmonics. Each harmonic's phasors are fitted over 2 s by weighted local-linear least squares (normalized convolution, Knutsson & Westin 1993), each frame weighted by the inverse of the program's power around the line there, so a passing voice or note is bridged from the frames around it rather than averaged in. The mains phase is tracked from the fitted phasors' turn, harmonics combined by h²·SNR (Hajj-Ahmad, Garg & Wu 2013) over 8 s, and the sinusoids are subtracted along it (harmonic subtraction, as power-line interference is taken out of ECG: Levkov et al. 2005). A cut in the recording jumps the hum's phase: within a second of it the fit blends the two phases and takes the hum ~10 dB down, not ~40. Cuts also spread the hum's line in the measurement, which can then read the frequency a tenth of a hertz off (h times that at harmonic h, enough to turn the upper harmonics against their frames); where the tracked phase turns on average by more than 0.01 Hz, the frequency is moved by that turn and the hum estimated again, up to four times, so away from the cuts an edited take loses its hum as an unedited one does. A note within ~0.5 Hz of a line for seconds is taken for hum. Whole clip (`streaming: false`), a second at least to measure; shorter, it removes the harmonics of a given `freq` as told and passes the audio through without one.
 
 Measured by `node scripts/dehum.js`: the hum (12 harmonics at −6 dB per octave, levels drifting ±10 %, f0 0.05 Hz off nominal and wandering) and the program told apart by phase inversion (Hagerman & Olofsson 2004). 50 Hz hum 20 dB under the program, wandering ±0.02 Hz; program SDR per band where the band holds 1 % of the program:
 
@@ -138,12 +179,23 @@ Hum down / program SDR, dB:
 
 | material | 60 Hz | 50 Hz, ±0.05 Hz | 50 Hz, 30 dB under |
 |---|---|---|---|
-| speech | 46.3 / 42.1 | 36.6 / 38.6 | 38.7 / 38.6 |
+| speech | 46.3 / 42.1 | 36.4 / 38.5 | 38.7 / 38.6 |
 | narration | 43.6 / 44.0 | 33.8 / 42.8 | 42.3 / 42.9 |
 | vibeace | no hum found | no hum found | no hum found |
 | brahms | 41.7 / 29.0 | 27.8 / 25.7 | 33.9 / 25.7 |
 | nutcracker | 40.7 / 24.3 | 33.2 / 27.9 | no hum found |
 | trumpet | 51.9 / 47.8 | 46.0 / 47.7 | 48.4 / 48.0 |
+
+An edited take: eight stretches cut out of the same mixtures, from a pause to a pause in the speech (the quietest 50 ms near each spot), anywhere in the music, the hum's phase jumping at each cut; hum down within a second of a cut / elsewhere, and the program SDR, dB, 0.3.0 → now:
+
+| material | within 1 s | elsewhere | program SDR |
+|---|---:|---:|---:|
+| speech | 6.4 → 6.5 | 35.0 → 41.1 | 38.4 → 38.3 |
+| narration | no hum found | | |
+| brahms | 9.4 → 9.5 | 32.7 → 37.0 | 25.1 → 25.0 |
+| nutcracker | 9.7 → 9.7 | 34.8 → 36.0 | 28.4 → 28.0 |
+
+In the narration the eight cuts spread the hum's lines under what the measurement takes for hum, so it is left as it is.
 
 The same mixtures through 0.2.0 (its Q 30 notches at the lines it found, run on hum and program apart): hum 5–15 dB down (26 in Vibe Ace at 60 Hz), program SDR 10–38 dB (speech 22.3, Brahms 13.6, its 100–300 Hz band 5.7). Hum alone, 30 s, ±0.02 Hz: 56 dB down (0.2.0: 26). Clean speech, narration and music: no sample changed. In Vibe Ace the hum's lines stand among the track's own steady ones, none alone, so none is taken for hum (0.2.0 found hum in the clean track); `freq` and `harmonics` remove them as told.
 
@@ -155,7 +207,7 @@ The same mixtures through 0.2.0 (its Q 30 notches at the lines it found, run on 
 
 Takes wind out from under a voice or an instrument and leaves their harmonics. Wind is turbulence at the microphone: noise under a few hundred Hz with no period, in gusts (Nelke & Vary, IWAENC 2014), where a voice's low end is a row of harmonics. A high-pass can only take everything under its cutoff, the voice's low harmonics with the wind; here each STFT bin under `cutoff` is weighed against a wind spectrum read from the frame itself.
 
-The frame is the power of two nearest 85 ms (4096 samples at 44.1 and 48 kHz), so a 100 Hz voice's harmonics stand 8 bins apart with valleys between them. The wind spectrum is the periodogram's morphological opening over 5 bins: every peak narrower than that is cut, and a steady harmonic under a Hann window is 4 bins wide, so the harmonics go and the broad wind stays (the inverse harmonic mask of Nelke, Naylor & Vary, ICASSP 2015, without a pitch track). Over 100 Hz it is held to 4× the least it has been over the last 1.5 s relative to its level under 100 Hz (minimum statistics, Martin 2001): wind keeps its shape while it gusts, and a voice's valleys, onsets and unvoiced sounds don't pass for it. The gain is OM-LSA's form (Cohen & Berdugo 2001): a Wiener gain on the decision-directed a priori SNR, raised to the speech presence probability, which takes a fixed 15 dB prior (Gerkmann & Hendriks 2012) and an a priori absence of 0.2 on a harmonic (a peak 6 dB over the wind), 0.9 elsewhere. So a harmonic keeps what of it stands over the wind, and the wind's own random peaks don't come through as musical noise.
+The frame is the power of two nearest 85 ms (4096 samples at 44.1 and 48 kHz), so a 100 Hz voice's harmonics stand 8 bins apart with valleys between them. The wind spectrum is the periodogram's morphological opening over 5 bins: every peak narrower than that is cut, and a steady harmonic under a Hann window is 4 bins wide, so the harmonics go and the broad wind stays (the inverse harmonic mask of Nelke, Naylor & Vary, ICASSP 2015, without a pitch track). Over 100 Hz it is held to 4× the least it has been over the last 1.5 s relative to its level under 100 Hz (minimum statistics, Martin 2001): wind keeps its shape while it gusts, and a voice's valleys, onsets and unvoiced sounds don't pass for it. A voiced harmonic whose pitch moves within the frame spreads wider than 5 bins and would pass for floor too (a male voice's fundamental, under 100 Hz, where that cap doesn't reach): under a peak standing 6 dB over the floor, wider than 5 bins and 15 dB over the minima either side of it, the floor is bridged between those minima, in dB. The gain is OM-LSA's form (Cohen & Berdugo 2001): a Wiener gain on the decision-directed a priori SNR, raised to the speech presence probability, which takes a fixed 15 dB prior (Gerkmann & Hendriks 2012) and an a priori absence of 0.2 on a harmonic (a peak 6 dB over the wind), 0.9 elsewhere. So a harmonic keeps what of it stands over the wind, and the wind's own random peaks don't come through as musical noise.
 
 It runs while wind blows: the 20–300 Hz band aperiodic (its normalized autocorrelation, taken through the frame's spectrum over the window's, under ½ at 2.5–25 ms; a harmonic H in noise N reads H / (H + N), Boersma 1993) and its noise over the 300–2000 Hz band, floored 20 dB under its peak over the last seconds, three frames in a row (a 150 ms gap between words shows it); then held 1 s, through the words, whose low end hides it. A bass line, a kick drum's body or a voice's low end repeats; a room's quiet rumble in a pause is no wind next to a voice. With no wind the output equals the input, sample for sample, `frameSize − 1` samples later (85 ms at 48 kHz, the manifest's declared latency).
 
@@ -166,62 +218,62 @@ let write = dewind({ fs: 48000 })               // stream: write(chunk) → the 
 
 | Param | Default | |
 |---|---|---|
-| `cutoff` | `1500` | Hz, the top of the band wind is taken from; read every frame |
+| `cutoff` | `8000` | Hz, the top of the band wind is taken from; read every frame. Most wind lies under 500 Hz, strong wind rushes to several kHz |
 | `attenuation` | `-20` | dB, the most a bin is turned down; `0` takes nothing |
 | `frameSize` | 85 ms | STFT frame, a power of two; the hop a quarter |
 
-`python scripts/wind.py fetch`, then `node scripts/lowend.js dewind` puts clean speech and music through it, then speech with wind: synthetic (Gaussian noise shaped and gusting as Nelke & Vary measure it), generated (the SC-Wind-Noise-Generator, Mirabilii et al., IWAENC 2022: spectrum and gusts by wind speed) and recorded (twelve CC0 recordings of wind on a microphone, freesound.org), half of the generated and recorded tuning the defaults, half below. VoiceBank+DEMAND test utterances (every fourth: p232 male, p257 female), ten Spoken Wikipedia narrations, the music `repair` uses, 0.2.0 → now; voiced frames thinned: the voiced 10 ms frames whose level under 250 Hz fell by more than 3 dB; their periodic part: whose periodic energy there (r·E, Boersma 1993) did:
+`python scripts/wind.py fetch`, then `node scripts/lowend.js dewind` puts clean speech and music through it, then speech with wind: synthetic (Gaussian noise shaped and gusting as Nelke & Vary measure it), generated (the SC-Wind-Noise-Generator, Mirabilii et al., IWAENC 2022: spectrum and gusts by wind speed) and recorded (twelve CC0 recordings of wind on a microphone, freesound.org), half of the generated and recorded tuning the defaults, half below. VoiceBank+DEMAND test utterances (every fourth: p232 male, p257 female), ten Spoken Wikipedia narrations, the music `repair` uses, 0.3.0 → now; voiced frames thinned: the voiced 10 ms frames, from the first to the last within 20 dB of the take's loudest, whose level under 250 Hz fell by more than 3 dB; their periodic part: whose periodic energy there (r·E, Boersma 1993) did. 0.3.0's figures (male 9.1 %, female 16.2 %) also counted the room tone before and after the words, flagged voiced by its hum, whose rumble going is no thinning:
 
 | | untouched | voiced frames thinned | their periodic part | 20–63 Hz | 63–125 Hz | 125–250 Hz |
 |---|---:|---:|---:|---:|---:|---:|
-| speech, male | 0% → 0% | 5.1% → 9.1% | 4.9% → 7.2% | −0.2 → −1.7 | 0.0 → −0.5 | 0.0 → −0.1 |
-| speech, female | 0% → 0% | 8.8% → 16.2% | 8.5% → 11.6% | −1.2 → −4.5 | −0.1 → −0.7 | 0.0 → 0.0 |
-| narrations | 0% → 20% | 2.4% → 6.0% | 2.4% → 5.2% | −0.1 → −0.7 | −0.1 → −0.3 | 0.0 → −0.2 |
+| speech, male | 0% → 0% | 4.8% → 3.2% | 3.0% → 1.4% | −1.7 → −1.3 | −0.5 → −0.2 | −0.1 → 0.0 |
+| speech, female | 0% → 0% | 7.9% → 7.9% | 3.0% → 3.0% | −4.5 → −4.5 | −0.7 → −0.7 | 0.0 → 0.0 |
+| narrations | 20% → 20% | 5.9% → 4.8% | 5.1% → 4.0% | −0.7 → −0.6 | −0.3 → −0.2 | −0.2 → −0.1 |
 | audio-lena | 100% → 100% | 0.0% → 0.0% | 0.0% → 0.0% | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 |
-| Vibe Ace (jazz) | 0% → 0% | 0.1% → 1.2% | 0.1% → 0.9% | 0.0 → −0.2 | 0.0 → −0.1 | 0.0 → −0.1 |
-| Brahms (strings) | 0% → 100% | 0.0% → 0.0% | 0.0% → 0.0% | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 |
-| Nutcracker | 0% → 100% | 0.0% → 0.0% | 0.0% → 0.0% | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 |
+| Vibe Ace (jazz) | 0% → 0% | 1.2% → 1.1% | 0.9% → 0.8% | −0.2 → −0.2 | −0.1 → −0.1 | −0.1 → −0.1 |
+| Brahms (strings) | 100% → 100% | 0.0% → 0.0% | 0.0% → 0.0% | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 |
+| Nutcracker | 100% → 100% | 0.0% → 0.0% | 0.0% → 0.0% | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 |
 | trumpet | 100% → 100% | 0.0% → 0.0% | 0.0% → 0.0% | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 |
-| bass line | 0% → 100% | 0.0% → 0.0% | 0.0% → 0.0% | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 |
+| bass line | 100% → 100% | 0.0% → 0.0% | 0.0% → 0.0% | 0.0 → 0.0 | 0.0 → 0.0 | 0.0 → 0.0 |
 
-A recording's own low rumble, where it outweighs the mid band in a pause, reads as wind: VoiceBank's room tone before each take engages it for the take's first second, and narrations recorded at home in their pauses. The rumble goes; the voiced frames that thin are onsets, whose low end an 85 ms frame smears into a broad bump that reads as floor, and frames whose low end is mostly that rumble. Orchestral music, a trumpet and a bass line come back untouched; a jazz track's drums engage it for moments.
+A recording's own low rumble, where it outweighs the mid band in a pause, reads as wind: VoiceBank's room tone before each take engages it for the take's first second, and narrations recorded at home in their pauses. The rumble is noise and goes. Of a voice under it, 0.3.0 thinned mostly a male fundamental moving in pitch, spread wider than the opening under 100 Hz, where the cap doesn't reach; now bridged, its periodic part thins half as often. What still thins: onsets, whose low end an 85 ms frame smears, and, in female takes, frames whose low end under the fundamental is mostly that rumble. Orchestral music, a trumpet and a bass line come back untouched; a jazz track's drums engage it for moments.
 
 Wind at a speech-to-wind ratio of +10, 0 and −10 dB, the error to the clean speech taken away (dB):
 
 | | +10 dB | 0 dB | −10 dB |
 |---|---:|---:|---:|
-| synthetic | −0.1 → 5.1 | 2.4 → 9.9 | 5.6 → 13.1 |
-| generated | −0.1 → 4.4 | 1.3 → 8.3 | 4.1 → 11.3 |
-| recorded | −0.4 → 3.8 | 1.1 → 7.5 | 3.2 → 10.2 |
+| synthetic | 5.1 → 5.4 | 9.9 → 10.0 | 13.1 → 13.3 |
+| generated | 4.4 → 4.8 | 8.3 → 8.4 | 11.3 → 11.4 |
+| recorded | 3.8 → 4.1 | 7.5 → 7.6 | 10.2 → 10.3 |
 
 The wind removed and the speech kept, by phase inversion (Hagerman & Olofsson, Acta Acustica 2004: the op on s + n and on s − n, ŝ = (y₊ + y₋)/2, n̂ = (y₊ − y₋)/2), dB:
 
 | | wind removed, +10 dB | 0 dB | −10 dB | speech kept, +10 dB | 0 dB | −10 dB |
 |---|---:|---:|---:|---:|---:|---:|
-| synthetic | 2.2 → 9.3 | 5.3 → 14.0 | 7.0 → 15.0 | −0.1 → −0.3 | −0.4 → −0.8 | −0.7 → −1.8 |
-| generated | 1.7 → 8.8 | 3.5 → 12.4 | 5.4 → 13.3 | −0.1 → −0.4 | −0.5 → −1.2 | −0.7 → −3.0 |
-| recorded | 1.3 → 8.0 | 3.1 → 10.8 | 4.0 → 11.4 | −0.1 → −0.4 | −0.4 → −1.1 | −0.3 → −2.1 |
+| synthetic | 9.3 → 9.2 | 14.0 → 14.1 | 15.0 → 15.2 | −0.3 → −0.2 | −0.8 → −0.7 | −1.8 → −1.7 |
+| generated | 8.8 → 8.6 | 12.4 → 12.3 | 13.3 → 13.4 | −0.4 → −0.3 | −1.2 → −1.1 | −3.0 → −2.9 |
+| recorded | 8.0 → 7.8 | 10.8 → 10.8 | 11.4 → 11.5 | −0.4 → −0.3 | −1.1 → −1.0 | −2.1 → −2.1 |
 
 PESQ (wideband), STOI and DNSMOS P.835 of the same outputs, the three winds together (`python scripts/wind.py score DIR/now test`; scored at 16 kHz as `scripts/speech.py` does):
 
 | | PESQ | STOI | SIG | BAK | OVRL |
 |---|---:|---:|---:|---:|---:|
 | +10 dB: input | 1.76 | 0.939 | 3.51 | 3.36 | 2.89 |
-| 0.2.0 | 1.67 | 0.937 | 3.47 | 3.44 | 2.90 |
-| now | 2.30 | 0.935 | 3.34 | 3.61 | 2.88 |
+| 0.3.0 | 2.30 | 0.935 | 3.34 | 3.61 | 2.88 |
+| now | 2.40 | 0.932 | 3.33 | 3.67 | 2.89 |
 | 0 dB: input | 1.21 | 0.874 | 3.25 | 2.44 | 2.31 |
-| 0.2.0 | 1.23 | 0.870 | 3.26 | 2.66 | 2.41 |
-| now | 1.58 | 0.875 | 3.20 | 3.19 | 2.58 |
+| 0.3.0 | 1.58 | 0.875 | 3.20 | 3.19 | 2.58 |
+| now | 1.68 | 0.869 | 3.16 | 3.31 | 2.59 |
 | −10 dB: input | 1.06 | 0.754 | 2.06 | 1.43 | 1.43 |
-| 0.2.0 | 1.09 | 0.753 | 2.36 | 1.67 | 1.63 |
-| now | 1.16 | 0.756 | 2.83 | 2.41 | 2.08 |
+| 0.3.0 | 1.16 | 0.756 | 2.83 | 2.41 | 2.08 |
+| now | 1.21 | 0.750 | 2.88 | 2.65 | 2.19 |
 | all: input | 1.34 | 0.856 | 2.94 | 2.41 | 2.21 |
-| 0.2.0 | 1.33 | 0.853 | 3.03 | 2.59 | 2.31 |
-| now | 1.68 | 0.855 | 3.12 | 3.07 | 2.51 |
+| 0.3.0 | 1.68 | 0.855 | 3.12 | 3.07 | 2.51 |
+| now | 1.76 | 0.850 | 3.12 | 3.21 | 2.56 |
 
-STOI barely moves: its bands begin at 150 Hz, above most of the wind. In light wind DNSMOS's SIG drops 0.17; an ideal Wiener gain from the wind's own spectrum under 1.5 kHz lost 0.12 there on the tuning material.
+STOI barely moves: its bands begin at 150 Hz, above most of the wind. Wind on a microphone rushes on above 1.5 kHz, 0.3.0's cutoff, where a voice's consonants and the upper harmonics stand over it: taken up to 8 kHz, it goes 5–11 dB down at 2–4 kHz and 4–9 dB at 4–8 kHz, the speech there 0.1–1.6 dB (on the tuning material); PESQ gains 0.08, BAK 0.14, STOI loses 0.005, from a gain that now moves over the upper bands as well. Clean speech and music lose under 0.07 dB above 1 kHz. In light wind DNSMOS's SIG drops 0.18; an ideal Wiener gain from the wind's own spectrum under 1.5 kHz lost 0.12 there on the tuning material.
 
-0.2.0 high-passed only between the words: a voiced low end sent its filter out, so the wind under the words stayed. The wind now goes under the words too, between and under the harmonics; what a voice loses is mostly the harmonics the wind buries (its low end at −10 dB), and onsets.
+The wind goes under the words too, between and under the harmonics; what a voice loses is mostly the harmonics the wind buries (its low end at −10 dB), and onsets.
 
 **Use when:** wind on a microphone under a voice or an instrument, gusting or steady; a recording's low rumble (traffic, a fan) where it outweighs the mid band in the pauses.<br>
 **Not for:** a lone thump (`deplosive`), a steady low tone or hum, which has a period (`dehum`, `highpass`), or broadband noise (`omlsa`, `wiener`). Air rushing over the whole band is taken only under `cutoff`. A neural model (`@audio/neural-denoise`'s DeepFilterNet3) takes more of the wind and keeps more of the voice; dewind leaves a sound with no aperiodic low end as it is (music, a voice with no rumble under it), streams at a frame's delay, and needs no model.
@@ -299,7 +351,7 @@ deesser(data, { fs, fc: 7500, threshold: -3, range: -8 })      // softer esses t
 
 ### `specsub`
 
-Power spectral subtraction with over-subtraction and a spectral floor (Berouti, Schwartz & Makhoul 1979): |Ŝ|² = |Y|² − α·N̂ where that stays above β·N̂, else β·N̂. Over-subtraction takes out the noise's peaks that plain subtraction leaves as musical tones; the floor, a fraction of the noise estimate, fills the valleys with a steady bed that masks what is left. α follows the frame's SNR (4 − 3/20·SNR: 4.75 at −5 dB down to 1 at 20 dB) unless fixed. The noise PSD is tracked by minimum statistics (Martin 2001) over a 1.5 s window, in batch and stream alike, unless a profile or a noise-only stretch is given. `processor(opts)` is the gain as an @audio/stft frame process, for a host running its own frames.
+Power spectral subtraction with over-subtraction and a spectral floor (Berouti, Schwartz & Makhoul 1979): |Ŝ|² = |Y|² − α·N̂ where that stays above β·N̂, else β·N̂. Over-subtraction takes out the noise's peaks that plain subtraction leaves as musical tones; the floor, a fraction of the noise estimate, fills the valleys with a steady bed that masks what is left. α follows the frame's SNR (4 − 3/20·SNR: 4.75 at −5 dB down to 1 at 20 dB) unless fixed. The noise PSD is tracked by minimum statistics (Martin 2001) over a 1.5 s window, in batch and stream alike, unless a profile or a noise-only stretch is given; a held note, a sustained vowel or a chord is kept out of it (@audio/noise-estimate's `partials`, as [`omlsa`](https://github.com/audiojs/denoise#omlsa) has it: clean music cut by more than 3 dB 10.3 → 3.2 %, sung long tones 36.9 → 0.0 %, Slakh mixes 13.1 → 0.8 %; `estimator: { partials: false }` turns it off). `processor(opts)` is the gain as an @audio/stft frame process, for a host running its own frames.
 
 ```js
 specsub(data, { fs })                                          // α(SNR), β 0.05, noise tracked
@@ -314,6 +366,7 @@ specsub(data, { fs, noiseFrames: 6 })                          // noise from the
 | `frameSize` | power of two nearest 32 ms | STFT frame: 512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48 (`frame(fs)`) |
 | `hopSize` | `frameSize/4` | OLA hop |
 | `profile` | tracked | Noise PSD (`Float64Array`, `frameSize/2+1` bins) |
+| `estimator` | | Minimum statistics options (@audio/noise-estimate `minStats`); `{ partials: false }`: held notes learned as noise, as before |
 | `noiseFrames` / `profileFrom` / `profileTo` | | A noise-only stretch to average for the profile |
 
 **Use when:** quick baseline; offline cleanup with a known noise-only preamble.<br>
@@ -322,7 +375,7 @@ specsub(data, { fs, noiseFrames: 6 })                          // noise from the
 
 ### `wiener`
 
-MMSE log-spectral amplitude (Ephraim & Malah 1985) or Wiener (Scalart & Filho 1996) gain on the decision-directed a priori SNR ξ = α·Â²(l−1)/λ(l−1) + (1−α)·max(γ−1, 0) (Ephraim & Malah 1984, eq. 51). α = 0.98 is theirs for an 8 ms frame step (§VI: 256 samples at 8 kHz, a new frame every 64) and is rescaled to the actual step as α<sup>Δt/8 ms</sup>, so the a priori SNR's memory holds in seconds; applied per frame until 0.3, it ran 1.8× longer at 48 kHz (10.7 ms steps) than at 44.1 kHz (5.8 ms). The floor ξ<sub>min</sub> stays −15 dB: −25 dB, Cohen's and Loizou's, left more musical noise on steady white and pink noise (log kurtosis ratio 0.98 and 1.49, against 0.53 and 1.01) and cost PESQ and SIG on the training speech (`scripts/speech.mjs`). The noise PSD λ is tracked by minimum statistics (Martin 2001) over a 1.5 s window, in batch and stream alike, unless a profile or a noise-only stretch is given. `processor(opts)` is the gain as an @audio/stft frame process, for a host running its own frames.
+MMSE log-spectral amplitude (Ephraim & Malah 1985) or Wiener (Scalart & Filho 1996) gain on the decision-directed a priori SNR ξ = α·Â²(l−1)/λ(l−1) + (1−α)·max(γ−1, 0) (Ephraim & Malah 1984, eq. 51). α = 0.98 is theirs for an 8 ms frame step (§VI: 256 samples at 8 kHz, a new frame every 64) and is rescaled to the actual step as α<sup>Δt/8 ms</sup>, so the a priori SNR's memory holds in seconds; applied per frame until 0.3, it ran 1.8× longer at 48 kHz (10.7 ms steps) than at 44.1 kHz (5.8 ms). The floor ξ<sub>min</sub> stays −15 dB: −25 dB, Cohen's and Loizou's, left more musical noise on steady white and pink noise (log kurtosis ratio 0.98 and 1.49, against 0.53 and 1.01) and cost PESQ and SIG on the training speech (`scripts/speech.mjs`). The noise PSD λ is tracked by minimum statistics (Martin 2001) over a 1.5 s window, in batch and stream alike, unless a profile or a noise-only stretch is given; a held note, a sustained vowel or a chord is kept out of it (@audio/noise-estimate's `partials`, as [`omlsa`](https://github.com/audiojs/denoise#omlsa) has it: clean music cut by more than 3 dB 14.5 → 3.4 %, sung long tones 36.3 → 0.0 %, Slakh mixes 26.6 → 3.3 %; `estimator: { partials: false }` turns it off). `processor(opts)` is the gain as an @audio/stft frame process, for a host running its own frames.
 
 ```js
 wiener(data, { fs })                                           // LSA gain, noise tracked
@@ -338,6 +391,7 @@ wiener(data, { fs, noiseFrames: 6 })                           // noise from the
 | `frameSize` | power of two nearest 32 ms | STFT frame: 512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48 (`frame(fs)`) |
 | `hopSize` | `frameSize/4` | OLA hop |
 | `profile` | tracked | Noise PSD (`Float64Array`, `frameSize/2+1` bins) |
+| `estimator` | | Minimum statistics options (@audio/noise-estimate `minStats`); `{ partials: false }`: held notes learned as noise, as before |
 | `noiseFrames` / `profileFrom` / `profileTo` | | A noise-only stretch to average for the profile |
 
 **Use when:** transparent broadband denoise; the "safe default" for stationary noise.
@@ -350,6 +404,8 @@ Optimally-Modified Log-Spectral Amplitude estimator (Cohen & Berdugo 2001) with 
 α sets how soon ξ follows a word's start after a pause, and how much gain a noise peak gets. Until 0.3 it was 0.98 per frame, whatever the frame (0.985 per 8 ms at 48 kHz, 0.972 at 44.1), and a word's second and third frames after a pause lost 10 and 5 dB. It is now the lowest value per 8 ms that leaves steady white and pink noise without musical noise: 0.97 tracking the noise (log kurtosis ratio 0.00 at G<sub>min</sub> −15 and −25 dB; 0.96 left 1.16 and 0.49 at −25, the paper's 0.92 0.99 and 1.81 at −15), 0.95 on a learned noise (`omlsa.m`'s; 0.92 left 0.19 and 0.42). The paper's cap q ≤ q<sub>max</sub> = 0.95 (Table 1) in place of the gate kept a word's second frame after a pause another 3 dB but left musical noise on steady noise (0.24 and 0.46 at α 0.97), so the gate stays. The table under [Speech](#speech) has what each keeps. `scripts/reference.py` holds a numpy version written from the papers; on 16 kHz VoiceBank frames it gives `omlsa.m`'s noise track, speech absence and gains to the last bit (but for near-empty bins, where `omlsa.m`'s absolute 1e-10 floors bind), and test.js holds this code to it.
 
 The a priori SNR the speech absence is read from is smoothed in the cepstrum (Breithaupt, Gerkmann & Martin 2008): the speech power's maximum-likelihood estimate λ·max(γ−1, ξ<sub>ml,min</sub>), its cepstrum smoothed over time per quefrency, hardly where speech lives (the envelope's low quefrencies, the pitch's peak), much where a lone noise peak lives, and back. The decision-directed ξ (Cohen's, `qFrom: 'dd'`) lags a word's start after a pause, and takes a short burst of noise the tracker cannot follow for speech; the cepstral one follows a word's envelope at once and smooths a lone spectral peak away. Its constants are Table 1's, per 16 ms of frame step, but under 1.25 ms of quefrency Gerkmann & Hendriks's (ICASSP 2012: 0 and 0.2, where the 2008 paper's 0.5 and 0.7 lag an onset as the decision-directed ξ does) and above it 0.9: the least that leaves steady white and pink noise on a learned noise free of musical noise (0.85 left 0.22 on pink). On the training speech, tracked: PESQ 1.823 → 1.825, STOI 0.832 → 0.834, OVRL 2.525 → 2.543, BAK 3.00 → 3.04, musical noise 0.82 → 0.80; 40 ms tone bursts in steady noise pass at −6.5 dB (were −2.6). The cepstral ξ as the gain's own ξ as well lost voiced speech where the pitch glides (SIG −0.04), so the gain keeps the decision-directed one.
+
+A held note, a sustained vowel or a chord is not learned as the noise. IMCRA, as minimum statistics, takes whatever holds a bin for about a second as noise: clean music through `omlsa` lost 9.9 % of its time-frequency energy by more than 3 dB, a sung long tone 8.8 %, a synthesized band 22.6 %. @audio/noise-estimate's `partials` reads, each frame, where a partial stands, a peak over the spectrum's morphological floor (the inverse harmonic mask of Nelke, Naylor & Vary, ICASSP 2015) held 0.3 s within ±1 bin and 10 dB over what its bin held while free, and there holds the noise at that memory; elsewhere, and on noise alone, the tracker's estimate is as it was, to the bit. A line steady from the take's start (hum, a fan, an engine) has no free frame and stays noise; one that starts mid-take is held up to 60 s, then learned, as is a note held longer; a note sounding from the first frame is learned until its bin is once free of it. Music cut 9.9 → 3.0 %, sung long tones 8.8 → 0.0 %, Slakh mixes 22.6 → 2.3 %; on the training speech PESQ 1.825 → 1.823, OVRL 2.543 → 2.542, musical noise 0.80 → 0.81 ([Speech](#speech) has the test set). `estimator: { partials: false }` turns it off.
 
 A noise that holds still can be learned instead: `profile`, the noise's PSD (`noiseProfile` of a stretch where it plays alone), or, in the batch form, `noiseFrames`/`profileFrom`/`profileTo` naming that stretch. The noise is then held (`known` of @audio/noise-estimate), and p reads the observation: γ averaged over 105.5 Hz and over 543 Hz of the frame, at fixed priors (Gerkmann, Breithaupt & Martin 2008: the averaged γ is χ² with r degrees of freedom from the Hann window's correlation across bins, ξ<sub>fix</sub> the a priori SNR that minimizes false alarms plus misses, eq. 13; at 48 kHz r 5.7 and 24, ξ<sub>fix</sub> 9.4 and 5.1 dB), and 0 where the estimated q reaches 0.9, as before. Until 0.4 it read γ in each bin alone, at ξ<sub>H1</sub> = 15 dB (Gerkmann & Hendriks 2012), and speech 0–5 dB over the noise lost 7.8 dB on the training speech, where the MMSE Wiener gain keeps 3.9. The paper averages over 64 ms of frames as well; presence then outlasted a sound by those frames, and in the half second after music stopped the noise came through in tones (log kurtosis ratio 0.45 at G<sub>min</sub> −12 dB, 1.77 at −20): over the frame alone. On the training speech, G<sub>min</sub> −12 dB: PESQ 1.861 → 1.867, OVRL 2.564 → 2.572, BAK 3.05 → 3.08, musical noise 0.53 → 0.46, speech 0–5 dB over the noise −7.8 → −5.1 dB, the noise taken in pauses 9.7 → 10.1 dB. Steady noise under speech and music goes exactly G<sub>min</sub> down, with no musical noise from −12 to −20 dB (log kurtosis ratio 0.00); in the half second after music stops, 0.05 at −12 dB and 0.61 at −20 (0.3: 0.11 and 1.00; `scripts/broadband.mjs`). Tracking the noise from the print (Gerkmann & Hendriks 2012's MMSE tracker started on it, RX's "adaptive") lost OVRL 0.04 and left musical noise (0.40 on pink): the print is held. `processor(opts)` is the gain as an @audio/stft frame process, for a host running its own frames: audio's `denoise` op learns a print from a range and runs it so.
 
@@ -369,6 +425,7 @@ omlsa(data, { fs, profileFrom: 0, profileTo: fs / 2, gMin: -12 })   // the noise
 | `frameSize` | power of two nearest 32 ms | STFT frame: 512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48 (`frame(fs)`) |
 | `hopSize` | `frameSize/4` | |
 | `profile` | tracked | A known noise PSD (`frameSize/2+1` bins), held |
+| `estimator` | | IMCRA options (@audio/noise-estimate `imcra`); `{ partials: false }`: held notes learned as noise, as before 0.5 |
 | `noiseFrames` / `profileFrom` / `profileTo` | | A noise-only stretch to learn the profile from (batch) |
 
 **Use when:** speech in non-stationary noise (street, café, car); generally the highest-quality choice for noisy speech. A steady noise with a stretch of it alone (hiss, hum, a fan, room tone): learn it, `profile`.
@@ -378,7 +435,7 @@ omlsa(data, { fs, profileFrom: 0, profileTo: fs / 2, gMin: -12 })   // the noise
 
 ### `declick`
 
-Finds each click as an outlier of the AR prediction error and rebuilds it from the sound either side. The error is judged against its own median level over ±12 ms, so a click can't raise the bar it must clear; the model is fitted again with the outliers left out, since a loud click otherwise teaches it its own ringing and only its onset stands out. A click spans where the error stays over 3× that level after its onset; one with a like half its size 2.5–15 ms away is a glottal pulse or a plucked string, and is left alone. Each is rebuilt by least-squares AR interpolation over 46 ms either side ([`lpc`](https://github.com/audiojs/denoise/tree/main/packages/lpc)'s `arBridge`, Janssen 1986 / Godsill-Rayner 1998). Samples no click reaches come back bit-exact.
+Finds each click as an outlier of the AR prediction error, decides what it is, and rebuilds the sound under it. The error is judged against its own median level over ±12 ms, so a click can't raise the bar it must clear; the model is fitted again with the outliers left out, since a loud click otherwise teaches it its own ringing. A click spans where the error stays over 3× that level after its onset; one with a like half its size 2.5–15 ms away is a glottal pulse or a plucked string, and is left alone. Each click is then judged under a finer model, AR(256) of the 46 ms either side, three ways: a gap over all of it; a gap over its onset alone; that gap and a damped resonance struck at the onset, which is what a stylus's tick and a scratch's pop are (Godsill & Rayner 1998, ch. 7). Where the resonance shares a voice's or an instrument's frequencies, its tail barely shows in the prediction error, so a gap found by the error stops short of it; fitted from the onset (frequency, decay, amplitude, phase), the resonance is taken off whole. Of the three, the one of least BIC is kept: the error each leaves after its gap is rebuilt, against the number of values it is free to choose. The gap is rebuilt by least-squares AR(512) interpolation over 46 ms either side ([`lpc`](https://github.com/audiojs/denoise/tree/main/packages/lpc)'s `arBridge`, Janssen 1986), then pulled toward each recorded sample as far as the click there is small: the posterior mean under the click as Gaussian noise whose variance is half of what least squares took off (Godsill & Rayner §5.3). Samples no click reaches come back bit-exact.
 
 ```js
 declick(data, { fs: 44100 })                                          // everywhere
@@ -388,21 +445,21 @@ declick(data, { fs: 44100, regions: [{ at: 12.31, duration: 0.02 }] }) // the cl
 | Param | Default | |
 |---|---|---|
 | `threshold` | `8` | how far over the error's local level a click stands, multiples |
-| `longest` | `6` | longest click rebuilt, ms; longer is taken for real sound |
+| `longest` | `6` | longest click rebuilt, ms; longer is taken for real sound. A pop's ring is taken off if it dies away within it (decays in a fifth) |
 | `order` | `32` | AR order of the detection |
 | `regions` | — | `[{ at, duration }]`, s: look only there, and take nothing there for a pulse or too long |
 | `fs` | `44100` | sample rate, Hz |
 
-`node scripts/declick.js` adds clicks to speech (audio-lena) and music (librosa/data, as `repair`), one every 0.25–0.45 s at 2, 5 and 15× the sound's RMS around it, and measures how much of each click's error is gone (median dB, over the click and 1 ms either side) and the share gone by 10 dB or more:
+`node scripts/declick.js` adds clicks to speech (audio-lena) and music (librosa/data, as `repair`), one every 0.25–0.45 s at 2, 5 and 15× the sound's RMS around it, and measures how much of each click's error is gone (median dB, over the click and 1 ms either side), the share gone by 10 dB or more, and FFmpeg `adeclick` at its defaults after ·:
 
 | click | 2× | 5× | 15× |
 |---|---:|---:|---:|
-| tick (rings at 2–8 kHz, 0.05–0.3 ms) | 13.4 dB · 60% | 17.5 dB · 88% | 25.4 dB · 99% |
-| pop (300–1500 Hz, 0.3–1 ms) | 5.7 dB · 30% | 12.9 dB · 60% | 18.2 dB · 86% |
-| glitch (1–8 samples off) | 15.5 dB · 71% | 20.5 dB · 90% | 29.4 dB · 99% |
-| mouth (1–3 ms of noise) | 9.3 dB · 49% | 17.8 dB · 86% | 25.6 dB · 100% |
+| tick (rings at 2–8 kHz, 0.05–0.3 ms) | 23.9 dB · 89% · 8.0 | 31.0 dB · 99% · 8.2 | 39.5 dB · 100% · 9.8 |
+| pop (300–1500 Hz, 0.3–1 ms) | 18.5 dB · 72% · 0.4 | 27.1 dB · 98% · 0.6 | 34.5 dB · 100% · 0.3 |
+| glitch (1–8 samples off) | 29.2 dB · 80% · 21.5 | 37.9 dB · 92% · 24.8 | 48.7 dB · 99% · 29.5 |
+| mouth (1–3 ms of noise) | 20.4 dB · 99% · 5.1 | 24.5 dB · 100% · 11.0 | 31.4 dB · 100% · 15.7 |
 
-0.1.7 (AR(60) on its own window, σ including the click, 2 samples either side): ticks 5–6 dB, pops 0, mouth clicks 4–6 dB. The clean material through it: speech, Brahms and the trumpet untouched (0.1.7 changed 2295, 123 and 2283 samples, the trumpet to −19 dB), "Vibe Ace" 112 samples at −42 dB. Each click's surroundings (3–20 ms either side) given as `regions`: the same within 0.5 dB; regions over the clean material change nothing. Ticks at 2× are as far as the interpolation reaches: rebuilt at their exact span, they come out the same. 10 s in 0.1 s.
+0.2.0 (a gap as far as the AR(32) error showed the click, least squares): ticks 13.4, 17.5 and 25.4 dB; pops 5.7, 12.9, 18.2; glitches 15.5, 20.5, 29.4; mouth clicks 9.3, 17.8, 25.6. Pops rebuilt at their true span by least squares under AR(512) reach 9.5, 18.0 and 27.8: the resonance taken off beats the best gap by 7–9 dB. 0.1.7 (AR(60) on its own window, σ including the click, 2 samples either side): ticks 5–6 dB, pops 0, mouth clicks 4–6 dB. The clean material through it: speech, Brahms and the trumpet untouched (0.1.7 changed 2295, 123 and 2283 samples, the trumpet to −19 dB), "Vibe Ace" 112 samples at −62 dB (0.2.0: −42 dB); `adeclick` changes 7 116–22 978 samples of each, to −27 to −49 dB. Each click's surroundings (3–20 ms either side) given as `regions`: the same within 0.4 dB; regions over the clean material change nothing. Tuned on other material (two narrations, VoiceBank+DEMAND training takes, other parts of "Vibe Ace" and Brahms, the Nutcracker, two other VocalSet singers). Clicked sound takes 1–2× 0.2.0's time (10 s with three clicks a second in 0.3–0.7 s), clean sound as long.
 
 **Use when:** vinyl ticks, edit clicks, digital glitches, mouth clicks on a voice; a click seen on a spectrogram, given as a region.<br>
 **Not for:** dense crackle (use `decrackle`); long dropouts (use `repair`).
@@ -410,7 +467,7 @@ declick(data, { fs: 44100, regions: [{ at: 12.31, duration: 0.02 }] }) // the cl
 
 ### `decrackle`
 
-Finds crackle, a worn record's dense small impulses, where the sound departs both from its AR prediction and from its least-squares interpolation from either side, and rebuilds all of it in a 46 ms window at once. The prediction error alone also stands out at the sound's own excitation, a voice's glottal pulses, a reed's or a bow's; the two-sided error (the prediction error through its matched filter, Vaseghi & Rayner 1990) holds those back by √Σa² against its spread and lifts an impulse added to the sound by as much, so crackle is where both stand over `threshold` × their local level: per 1.5 ms block the median |error|, the median of those over ±12 ms, which crackle can't raise until it fills half the samples of half the blocks. All flagged samples of a window are solved together by exact least-squares AR interpolation ([`lpc`](https://github.com/audiojs/denoise/tree/main/packages/lpc)'s `arFill`, Janssen 1986 / Godsill-Rayner 1998), so a neighbouring impulse is never taken for sound. Then it looks again on the rebuilt sound, the models fitted to it, until no new impulse stands out (Vaseghi & Rayner's iteration): with the largest gone, the smaller ones show; a new one must stand out of the input too, so a rebuild's own departures are never taken for crackle. Samples no crackle reaches come back bit-exact.
+Finds crackle, a worn record's dense small impulses, where the sound departs both from its AR prediction and from its least-squares interpolation from either side, and rebuilds all of it in a 46 ms window at once. The prediction error alone also stands out at the sound's own excitation, a voice's glottal pulses, a reed's or a bow's; the two-sided error (the prediction error through its matched filter, Vaseghi & Rayner 1990) holds those back by √Σa² against its spread and lifts an impulse added to the sound by as much, so crackle is where both stand over `threshold` × their local level: per 1.5 ms block the median |error|, the median of those over ±12 ms, which crackle can't raise until it fills half the samples of half the blocks. All flagged samples of a window are solved together by exact least-squares AR interpolation ([`lpc`](https://github.com/audiojs/denoise/tree/main/packages/lpc)'s `arFill`, Janssen 1986 / Godsill-Rayner 1998), so a neighbouring impulse is never taken for sound. Then it looks again on the rebuilt sound, the models fitted to it, until no new impulse stands out (Vaseghi & Rayner's iteration): with the largest gone, the smaller ones show; a new one must stand out of the input too, so a rebuild's own departures are never taken for crackle. A ringing tick's tail and a small impulse beside a large one stay under the threshold, and a rebuild bends to fit them as if they were sound; so last, every sample from 0.1 ms before a crackle sample to 0.5 ms after it is made soft: the sound there is the posterior mean under the window's AR(64) model with a click of its own variance at each sample, the variances found by EM (impulsive noise as a scale mixture of Gaussians, Godsill & Rayner, IEEE TSAP 1998): where the sound fits the model the samples stay near as recorded, where it doesn't the model takes over. Samples farther than that from any crackle come back bit-exact.
 
 ```js
 decrackle(data, { fs: 44100 })
@@ -426,11 +483,11 @@ decrackle(data, { fs: 44100 })
 
 | crackle, peaks × RMS | 50/s | 200/s | 1000/s |
 |---|---:|---:|---:|
-| small (0.1–0.5×) | 38.7 → 44.2 · 32.1 | 32.7 → 38.3 · 31.1 | 25.8 → 30.2 · 27.5 |
-| medium (0.4–2×) | 26.7 → 36.4 · 30.7 | 20.8 → 29.6 · 28.0 | 13.8 → 20.8 · 20.3 |
-| loud (1.6–8×) | 14.8 → 29.2 · 26.1 | 8.6 → 21.8 · 19.7 | 1.7 → 12.0 · 8.7 |
+| small (0.1–0.5×) | 38.7 → 44.7 · 32.1 | 32.7 → 39.3 · 31.1 | 25.8 → 32.0 · 27.5 |
+| medium (0.4–2×) | 26.7 → 39.4 · 30.7 | 20.8 → 32.9 · 28.0 | 13.8 → 23.9 · 20.3 |
+| loud (1.6–8×) | 14.8 → 32.5 · 26.1 | 8.6 → 25.1 · 19.7 | 1.7 → 15.8 · 8.7 |
 
-Of the 54 cases, `adeclick` does better in 16: 8 of the sung vibrato's (by 0.1–4.9 dB, most with loud crackle at 50/s: 24.2 · 29.1), 8 of speech and Brahms by 0.3–1.4 dB; `decrackle` in the rest, by up to 22 dB (the trumpet, small crackle at 50/s: 48.6 · 26.7). The clean sound through it: audio-lena 0.01% of the samples changed, to −66 dB; VoiceBank 0.22%, −41 dB; the music 0.01–0.12%, −52 to −74 dB; the song 0.02%, −67 dB (`adeclick`: 1.9–8.5%, −26 to −47 dB). 0.1.7 (2.5 × its window's MAD, 30 Gauss-Seidel sweeps of the fill) made small crackle worse than it found it (38.7 → 21.9 dB at 50/s, the trumpet to 5.6) and changed 3.7–10% of the clean samples (the trumpet to −5.5 dB, speech to −21 dB). `threshold: 3` takes 0.6–2.5 dB more of medium and loud crackle (1000/s: 22.1 and 14.5 dB) and trails `adeclick` on the song alone, but changes up to 0.56% of the clean samples, to −40.5 dB, the trumpet above 8 kHz by as much as is in it. 10 s in 0.1–0.5 s clean, 1–4 s crackled (0.1.7: 4–11 s).
+`decrackle` does better than `adeclick` in all 54 cases, by 0.3–18.6 dB; the sung vibrato, where 0.2.0 trailed in 8 (loud crackle at 50/s: 24.2 · 29.1), now leads in all 9 (30.7 · 29.1). 0.2.0 (the rebuild alone, no soft samples): 44.2, 38.3 and 30.2 dB small; 36.4, 29.6, 20.8 medium; 29.2, 21.8, 12.0 loud; the soft samples gain up to 6.5 dB (0.2–6.5 in 51 of the 54 cases, none in one) and lose 3.3 and 1.3 dB on the trumpet with small crackle at 50 and 200/s. The clean sound through it: audio-lena 0.05% of the samples changed, to −73 dB; VoiceBank 2.2%, −41 dB; the music 0.07–1.1%, −49 to −70 dB; the song 0.3%, −60 dB (`adeclick`: 1.9–8.5%, −26 to −47 dB). The soft samples move more of them, each by less: 0.2.0 changed 0.01–0.22%, to −41 to −74 dB ("Vibe Ace" −64, now −49). Tuned on other material (two narrations, VoiceBank+DEMAND training takes, other parts of "Vibe Ace" and Brahms, the Nutcracker, two other VocalSet singers): there 0.2.0 trailed `adeclick` in 23 of 72 cases, now in none. 0.1.7 (2.5 × its window's MAD, 30 Gauss-Seidel sweeps of the fill) made small crackle worse than it found it (38.7 → 21.9 dB at 50/s, the trumpet to 5.6) and changed 3.7–10% of the clean samples (the trumpet to −5.5 dB, speech to −21 dB). 1–1.6× 0.2.0's time, run side by side (the most at 1000/s).
 
 **Use when:** shellac / 78 RPM crackle; a worn LP's surface noise; dense small ticks under music or speech.<br>
 **Not for:** loud isolated clicks and pops (use `declick`); long dropouts (use `repair`).
@@ -438,7 +495,9 @@ Of the 54 cases, `adeclick` does better in 16: 8 of the sung vibrato's (by 0.1�
 
 ### `declip`
 
-Finds where a sound was cut flat and rebuilds what the cut took off. A hard clip piles every sample it cuts onto one level, its rail. Each side's rail is the sound's extreme there, taken when the samples within 0.1 % of it outnumber those in the next 0.1 % below tenfold and most of them sit in runs: the top-bin test of FFmpeg's `adeclip` (1000 bins, ratio 10), made relative to the rail so it holds at any level (and never finer than one step of a 16- or 24-bit grid), and per side, so one rail or two different ones are found. A loud peak is one sample; a limiter's ceiling is touched by single samples or by arches, and a sine's top is an arch, which fill the band below about as densely: sound with no rail comes back bit-exact. Then, per window of 186 ms (hop half, crossfaded), every sample at a rail is unknown at once: AR(256) fitted to the window under its taper, all of them solved by exact least squares ([`lpc`](https://github.com/audiojs/denoise/tree/main/packages/lpc)'s `arFill`), each held at least as far out as it was recorded (a clip only ever lowers a sample: the consistent set of A-SPADE, Kitić, Bertin & Gribonval 2015), the model refitted to the filled window and the solve repeated, 8 times (Janssen, Veldhuis & Vries 1986). Runs of any length; samples off the rails come back bit-exact.
+Finds where a sound was cut flat and rebuilds what the cut took off. A hard clip piles every sample it cuts onto one level, its rail. Each side's rail is the sound's extreme there, taken when the samples within 0.1 % of it outnumber those in the next 0.1 % below tenfold and most of them sit in runs: the top-bin test of FFmpeg's `adeclip` (1000 bins, ratio 10), made relative to the rail so it holds at any level (and never finer than one step of a 16- or 24-bit grid), and per side, so one rail or two different ones are found. A loud peak is one sample; a limiter's ceiling is touched by single samples or by arches, and a sine's top is an arch, which fill the band below about as densely: sound with no rail comes back bit-exact.
+
+Every sample at a rail is then rebuilt twice, each rebuild held at least as far out as the sample was recorded (a clip only ever lowers a sample). Sparse: A-SPADE (Kitić, Bertin & Gribonval 2015) as the declipping survey's code runs it (Záviška, Rajmic, Ozerov & Rencker 2021), per block of 93 ms the fewest DFT lines that agree with what was recorded. AR: per window of 186 ms, AR(256) fitted under its taper, every unknown solved at once by exact least squares ([`lpc`](https://github.com/audiojs/denoise/tree/main/packages/lpc)'s `arFill`), refitted and solved again, 8 times (Janssen, Veldhuis & Vries 1986). The sparse one wins on tonal music and on heavy clipping, the AR one on speech and on mild clipping, and neither everywhere, so the two are blended, region by region, by a weight chosen by cross-validation: the clipped sound is clipped once more, at the level that takes as large a share of what the first clip left as the first took of the whole; both rebuild that; the weight is the one whose blend lies nearest what is known there (the samples the second clip hid, and the bounds of those the first took), read per 93 ms over ±1 s. A blend of two consistent rebuilds is consistent; each rebuild runs only where its weight is not 0. Samples off the rails come back bit-exact; a sound over 30 s is rebuilt in pieces crossfaded over 2 s.
 
 ```js
 declip(data, { fs: 44100 })                                    // each side's rail found; none: untouched
@@ -448,21 +507,33 @@ declip(data, { fs: 44100, clipLevel: 0.95 })                   // a known rail, 
 | Param | Default | |
 |---|---|---|
 | `clipLevel` | auto | the rail, ± this; omitted or 0: found per side |
-| `order` | `256` | AR order of the rebuild; `512` takes dense music up to 2 dB closer and speech further, in about 3× the time |
+| `order` | `256` | AR order of the AR rebuild; `512` takes it on dense music up to 2 dB closer, in about 3× the time |
 | `fs` | `44100` | sample rate, Hz |
 
-`node scripts/declip.js` clips speech (audio-lena) and music ("Vibe Ace", Brahms, the trumpet loop, as `repair`), 6 s of each, peak-normalized and cut at the level that leaves the clipped sound 3–20 dB from the original (the input SDR of the declipping survey, Záviška, Rajmic, Ozerov & Rencker 2021), and measures the SDR after, dB, declip (finding the rails itself) · FFmpeg `adeclip` at its defaults:
+`node scripts/declip.js` clips speech (audio-lena) and music ("Vibe Ace", Brahms, the trumpet loop, as `repair`), 6 s of each, peak-normalized and cut at the level that leaves the clipped sound 1–20 dB from the original (the input SDR of the declipping survey), and measures the SDR after, dB, declip (finding the rails itself) · FFmpeg `adeclip` at its defaults:
 
-| input SDR | 3 dB | 7 dB | 10 dB | 15 dB | 20 dB |
-|---|---:|---:|---:|---:|---:|
-| speech | 11.6 · 5.0 | 24.2 · 12.1 | 31.2 · 16.9 | 37.7 · 24.0 | 42.4 · 30.5 |
-| "Vibe Ace" | 9.3 · 5.0 | 15.6 · 10.3 | 19.7 · 14.0 | 26.5 · 19.9 | 32.9 · 24.6 |
-| Brahms | 8.5 · 3.9 | 16.1 · 10.2 | 20.0 · 14.4 | 26.4 · 19.8 | 34.0 · 23.8 |
-| trumpet | 15.1 · 4.1 | 31.4 · 10.4 | 45.6 · 14.8 | 46.1 · 21.4 | 59.0 · 25.0 |
+| input SDR | 1 dB | 3 dB | 7 dB | 10 dB | 15 dB | 20 dB |
+|---|---:|---:|---:|---:|---:|---:|
+| speech | 8.4 · 1.1 | 10.9 · 5.0 | 24.2 · 12.1 | 31.9 · 16.9 | 38.3 · 24.0 | 42.6 · 30.5 |
+| "Vibe Ace" | 6.9 · 1.6 | 13.1 · 5.0 | 19.1 · 10.3 | 22.7 · 14.0 | 31.4 · 19.9 | 36.2 · 24.6 |
+| Brahms | 6.9 · 0.6 | 12.7 · 3.9 | 18.9 · 10.2 | 22.8 · 14.4 | 29.2 · 19.8 | 35.8 · 23.8 |
+| trumpet | 6.1 · 1.3 | 16.8 · 4.1 | 31.4 · 10.4 | 44.7 · 14.8 | 46.5 · 21.4 | 60.3 · 25.0 |
 
-A-SPADE as the survey's code runs it (`--spade`: 186 ms blocks, a twice-redundant DFT, s = r = 1, ε = 0.1): speech 9.7 / 22.4 / 27.6 / 33.7 / 37.7, "Vibe Ace" 13.2 / 19.0 / 24.4 / 29.0 / 33.0, Brahms 12.9 / 18.0 / 21.0 / 26.3 / 31.8, the trumpet 17.7 / 31.4 / 37.2 / 49.8 / 57.0: ahead of declip in 9 of the 15 music cases, by 1.0–4.7 dB (each at 3 dB, "Vibe Ace" up to 15 dB), within 0.1 dB in 3, behind in 3 (the trumpet at 10 dB by 8.4); behind it on speech at every level, by 1.8–4.7 dB; in 27–65 s per second of sound. VoiceBank+DEMAND's test set, every 20th utterance clipped to 10 and 20 dB: declip 19.8 and 32.4 dB, `adeclip` 16.0 and 28.2.
+0.2.0 (the AR rebuild alone), 1–20 dB: speech 2.3 / 11.6 / 24.2 / 31.2 / 37.7 / 42.4, "Vibe Ace" 3.8 / 9.3 / 15.6 / 19.7 / 26.5 / 32.9, Brahms 1.5 / 8.5 / 16.1 / 20.0 / 26.4 / 34.0, the trumpet 2.9 / 15.1 / 31.4 / 45.6 / 46.1 / 58.8: the blend gains 3–6 dB at 1 dB, up to 4.9 above it on the music, and loses 0.7 on speech at 3 dB and 0.9 on the trumpet at 10. On the survey's own test, its ten SQAM excerpts (solo instruments and an ensemble, 44.1 kHz) clipped by its `clip_sdr.m`, mean ΔSDR over the clipped samples, dB, beside the means it publishes for its leading methods (code and results: [declipping2020_codes](https://github.com/rajmic/declipping2020_codes)):
 
-Rails are found at the 20 dB level clipped asymmetrically (with the 10 dB level below), on one side only, then turned down to 0.4, quantized to 16 bits plain or dithered, and on a 16-bit converter driven 2.5 dB over (rails at 32767 and −32768): 10 dB or more of SDR gained in each. The unclipped material through it, as it is, peak-normalized, at 16 bits and through a lookahead limiter 12 dB over its ceiling: not a sample changed; nor in any of VoiceBank+DEMAND's 824 clean test utterances. 0.1.7 took the most populated level over half scale for the rail: on unclipped sound peaking over it, a limiter at half scale (151–43,538 samples changed per 6 s; the overdriven converter's Brahms 41.1 → 21.3 dB), while clipping at other levels it mostly left as it was (3–20 dB in, the same out). It takes about 0.1 s per second of sound clipped at the 20 dB level, 0.5 s at 10 dB, 5 s at 3 dB (`adeclip`: 0.07, 1.3 and 23 s on the same machine).
+| input SDR | 1 dB | 3 dB | 5 dB | 7 dB | 10 dB | 15 dB | 20 dB | mean |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| declip | 8.3 | 13.2 | 14.8 | 15.8 | 17.6 | 19.7 | 21.9 | 15.9 |
+| social sparsity, PEW (Siedenburg, Kowalski & Dörfler 2014) | 12.2 | 15.0 | 16.6 | 17.7 | 19.0 | 21.2 | 22.2 | 17.7 |
+| A-SPADE | 11.9 | 13.9 | 15.1 | 16.0 | 17.3 | 19.4 | 20.3 | 16.3 |
+| S-SPADE | 11.4 | 13.7 | 15.0 | 15.6 | 17.1 | 19.3 | 19.9 | 16.0 |
+| ℓ1, parabola-weighted | 9.9 | 13.0 | 14.8 | 16.0 | 17.4 | 19.6 | 21.0 | 16.0 |
+| NMF (Bilen, Ozerov & Pérez 2018) | 5.1 | 12.2 | 14.3 | 16.2 | 18.0 | 20.6 | 22.0 | 15.5 |
+| Janssen (AR) | −0.9 | −1.3 | 0.6 | 3.5 | 7.9 | 17.0 | 19.6 | 6.6 |
+
+At 10–20 dB ahead of both SPADEs and ℓ1, behind social sparsity by 0.3–1.5 dB and NMF by 0.1–0.9; at 3–7 dB behind A-SPADE by 0.2–0.7, at 1 dB by 3.6, where the blend leans on its sparse rebuild, which grows its sparsity faster than the survey's (8× fewer iterations) in blocks half as long; on the mean, 5th of the 7, within 0.1 dB of S-SPADE and ℓ1. 0.2.0 averaged 13.2 there (1 dB: 4.9, 20 dB: 19.8). VoiceBank+DEMAND's clean test set, every 20th utterance clipped to 3, 10 and 20 dB: declip 11.5, 20.4 and 33.1 dB (0.2.0 at 10 and 20: 19.8 and 32.4), `adeclip` 5.1, 16.0 and 28.2.
+
+Rails are found at the 20 dB level clipped asymmetrically (with the 10 dB level below), on one side only, then turned down to 0.4, quantized to 16 bits plain or dithered, and on a 16-bit converter driven 2.5 dB over (rails at 32767 and −32768): 13 dB or more of SDR gained in each. The unclipped material through it, as it is, peak-normalized, at 16 bits and through a lookahead limiter 12 dB over its ceiling: not a sample changed; nor in any of VoiceBank+DEMAND's 824 clean test utterances. It takes about 7 s per second of sound averaged over the six levels, most of it at 1–3 dB (0.2.0: 3; `adeclip`: 11–15; on the trumpet, its runs short: 2, 0.7 and 2).
 
 **Use when:** digital clipping: a converter overdriven, a mix bounced too hot, a plug-in's hard clip; at any level, on either side or both.<br>
 **Not for:** clipping that has since been through lossy coding or resampling (the plateau is no longer flat, and no rail is found); soft saturation, tape or tube, which has no rail.
@@ -472,7 +543,7 @@ Rails are found at the 20 dB level clipped asymmetrically (with the 10 dB level 
 
 ### `dereverb`
 
-Late reverberation off a voice, one microphone, the whole take at once. First weighted prediction error, WPE (Nakatani et al. 2010): in each STFT bin, what the frames 50 to 160 ms back predict of the current one is the room's tail, and is subtracted; the prediction is fitted over the whole take, each frame weighted by its inverse power, three times. The room is one for the take and the voice is not, so the fit learns the room. One microphone cannot invert a room, and the prediction cancels a dB or two of the tail; but its taps measure the room. The power they carry from the past into a frame is the late reverberation's power, which Lebart et al. (2001) and Habets (2010) model from a decay time and a direct-to-reverberant ratio: here neither is estimated, and on a dry voice the taps are near zero. A log-spectral-amplitude gain (Ephraim & Malah 1985) takes that power off what WPE left, floored at −14 dB, and no bin leaves louder than it came. Below 500 Hz the estimate falls 3 dB an octave: there a voice's harmonics hold their phase longest and the taps learn some of them as room. A bin cut to digital silence (an edit, a gate) is left out of the fit. About 0.1 s per second of 48 kHz sound.
+Late reverberation off a voice, one microphone, the whole take at once. First weighted prediction error, WPE (Nakatani et al. 2010): in each STFT bin, what the frames from 43 to 150 ms back predict of the current one (at 48 kHz: from the first frame that shares no sample with it) is the room's tail, and is subtracted; the prediction is fitted over the whole take, each frame weighted by its inverse power, three times. The room is one for the take and the voice is not, so the fit learns the room. One microphone cannot invert a room, and the prediction cancels a dB or two of the tail. The rest is taken in power, as Lebart et al. (2001) and Habets (2010) model the late reverberation: from the power of the frames before, here weighed by the shape of WPE's taps, the room's decay in that bin. Its scale is read off the take itself: where only the tail sounds, the power over its expectation is exponential, and a tenth of such cells fall under 0.105 of it, while the voice's cells lie above; so the 10th percentile of the power over the weighed past, per octave band, divided by 0.105, is the late reverberation's share. It reads a 3 s clip and a minute-long take alike (0.3 scaled the taps' own power, which on 3 s predicted about all the late power and on 30 s a quarter). A log-spectral-amplitude gain (Ephraim & Malah 1985) takes that power off what WPE left, floored at −14 dB, and no bin leaves louder than it came. Two checks on the whole take come first, and either returns it bit for bit: dry, when its fastest falls are faster than a room's tail lets a sound fall (90 % of dry VoiceBank takes); no pauses, when under half of its frames are under half its mean power (Scheirer & Slaney 1997): there a held note's sustain reads as a room's. A bin cut to digital silence (an edit, a gate) is left out of the fit. About 0.1 s per second of 48 kHz sound (a 41 s take: 4.7 s, 0.3 4.0 s).
 
 ```js
 dereverb(data, { fs: 48000 })
@@ -481,23 +552,104 @@ dereverb(data, { fs: 48000, strength: 0.5 })   // a lighter hand
 
 | Param | Default | |
 |---|---|---|
-| `strength` | `1` | Scale of the late-reverberation estimate: 0 is the linear prediction alone, 2 takes more of the tail and more of the voice |
+| `strength` | `1` | Scale of the late-reverberation estimate (1: as the take's own decays read it): 0 is the linear prediction alone, 2 takes more of the tail and more of the voice |
 
-Measured (`python scripts/dereverb.py`, test set): 42 VoiceBank test utterances (1.6–5.9 s), and four 41–60 s takes of ten utterances by one speaker, in 19 MIT IR Survey rooms the tuning never heard (T60 0.38–1.85 s). Each room's response is split at direct + 50 ms: under it, the voice as the room colours it; over it, the tail to take. Voice lost: the output's power where the voice is 10 dB over the tail; tail taken: where the tail is 10 dB over the voice. PESQ and STOI against the dry take; SRMR (Falk et al. 2010) higher is drier; DNSMOS at the input's loudness; a dry voice through it, PESQ. 0.2 → 0.3:
+Measured (`python scripts/dereverb.py`, test set): 42 VoiceBank test utterances (1.6–5.9 s), and four 41–60 s takes of ten utterances by one speaker, in 19 MIT IR Survey rooms the tuning never heard (T60 0.38–1.85 s). Each room's response is split at direct + 50 ms: under it, the voice as the room colours it; over it, the tail to take. Voice lost: the output's power where the voice is 10 dB over the tail; tail taken: where the tail is 10 dB over the voice. PESQ and STOI against the dry take; SRMR (Falk et al. 2010) higher is drier; DNSMOS at the input's loudness; the dry takes through it: the share returned untouched, PESQ. 0.3 → 0.4, and DeepFilterNet3 (`@audio/neural-denoise`, a denoiser that also learned to take reverberation) on the same takes:
 
-| | voice lost dB | tail taken dB | PESQ | STOI | SRMR | OVRL | dry voice, PESQ |
+| | voice lost dB | tail taken dB | PESQ | STOI | SRMR | OVRL | dry: untouched, PESQ |
 |---|---|---|---|---|---|---|---|
 | short takes in | | | 1.39 | 0.774 | 3.98 | 2.19 | 4.64 |
-| short, `dereverb` | −0.32 → −0.81 | −1.7 → **−6.2** | 1.45 → **1.50** | 0.793 → 0.768 | 4.56 → **6.90** | 2.28 → **2.47** | 4.42 → 4.25 |
+| short, `dereverb` | −0.81 → −0.79 | −6.2 → −6.3 | 1.50 → **1.53** | 0.768 → **0.783** | 6.90 → 6.84 | 2.47 → 2.48 | 0 → **95 %**, 4.25 → **4.63** |
+| short, DeepFilterNet3 | −2.71 | −3.7 | 1.52 | 0.787 | 5.48 | 2.46 | 4.54 |
 | long takes in | | | 1.37 | 0.739 | 3.43 | 1.98 | 4.64 |
-| long, `dereverb` | −0.13 → −0.25 | −1.1 → **−3.3** | 1.43 → **1.49** | 0.756 → 0.749 | 3.83 → **4.99** | 2.03 → **2.43** | 4.58 → 4.58 |
+| long, `dereverb` | −0.25 → −0.61 | −3.3 → **−6.6** | 1.49 → **1.54** | 0.749 → 0.753 | 4.99 → **6.13** | 2.43 → **2.52** | 0 → **100 %**, 4.58 → **4.64** |
+| long, DeepFilterNet3 | −2.42 | −0.8 | 1.51 | 0.757 | 4.10 | 2.22 | 4.52 |
 
-`strength` 0, 1, 2, 4: on the short takes the tail −1.4, −6.2, −7.7, −9.0 dB for the voice −0.12, −0.81, −1.18, −1.64, a dry voice's PESQ 4.51, 4.25, 4.17, 4.10; on the long ones the tail −0.9, −3.3, −4.5, −6.0 for the voice −0.02, −0.25, −0.41, −0.65. A sung voice passes (VocalSet: SI-SDR 19.4 → 35.3 dB, 125–250 Hz −2.55 → −0.45 dB). STOI falls 0.025 on the short takes, the gain's cost; PESQ, SRMR and DNSMOS rise.
+`strength` 0, 1, 2, 4: on the short takes the tail −1.5, −6.3, −8.3, −10.3 dB for the voice −0.20, −0.79, −1.17, −1.67; on the long ones the tail −1.1, −6.6, −8.8, −10.6 for the voice −0.07, −0.61, −0.95, −1.39. The voice lost is mostly under 250 Hz (−1.5 to −2.3 dB there, −0.4 to −0.6 over 1 kHz), where a voice's low harmonics hold their pitch as a room's tail does.
 
-0.2 fitted the prediction recursively, over its last second: it learned some of the voice as room (−0.32 dB of the voice for 1.7 dB of the tail), and alone it cannot take much more (at 30 taps, about 4 dB of the tail for 0.6 dB of the voice). Late-reverb subtraction at each room's measured T60 (Lebart; Habets's κ) took 6 dB for −0.4 dB of the voice on the training takes, but it needs the T60, which free-decay estimates did not give on 3 s takes (correlation −0.3 to 0.2 with the measured one), and it took a dry voice for a room (PESQ 3.7). DeepFilterNet3 (`@audio/neural-denoise`), a denoiser that also learned to take reverberation, took 6.6–8.1 dB of the tail on the training takes and 2.1–2.9 dB of the first 50 ms, early reflections with the tail: PESQ 1.71–1.74 against 1.70 here, STOI 0.84 against 0.82.
+Through it as it is (0.3 → 0.4; untouched: the share returned bit for bit; level change per octave, the worst of 63 Hz–8 kHz):
+
+| | untouched | level change |
+|---|---|---|
+| VocalSet spoken, 20 | 0 → 85 % | −0.64 → −0.21 dB |
+| VocalSet sung straight tones, 20 | 0 → 70 % | −1.38 → −0.92 dB |
+| MUSDB18 previews, 25 | 0 → 76 % | −3.73 → −0.24 dB |
+| GuitarSet, 20 | 0 → 75 % | −2.37 → −0.77 dB |
+| Brahms, the Nutcracker, a trumpet | 0 → 100 % | −5.53 → 0 dB |
+| Vibe Ace | 0 → 0 % | −4.26 → −3.68 dB |
+
+On reverberant VoiceBank in 130 rooms (`vbreverb`, below) PESQ 2.55 → 2.62, STOI 0.897 → 0.908 (the input 0.904), dry takes 4.24 → 4.63, 94 % of them untouched. The constants were chosen on `scripts/dereverb.py train` (training speakers in the even-numbered rooms: tail −7.4 and −7.9 dB, PESQ 1.48 → 1.72 and 1.51 → 1.81), the music checks on the even-numbered MUSDB18 previews and other GuitarSet takes.
+
+0.2 fitted the prediction recursively, over its last second, and learned some of the voice as room. 0.3 scaled the taps' power by a constant, so its estimate grew as the take shortened: on 3 s it took 2–3 dB more than on a minute, and a dry voice came out at PESQ 4.25. Late-reverb subtraction at each room's measured T60 (Lebart; Habets's κ, the T60 an oracle's) scored under the taps' shape scaled by the percentile (short training takes: PESQ 1.64 against 1.71), and an exponential decay at the measured T60 in place of the taps' shape scored the same. Refitting WPE on the gain's output (its weights from the voice estimate, as DNN-WPE takes them) changed nothing. Sparing a spectral peak that holds over 43 ms (a held partial) cost 1.5–2 dB of the tail. No feature tried told speech in the longest rooms from music: the share of low-energy frames, over a second or over the take, and how long the spectrum's fine structure holds (0.3 at 110 ms in a room, 0.34–0.53 for the music pieces) overlap. DeepFilterNet3 takes the first 50 ms with the tail (−2.4 to −2.7 dB of the voice) and here less of the tail; iZotope RX was not available to measure.
 
 **Use when:** a voice in a room, one microphone, one room per take.<br>
-**Not for:** music or anything holding a pitch: a held note is predictable, and taken for room (music loses 2–5.5 dB under 1 kHz; 0.2 lost 1–4.3). Noise: denoise first.
+**Not for:** music with pauses in it is taken for a voice in a room (Vibe Ace −3.7 dB under 500 Hz). Noise: denoise first.
+
+
+## Bleed
+
+### `debleed`
+
+Takes out of a microphone the bleed of a source whose own track you have: the click track leaking from a singer's headphones, the guitar amp in the vocal mic, the co-host's voice in the other host's mic, drums in a piano mic. The bleed is that track through the room, a delay of tens of ms and the room's response, changing as people move; the wanted sound plays over it nearly all the time. It comes out in two stages.
+
+Cancellation: a partitioned-block frequency-domain Kalman filter (Enzner & Vary, Signal Processing 2006; Kuech, Mabande & Enzner, ICASSP 2014) learns the path from the reference to the mic, `span` seconds of it in 10.7 ms partitions (512 samples at 44.1 and 48 kHz), and subtracts the bleed it predicts. Its step in each bin is its uncertainty about the path over that uncertainty plus the wanted sound's power: it hardly moves while the wanted voice sings over the bleed, the double talk that throws an echo canceller's NLMS off, and learns at once in the pauses. The path is a slowly wandering state (AR(1), memory ~5 s), so the filter follows a moving source. It learns from the reference less the reference's own noise floor (minimum statistics, Martin 2001): a reference mic's hiss never reached the other mic. Suppression: what cancellation leaves, a path not yet learned, movement faster than the filter follows, the room's tail past `span`, has a power the filter knows (its uncertainty times the reference's power, plus the decaying tail), and a Wiener gain against it (decision-directed, Ephraim & Malah 1984), floored at `attenuation`, takes it from what remains. With no reference energy the output is the input, bit for bit.
+
+What the filter assumes of the path before hearing it, its prior, sets how fast it learns and how much residual the suppressor expects: a room's decay and a level per band, learned from the coherence of the mic with the bleed predicted (Carter 1973's magnitude-squared coherence, debiased): coherence ignores the prediction's level, so a path the filter has barely begun to learn already reads at its level, and the wanted sound, incoherent with the reference, is not taken for bleed. Each path's level is held at 0 dB or under: bleed is quieter than its source in its own track. Two mics in one room also hear each other the other way: the reference holds the wanted voice, and while that voice sounds alone a canceller learns to predict it from its echo and takes it away. A second filter learns that way back, from the output to the reference, and the first learns from the reference less it (the crosstalk-resistant canceller of Mirchandani, Zinser & Evans, IEEE TCAS-II 1992). The batch call runs twice, learning the levels over the whole take and then removing; the stream learns as it goes, so its first seconds take less. Latency 2·512 − 1 samples at 44.1 and 48 kHz (23 and 21 ms); the batch call runs at about 8× real time at 48 kHz on one core (two passes), the stream at about 16×.
+
+```js
+debleed(vocal, clickTrack, { fs: 48000 })                   // in place
+debleed(hostA, [coHostL, coHostR], { fs: 48000 })           // a stereo reference
+let write = debleed({ fs: 48000 })                          // stream: write(chunk, refChunk) → the samples done, write() → the rest
+```
+
+In `audio`, the reference is the op's second bus, as the ducker's key: `a.debleed({ key: clickTrack })`.
+
+| Param | Default | |
+|---|---|---|
+| `attenuation` | `-20` | dB, the most the residual is turned down; `0` cancels only; read every block |
+| `span` | `0.3` | s of room path the filter learns: the delay and the early room; the tail past it is suppressed as a decay |
+| `blockSize` | 10.7 ms | the partition and hop, a power of two |
+
+Measured (`node scripts/debleed.js test`, then `python scripts/debleed.py test`): bleed made from real recordings, 14 s takes, three per kind and level. The wanted sound: VoiceBank voices (p232, p257) and Spoken Wikipedia narrations, or MUSDB18 vocals. The bleed: another VoiceBank voice (co-host), a click track, MUSDB18 drums, its "other" stem (guitars, keys), through MIT IR Survey rooms (the odd-numbered responses; the defaults were chosen on the even ones, VoiceBank's training speakers and MUSDB18's training previews), 1–30 ms away, −30, −18 or −6 dB under the wanted sound's level; the op gets the source as its own track recorded it, at another gain and tilt, with its own noise. A static path, and a moving one: the source sways ±0.5 ms over 6–10 s, the gain drifts ±1.5 dB, a second room comes in to 30 % over the take. Each system runs on the take and on the take with the bleed inverted (Hagerman & Olofsson 2004), which splits its output into the wanted sound as it left it and the bleed it left. Bleed removed, dB; the wanted sound's SI-SDR after it (the takes' distortion pooled), all and per band; musical noise, the log kurtosis ratio of the bleed left over the bleed (Uemura et al. 2008: 0 for a gain that scales it, more for isolated peaks):
+
+| static path | co-host −30 / −18 / −6 | click | drums | other | wanted SI-SDR | <300 Hz | 0.3–1k | 1–3k | 3–8k | >8k | kurtosis |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `debleed` | 10.9 / 14.6 / 14.3 | 10.2 / 11.0 / 11.8 | 11.3 / 8.7 / 12.0 | 8.0 / 9.9 / 20.5 | 22.3 | 19.6 | 22.5 | 22.0 | 22.4 | 24.4 | 0.08 |
+| stream | 11.7 / 9.5 / 5.3 | 10.2 / 6.4 / 5.6 | 11.5 / 7.0 / 5.8 | 7.5 / 8.0 / 14.7 | 23.7 | 21.2 | 24.0 | 23.5 | 24.1 | 26.2 | 0.39 |
+| time-aligned subtraction | 6.4 / 1.6 / 2.3 | 1.9 / 9.0 / 2.1 | 0.7 / 2.2 / 2.0 | 0.4 / 1.1 / 5.1 | 32.6 | 28.8 | 35.8 | 26.5 | 32.3 | 37.3 | −0.12 |
+| reference Wiener | 4.8 / 5.3 / 9.9 | 5.3 / 11.5 / 10.9 | 5.9 / 4.7 / 6.2 | 3.8 / 5.9 / 9.4 | 20.7 | 20.5 | 20.1 | 19.3 | 20.2 | 26.7 | −0.11 |
+| Speex MDF + suppressor | −4.0 / 6.7 / 8.5 | 3.1 / 6.8 / 6.5 | 0.7 / 6.4 / 10.7 | 4.1 / 9.0 / 16.4 | 7.2 | 1.6 | 12.0 | 16.0 | 5.5 | −23.6 | 0.60 |
+| WebRTC AEC3 | −5.9 / 8.9 / 10.8 | −8.3 / 3.6 / 10.4 | −5.2 / 1.7 / 10.5 | −5.0 / 2.6 / 11.5 | −4.1 | −24.4 | 2.8 | −14.9 | −44.7 | −43.1 | 1.00 |
+
+| moving path | co-host −30 / −18 / −6 | click | drums | other | wanted SI-SDR | <300 Hz | 0.3–1k | 1–3k | 3–8k | >8k | kurtosis |
+|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `debleed` | 6.5 / 8.2 / 7.0 | 4.4 / 4.5 / 3.9 | 7.2 / 5.3 / 5.5 | 3.8 / 5.7 / 8.7 | 22.8 | 19.7 | 22.9 | 24.2 | 27.7 | 26.8 | 0.04 |
+| stream | 7.2 / 5.7 / 3.1 | 4.9 / 3.2 / 2.2 | 7.2 / 4.9 / 4.1 | 3.4 / 4.4 / 7.1 | 24.0 | 21.2 | 23.9 | 25.4 | 29.3 | 28.7 | 0.18 |
+| time-aligned subtraction | 0.4 / 0.3 / 0.3 | 0.0 / 0.2 / 0.0 | 0.6 / 0.1 / 0.0 | 0.0 / 0.0 / 0.0 | 29.6 | 31.2 | 28.5 | 28.3 | 31.4 | 26.1 | −0.01 |
+| reference Wiener | 4.4 / 3.2 / 7.6 | 2.6 / 3.9 / 1.8 | 6.4 / 3.2 / 3.9 | 3.0 / 3.0 / 3.9 | 23.0 | 21.4 | 22.5 | 24.7 | 28.8 | 30.8 | −0.06 |
+| Speex MDF + suppressor | −0.5 / 3.3 / 4.3 | −0.0 / 0.1 / −0.8 | 2.4 / 3.8 / 5.9 | 1.6 / 4.0 / 6.1 | 7.0 | 1.3 | 11.7 | 15.7 | 7.9 | −23.6 | 0.25 |
+| WebRTC AEC3 | −3.1 / 6.3 / 10.1 | 2.8 / 4.2 / 6.3 | −6.0 / 3.5 / 8.1 | −5.1 / 1.9 / 8.4 | −4.1 | −33.6 | 2.6 | −25.3 | −21.9 | −36.7 | 0.80 |
+
+PESQ (wideband) / STOI of the voices (co-host and click takes) against the wanted voice, scored at 16 kHz as `scripts/speech.py` does:
+
+| | static −30 dB | −18 dB | −6 dB | moving −30 dB | −18 dB | −6 dB |
+|---|---|---|---|---|---|---|
+| input | 3.28 / 0.989 | 2.23 / 0.960 | 1.49 / 0.868 | 3.29 / 0.989 | 2.24 / 0.960 | 1.52 / 0.869 |
+| `debleed` | 4.10 / 0.995 | 3.41 / 0.983 | 2.20 / 0.935 | 3.84 / 0.994 | 2.72 / 0.973 | 1.67 / 0.900 |
+| stream | 4.10 / 0.995 | 3.06 / 0.979 | 1.87 / 0.920 | 3.87 / 0.993 | 2.62 / 0.971 | 1.62 / 0.892 |
+| time-aligned subtraction | 3.55 / 0.992 | 2.69 / 0.970 | 1.55 / 0.894 | 3.32 / 0.989 | 2.25 / 0.960 | 1.52 / 0.870 |
+| reference Wiener | 3.74 / 0.992 | 3.02 / 0.974 | 1.99 / 0.913 | 3.57 / 0.991 | 2.57 / 0.968 | 1.63 / 0.895 |
+| Speex MDF + suppressor | 3.14 / 0.984 | 2.74 / 0.968 | 1.87 / 0.920 | 3.01 / 0.981 | 2.20 / 0.955 | 1.50 / 0.874 |
+| WebRTC AEC3 | 1.73 / 0.852 | 1.53 / 0.823 | 1.31 / 0.738 | 1.63 / 0.835 | 1.53 / 0.823 | 1.28 / 0.733 |
+
+The wanted sound alone, its source's track present but never heard by the mic: the batch call adds an error 41.3 dB under it on average (34.4 at most), the stream 38.5 (33.9). With a silent reference every take comes back bit for bit.
+
+Time-aligned subtraction is the delay and gain of Clifford & Reiss (DAFx 2011): one tap cannot follow a room, and a moving one not at all. The reference Wiener is Kokkinis, Reiss & Mourjopoulos's form (IEEE TASLP 2012): the reference's power through |H|² read from the whole take, a gain against it; it takes the bleed's average spectrum, not the bleed in each cell. Speex's MDF echo canceller (speexdsp 1.2.1, 20 ms frames, 0.3 s tail) with its residual-echo suppressor, and WebRTC's AEC3 (through LiveKit's AudioProcessingModule), are telephone echo cancellers: they protect a far end, not the near voice, and in a near voice that never stops they cancel and suppress it (their wanted SI-SDR; their output is nonlinear, so the inversion splits it only roughly). FFmpeg's `anlms` and `arls` would not converge on a 10-sample delay in our setup and are left out. iZotope RX De-bleed was not available to measure.
+
+The tuning half (even-numbered rooms, other speakers and songs): static 7.6–15.3 dB of bleed removed, moving 2.5–10.7, the wanted SI-SDR 23.1 and 24.1, PESQ at −18 dB 2.33 → 3.63 (static) and 2.32 → 2.96 (moving). Tried there, by the error to the wanted sound taken away (bleed and damage together): Speex's MDF canceller alone −8.6 dB and AEC3 −14.6 on the moving path (each learns the wanted voice); the whole take's cross-spectrum as a fixed transfer, subtracted per bin, +4.0 static and −0.8 moving; the Kalman filter given the true path as its prior +12.2 static, given only its true level per band +10.6 static and +6.4 moving, which the learned level falls 1.8 and 1.5 dB short of. That level learned from the ratio of the mic's power to the reference's: its minimum went negative (onsets, the reference's own noise and the room's tail make it lie), its 10th percentile reached 5.1 dB static; the one regressed on the other turned negative where two voices take turns; EM on the filter's posterior reached 6.3 in one pass and 5.0 run twice (it drifts), the coherence 6.2 in one pass and 9.1 run twice. Without the way back, a reference hearing the wanted voice 15 dB down cost 1.0 dB more error than it removed; with it, 3.1 dB is removed. The gradient held to B taps in one partition per block, in turn, in place of all of them, halved the time and changed nothing measurable.
+
+**Use when:** you have the bleeding source's own track: a click or backing track, the amp's own close mic, the other mic of a pair, the drums' close mics.<br>
+**Not for:** bleed with no track of its own (denoise it). A path the reference cannot predict, an overdriven amp's DI as the reference of its speaker's sound: the suppressor alone acts on it.
 
 
 ## Pitch drift
@@ -670,6 +822,7 @@ import { noiseProfile, minStats, imcra } from '@audio/denoise'
 - **`noiseProfile`** — average PSD over leading frames.
 - **`minStats`** — Martin (2001) minimum-statistics noise PSD tracker.
 - **`imcra`** — Cohen (2003) Improved Minima-Controlled Recursive Averaging — drives `omlsa`.
+- **`partials`** (`@audio/noise-estimate`) — a tracker's estimate kept off a program's held partials; `lines`: the steady lines of a noise bed.
 
 
 ## Measurements
@@ -680,7 +833,7 @@ import { noiseProfile, minStats, imcra } from '@audio/denoise'
 |---|---:|---|---:|---:|---:|
 | 60 Hz hum + harmonics | -5.2 dB | `dehum` | 40.4 dB | 6.4 dB | 65 |
 | white noise (~13 dB SNR) | 13.3 dB | `wiener` | 20.5 dB | 0.3 dB | 82 |
-| clicks (vinyl-style) | 24.1 dB | `declick` | 46.2 dB | — | 227 |
+| clicks (vinyl-style) | 24.1 dB | `declick` | 64.4 dB | — | 450 |
 | 7 kHz sibilance | 2.0 dB | `deesser` | 9.2 dB | 1.9 dB | 5 |
 
 Higher = better.
@@ -698,7 +851,7 @@ VoiceBank+DEMAND test set (Valentini-Botinhao 2017, CC BY 4.0), 824 utterances; 
 | `specsub` | 2.11 → 2.26 | 0.921 → 0.919 | 10.4 → 12.8 | 3.29 → 3.36 | 3.12 → 3.36 | 2.66 → 2.79 |
 | `dehum` (no hum here) | 1.78 → 1.97 | 0.907 → 0.921 | 6.5 → 8.4 | 3.29 → 3.32 | 3.08 → 3.11 | 2.65 → 2.68 |
 
-The same clean utterances in: PESQ 3.06 → 4.29 (`omlsa`), 3.97 → 4.03 (`wiener`), 4.30 → 4.03 (`specsub`, which now subtracts an unbiased noise estimate), 3.20 → 4.64 (`dehum`: no hum found, output equals input). Stationary white and pink noise alone, 8 s: `omlsa` takes it 15 dB down with log kurtosis ratio 0.00 (was +0.53 and +0.30), `wiener` 15.5 dB at +0.53 and +1.01 (was 10 dB at +0.93 and +1.35), `specsub` 12 dB at +0.78 and +1.44 (was 4 dB at +0.48 and +0.58). With mains hum 20 dB under the clean utterances (12 harmonics at −6 dB per octave, 0.05 Hz off nominal), `dehum` takes PESQ from 2.64 to 4.17 at 50 Hz and from 2.48 to 4.26 at 60 Hz, SI-SDR from 20.0 to 39.1 and 41.5 dB, STOI to 0.998 (0.2.0's notches: PESQ 2.88 and 2.76, SI-SDR 23.8 and 24.2 dB); alone, that hum goes 110 and 87 dB down (0.2.0: 44.6 and 50.0).
+The same clean utterances in: PESQ 3.06 → 4.29 (`omlsa`), 3.97 → 4.03 (`wiener`), 4.30 → 4.03 (`specsub`, which now subtracts an unbiased noise estimate), 3.20 → 4.64 (`dehum`: no hum found, output equals input). Stationary white and pink noise alone, 8 s: `omlsa` takes it 15 dB down with log kurtosis ratio 0.00 (was +0.53 and +0.30), `wiener` 15.5 dB at +0.53 and +1.01 (was 10 dB at +0.93 and +1.35), `specsub` 12 dB at +0.78 and +1.44 (was 4 dB at +0.48 and +0.58). With mains hum 20 dB under the clean utterances (12 harmonics at −6 dB per octave, 0.05 Hz off nominal), `dehum` takes PESQ from 2.64 to 4.18 at 50 Hz and from 2.48 to 4.27 at 60 Hz, SI-SDR from 20.0 to 39.2 and 41.6 dB, STOI to 0.998 (0.2.0's notches: PESQ 2.88 and 2.76, SI-SDR 23.8 and 24.2 dB); alone, that hum goes 110 and 87 dB down (0.2.0: 44.6 and 50.0).
 
 Ten Spoken Wikipedia narrations, 60 s each (volunteers at home; raw OVRL 3.17): `omlsa` SIG 3.25 → 3.46 (raw 3.45), BAK 4.00 → 4.09, OVRL 2.96 → 3.20, speech level −1.1 → −0.04 dB, noise floor median −76 → −75 dBFS. Room tone stays: G<sub>min</sub> is 15 dB, so only a room already under −75 dBFS ends under −90 (one of the nine, raw −83).
 
@@ -706,18 +859,22 @@ In the rows above, `omlsa` 0.3 and `wiener` 0.3 take the decision-directed α pe
 
 `omlsa` 0.4 reads the speech absence from the a priori SNR smoothed in the cepstrum, and on a learned noise the speech presence from γ averaged over neighbouring bins ([`omlsa`](#omlsa)). Chosen on the training subset; on the test set, once, 0.3 → 0.4, tracked: PESQ 2.362 → 2.364, STOI 0.919 → 0.920, SI-SDR 14.04 → 14.25 dB, SIG 3.382 → 3.384, BAK 3.43 → 3.47, OVRL 2.838 → 2.853, musical noise 0.49 → 0.48; on a learned noise (`node scripts/speech.mjs vbdemand omlsa-learned`, as audio's `denoise` runs it, 12 dB): 2.453 → 2.455, 0.919 → 0.920, 15.05 → 15.11, 3.380 → 3.367, 3.53 → 3.54, 2.875 → 2.874, 0.39 → 0.34. The clean utterances in: PESQ 4.288 → 4.287 tracked, 4.299 → 4.288 learned; steady white and pink noise alone 15 dB down at log kurtosis ratio 0.00 and 0.02. (The learned form was scored on the test set once before, its presence averaged over 64 ms of frames as the paper has it: PESQ 2.421, OVRL 2.885; the musical noise it left after music stops, measured on the training material, then took it to the frame alone.)
 
+Tracking the noise, `omlsa` 0.5, `wiener` 0.4 and `specsub` 0.3 keep a program's held partials out of it (noise-estimate 2.3's `partials`, see [`omlsa`](#omlsa)). Chosen on the training subset (tracked `omlsa` PESQ 1.825 → 1.823, OVRL 2.543 → 2.542; `wiener` 1.819 → 1.820, 2.530 → 2.529; `specsub` 1.730 → 1.730, 2.459 → 2.462), music and VocalSet; on the test set, once, before → after: `omlsa` PESQ 2.364 → 2.361, STOI 0.920 → 0.920, SI-SDR 14.25 → 14.15 dB, SIG 3.384 → 3.383, BAK 3.467 → 3.466, OVRL 2.853 → 2.851, musical noise 0.48 → 0.49; `wiener` 2.355 → 2.359, 0.911 → 0.912, 14.29 → 14.29, 3.395 → 3.396, 3.431 → 3.430, 2.843 → 2.844, 0.49 → 0.50; `specsub` 2.264 → 2.270, 0.919 → 0.919, 12.80 → 12.76, 3.358 → 3.359, 3.363 → 3.362, 2.794 → 2.795, 0.35 → 0.36. The clean utterances in: PESQ 4.287 → 4.290, 4.03 → 4.07, 4.03 → 4.08; steady white and pink noise alone as before. Clean music, sung long tones and Slakh mixes cut by more than 3 dB: the table below. Tried and not taken: holding a partial from 54 ms on, not 0.3 s (more music kept, but the noise rising under a voice's harmonics was held down with them: PESQ −0.015 on the training speech); the spectral floor as the noise of a partial with no memory yet, at a take's start (the trumpet's first note kept, but DEMAND's low, peaked noises held as partials: PESQ −0.03); a 10 s window (a song's chords, repeated past it, were learned: Slakh mixes cut six times as much); the noise under a partial following the floor beside it (less music kept, more noise left under the voice). The trackers themselves: MCRA-2 (Rangachari & Loizou 2006; Loizou's `mcra2_estimation.m` constants per 10 ms) PESQ 1.72 against IMCRA's 1.83, music cut 1.7 times IMCRA's, steady noise alone 10–13 dB down with musical noise 1.0–1.1; Gerkmann & Hendriks's MMSE tracker (2012) with `partials` PESQ 1.849 (+0.024), but STOI −0.003, clean speech in 4.24 → 4.14, steady pink noise left with musical noise 0.33, and music hardly kept: it follows a held note within the 0.3 s before a partial is held. With the noise known exactly the learned form reaches PESQ 2.11 on the training subset: a tracker that gets there has to know the noise under the speech, which none of these do.
+
 The open classical denoisers on the same 824, each given the noise as ours is: noisereduce 3.0.3 (stationary spectral gating, the lead-in as its noise clip) at 12 dB (`prop_decrease` 0.75): PESQ 2.409, STOI 0.921, SI-SDR 12.8, SIG 3.37, BAK 3.51, OVRL 2.861, musical noise 0.03; at full reduction 2.357, 0.910, 12.4, 3.22, 3.72, 2.825, 0.74; logmmse 1.5 (a port of Loizou's `logmmse.m`, noise from the lead-in, updated by its VAD) 2.350, 0.900, 14.7, 3.29, 3.52, 2.799, 0.73; FFmpeg 8.0.1's `afftdn` learning the lead-in, 12 dB: 2.048, 0.920, 8.6, 3.25, 3.14, 2.657, 0.20 (`anlmdn` at its defaults leaves the input as it is). Neural, for scale: DeepFilterNet3 limited to 12 dB 2.670, 0.939, 16.2, 3.49, 3.69, 3.026, 0.06; RNNoise 2.109, 0.890, 12.3, 3.28, 3.85, 2.935, 0.90. iZotope RX was not measured: no RX plug-in is installed where these ran.
 
 Tried on the training subset and not taken: the cepstral a priori SNR as the gain's ξ as well (tracked SIG −0.04, music cut 9.6 → 15.6 %); Gerkmann & Hendriks's MMSE noise tracker (2012) in place of IMCRA (tracked PESQ +0.04, OVRL +0.03, but STOI −0.008, clean speech in PESQ 4.24 → 4.08, music cut 9.6 → 28.5 %) or of minimum statistics in `wiener` (PESQ 1.82 → 1.87, steady-noise musical noise 0.53 → 0.79, music cut 14.5 → 28.5 %); that tracker started on a learned print (RX's "adaptive": OVRL −0.04, musical noise 0.40 on pink noise); the cepstral ξ in `wiener` (STOI +0.014, SIG −0.06); the averaged presence in the tracked gain (PESQ +0.015, a word's second frame after a pause 0.7 dB lower); the gain smoothed over frequency, in dB or linear, ±100 Hz (musical noise 0.46 → 0.22–0.29, speech cut by more than 3 dB 9.5 → 25–38 %). With the noise known exactly (the true noise's periodogram, recursively smoothed) the learned form scores PESQ 2.11 on the training subset (1.87 with the print) and leaves musical noise of 0.01 (0.46): what remains to be had is in the estimate of a noise that changes, not in the gain.
 
-What each keeps of the speech, by shadow filtering (`node scripts/broadband.mjs`: each frame's gain, computed on the noisy mix, applied to the clean speech and to the noise alone): a word's second and third frame after 85 ms of pause, in ten Spoken Wikipedia narrations under pink noise 10 dB down; speech 20–50 dB under the take's loudest frame, and bins where it stands 0–5 dB over the noise (the MMSE-optimal Wiener gain keeps −3.9 dB there), in the test set's every fourth utterance; the noise taken; the share of clean speech, and of clean music, cut by more than 3 dB. dB, `omlsa` 0.3 → 0.4 (`wiener` and `specsub` as they stand):
+What each keeps of the speech, by shadow filtering (`node scripts/broadband.mjs`: each frame's gain, computed on the noisy mix, applied to the clean speech and to the noise alone): a word's second and third frame after 85 ms of pause, in ten Spoken Wikipedia narrations under pink noise 10 dB down; speech 20–50 dB under the take's loudest frame, and bins where it stands 0–5 dB over the noise (the MMSE-optimal Wiener gain keeps −3.9 dB there), in the test set's every fourth utterance; the noise taken; the share of clean speech, clean music (the four recordings `repair` uses), VocalSet's straight long tones (one per singer, 20) and Slakh2100 mixes (six, 60 s each: synthesized bands, never heard while choosing) cut by more than 3 dB. dB; each tracking system without → with noise-estimate 2.3's `partials` (the learned noise is held, not tracked):
 
-| op | onset +1 | onset +2 | quiet | 0–5 dB | noise, VB | noise, narr. | clean cut % | music cut % |
-|---|---|---|---|---|---|---|---|---|
-| `omlsa` | −8.9 → −6.1 | −4.8 → −3.5 | −2.0 → −2.1 | −3.6 → −3.6 | −6.7 → −7.0 | −7.5 → −7.6 | 0.3 → 0.3 | 9.6 → 9.9 |
-| `omlsa`, learned noise | −6.1 → −4.8 | −2.7 → −2.6 | −3.0 → −3.0 | −7.9 → −4.6 | −8.3 → −8.1 | −8.4 → −7.3 | 0.4 → 0.4 | – |
-| `wiener` | −5.4 | −2.4 | −2.1 | −3.7 | −7.1 | −7.1 | 0.7 | 14.5 |
-| `specsub` | −1.5 | −0.3 | −1.9 | −3.9 | −4.8 | −5.8 | 0.3 | 10.3 |
+| op | onset +1 | onset +2 | quiet | 0–5 dB | noise, VB | noise, narr. | clean cut % | music cut % | sung cut % | Slakh cut % |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `omlsa` | −6.1 → −6.1 | −3.5 → −3.5 | −2.1 → −2.1 | −3.6 → −3.5 | −7.0 → −6.9 | −7.6 → −7.6 | 0.3 → 0.3 | 9.9 → 3.0 | 8.8 → 0.0 | 22.6 → 2.3 |
+| `omlsa`, learned noise | −4.8 | −2.6 | −3.0 | −4.6 | −8.1 | −7.3 | 0.4 | – | – | – |
+| `wiener` | −5.4 → −5.4 | −2.4 → −2.3 | −2.1 → −2.0 | −3.7 → −3.7 | −7.1 → −7.1 | −7.1 → −7.1 | 0.7 → 0.5 | 14.5 → 3.4 | 36.3 → 0.0 | 26.6 → 3.3 |
+| `specsub` | −1.5 → −1.4 | −0.3 → −0.3 | −1.9 → −1.8 | −3.9 → −3.9 | −4.8 → −4.8 | −5.8 → −5.8 | 0.3 → 0.2 | 10.3 → 3.2 | 36.9 → 0.0 | 13.1 → 0.8 |
+
+What a tracker still takes of clean music is where nothing tells the program from the noise: a note sounding from a take's first frame (most of the music cut left is the trumpet recording, which starts on one), and a dense mix no bin of which is ever free of it from the start (a song cut in mid-chorus). There a learned noise (`profile`; audio's `denoise`) is the way: the print says what the noise is.
 
 The paper's α 0.92 kept more again (tracked, a word's second frame after a pause on the training narrations: −1.6 dB) but left musical noise on steady noise (log kurtosis ratio 0.99 and 1.81), as did the paper's q ≤ q<sub>max</sub> in place of the gate (0.24 and 0.46). Martin's time-varying optimal smoothing for minimum statistics kept more speech only by reading the noise low (pink noise 1.7 dB under; `wiener`'s noise taken on the training speech 5.0 → 3.8 dB, PESQ 1.79 → 1.73), and a −25 dB ξ<sub>min</sub> for `wiener` brought more musical noise (0.98 and 1.49) and lower PESQ and SIG: none was taken. Minimum statistics' fixed start costs clean music cut at the start of a take, where the first frame's low values used to hold the estimate down (music cut 12.5 → 14.5 % for `wiener`, all of it in the first 1.5 s of the 6 s trumpet loop, cut 8 → 20 % there; the other three tracks are unchanged). In the half second after music stops, `omlsa` on a learned noise leaves musical noise of 0.11 → 0.05 at G<sub>min</sub> −12 dB and 1.00 → 0.61 at −20 (0.3 → 0.4; 0.00 a second later). Its noise taken in all frames falls (narrations 8.4 → 7.3 dB) for what lies under the weak speech it now keeps; in pauses it is as before or more (training speech 9.7 → 10.1 dB).
 
@@ -739,16 +896,16 @@ Frames follow the rate: the power of two nearest 32 ms, the papers' frame, where
 
 STOI holds or rises for `wiener` and `specsub` and falls 0.001–0.002 for `omlsa`; SI-SDR falls 0.3–0.7 dB for `omlsa` and `wiener` at 22.05 and 44.1 kHz, and 0.8–1.2 dB for `specsub`, which alone prefers the longer frame there (so it did on the training subset).
 
-Reverberant speech (`vbreverb`): a quarter of the clean test utterances, 206, through 130 rooms of the MIT IR Survey (Traer & McDermott 2016), scored against the dry takes, DNSMOS at the input's loudness. `dereverb` 0.2 (recursive WPE) → 0.3; the rooms with a tail to hear are in [`dereverb`](#dereverb)'s own table:
+Reverberant speech (`vbreverb`): a quarter of the clean test utterances, 206, through 130 rooms of the MIT IR Survey (Traer & McDermott 2016), scored against the dry takes, DNSMOS at the input's loudness. `dereverb` 0.3 → 0.4; the rooms with a tail to hear are in [`dereverb`](#dereverb)'s own table:
 
 | | PESQ | STOI | SI-SDR dB | SIG | BAK | OVRL |
 |---|---|---|---|---|---|---|
 | reverberant input | 2.33 | 0.904 | −5.7 | 3.19 | 3.71 | 2.82 |
-| `dereverb` | 2.52 → **2.55** | 0.914 → 0.897 | −5.2 → −5.3 | 3.22 → **3.27** | 3.73 → **3.89** | 2.85 → **2.93** |
+| `dereverb` | 2.55 → **2.62** | 0.897 → **0.908** | −5.3 → **−5.1** | 3.27 → **3.28** | 3.89 → 3.86 | 2.93 → 2.93 |
 | dry takes in (`vbreverb-dry`) | 4.64 | 1.000 | ∞ | 3.51 | 4.04 | 3.22 |
-| dry, `dereverb` | 4.37 → 4.24 | 0.999 → 0.997 | 27.5 → 28.2 | 3.50 → 3.49 | 4.03 → 4.05 | 3.21 → 3.21 |
+| dry, `dereverb` | 4.24 → **4.63** | 0.997 → **1.000** | 28.2 → **∞** (94 % untouched) | 3.49 → **3.51** | 4.05 → 4.04 | 3.21 → **3.22** |
 
-On the training utterances (`vbreverb-train`, 126): PESQ 2.36 → 2.56 → 2.57, OVRL 2.81 → 2.84 → 2.91. The constants were chosen on `scripts/dereverb.py train`: VoiceBank training speakers in the even-numbered rooms, 1.8–4.5 s utterances and 25–41 s takes.
+On the training utterances (`vbreverb-train`, 126): PESQ 2.36 → 2.57 → 2.64, OVRL 2.81 → 2.91 → 2.91 (input, 0.3, 0.4). The constants were chosen on `scripts/dereverb.py train`: VoiceBank training speakers in the even-numbered rooms, 1.8–4.5 s utterances and 25–41 s takes. Of the 206 reverberant test utterances 18 % come out untouched: rooms with little tail, which the dry check passes.
 
 
 ## Demo
@@ -786,11 +943,24 @@ On the training utterances (`vbreverb-train`, 126): PESQ 2.36 → 2.56 → 2.57,
 - Kinoshita, Delcroix, Nakatani & Miyoshi, *Suppression of Late Reverberation Effect on Speech Signal Using Long-Term Multiple-Step Linear Prediction*, IEEE TASLP 2009.
 - Habets, *Speech Dereverberation Using Statistical Reverberation Models*, in Naylor & Gaubitch (eds.), Speech Dereverberation, Springer 2010.
 - Polack, *Playing Billiards in the Concert Hall: The Mathematical Foundations of Geometrical Room Acoustics*, Applied Acoustics 1993.
+- Scheirer & Slaney, *Construction and Evaluation of a Robust Multifeature Speech/Music Discriminator*, ICASSP 1997.
 - Falk, Zheng & Chan, *A Non-Intrusive Quality and Intelligibility Measure of Reverberant and Dereverberated Speech*, IEEE TASLP 2010 (SRMR).
 - Traer & McDermott, *Statistics of Natural Reverberation Enable Perceptual Separation of Sound and Space*, PNAS 2016 (MIT IR Survey).
 - Talkin, *A Robust Algorithm for Pitch Tracking (RAPT)*, in Kleijn & Paliwal (eds.), Speech Coding and Synthesis, Elsevier 1995.
 - Boersma, *Accurate Short-Term Analysis of the Fundamental Frequency and the Harmonics-to-Noise Ratio of a Sampled Sound*, IFA Proceedings 17, 1993.
 - Nelke & Vary, *Measurement, Analysis and Simulation of Wind Noise Signals for Mobile Communication Devices*, IWAENC 2014.
+- Nelke, Naylor & Vary, *Wind Noise Short Term Power Spectrum Estimation Using Pitch Adaptive Inverse Binary Masks*, ICASSP 2015.
+- Rangachari & Loizou, *A Noise-Estimation Algorithm for Highly Non-Stationary Environments*, Speech Communication 2006.
+- Enzner & Vary, *Frequency-Domain Adaptive Kalman Filter for Acoustic Echo Control in Hands-Free Telephones*, Signal Processing 2006.
+- Kuech, Mabande & Enzner, *State-Space Architecture of the Partitioned-Block-Based Acoustic Echo Controller*, ICASSP 2014.
+- Valin, *On Adjusting the Learning Rate in Frequency Domain Echo Cancellation With Double-Talk*, IEEE TASLP 2007 (Speex MDF).
+- Soo & Pang, *Multidelay Block Frequency Domain Adaptive Filter*, IEEE TASSP 1990.
+- Mirchandani, Zinser & Evans, *A New Adaptive Noise Cancellation Scheme in the Presence of Crosstalk*, IEEE TCAS-II 1992.
+- Carter, Knapp & Nuttall, *Estimation of the Magnitude-Squared Coherence Function via Overlapped FFT Processing*, IEEE TAU 1973.
+- Kokkinis, Reiss & Mourjopoulos, *A Wiener Filter Approach to Microphone Leakage Reduction in Close-Microphone Applications*, IEEE TASLP 2012.
+- Clifford & Reiss, *Microphone Interference Reduction in Live Sound*, DAFx 2011.
+- Hagerman & Olofsson, *A Method to Measure the Effect of Noise Reduction Algorithms Using Simultaneous Speech and Noise*, Acta Acustica 2004.
+- Rafii, Liutkus, Stöter, Mimilakis & Bittner, *The MUSDB18 Corpus for Music Separation*, 2017, [doi:10.5281/zenodo.1117372](https://doi.org/10.5281/zenodo.1117372).
 - RBJ Audio EQ Cookbook (biquad coefficients).
 
 

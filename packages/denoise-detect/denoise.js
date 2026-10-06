@@ -5,10 +5,15 @@
 //   - hum   — dehum's own measurement finds a mains series, A-weighted within 50 dB of the program → dehum
 //   - click — isolated impulses standing 32σ out of the AR error, over 1 a second → declick
 //   - hi    — 5–9 kHz over 0.2–2 kHz power over 8 → deesser
-//   - wind  — loud, aperiodic low end 6 dB over the mid band in over a tenth of the recording → dewind
-//   - bed   — a noise floor within 25 dB of the program, shown in its pauses or as steady bands → wiener when
-//             steady, omlsa when it wanders (IMCRA keeps adapting where a frozen profile can't)
+//   - bed   — a noise floor within 25 dB of the program, shown in its pauses or as steady bands → omlsa
+//   - wind  — loud, aperiodic low end 6 dB over the mid band in over a tenth of the recording, no bed shown → dewind
 //   - none
+//
+// Every bed goes to omlsa: over 994 noisy tuning takes (VoiceBank+DEMAND's noises, DEMAND's, white, pink, babble,
+// wind; scripts/detect.py) it kept STOI 0.007 ± 0.001 over wiener's at the same PESQ and SIG; wiener's edge, BAK on
+// stationary noise, lies in the noise left. A bed outranks wind: a steady low rumble (a car, traffic, a metro) is a
+// bed, and omlsa took it 0.1–0.3 PESQ over dewind; gusts with calms between, which the pauses show as no bed, stay
+// dewind's (PESQ 1.88 to omlsa's 1.56).
 //
 // dereverb has no reliable single-pass signature, so auto-mode never selects it —
 // reach it explicitly via `denoise(data, { force: 'dereverb' })` or `dereverb()`.
@@ -71,6 +76,7 @@ export const BED_SNR = 25
 
 const HUM_LEVEL = -50                              // dB A re the program: a line under it goes unheard
 const WIND_SHARE = 0.1                             // share of 0.15 s blocks
+const FLOOR_SLACK = 3                              // dB a bed's pauses may wander over its floor, past Gaussian spread
 const MAX_FRAMES = 1 << 15                         // ≈ 6 min at 48 kHz; longer, 16 spans of it spread across
 
 export function classify(data, fs = 44100) {
@@ -81,8 +87,8 @@ export function classify(data, fs = 44100) {
   let method = hum.level >= HUM_LEVEL ? 'dehum'
     : click > CLICK_RATE ? 'declick'
     : hi > 8 ? 'deesser'                           // white noise scores ~3.9 by bandwidth alone
+    : bed.snr < BED_SNR ? 'omlsa'
     : wind > WIND_SHARE ? 'dewind'
-    : bed.snr < BED_SNR ? (bed.steady ? 'wiener' : 'omlsa')
     : 'none'
   let scores = { hum: hum.harmonics, humFreq: hum.f0, humLevel: hum.level, click, hi, wind, snr: bed.snr, steady: bed.steady }
   return { method, scores, humFreq: hum.f0 }
@@ -206,10 +212,17 @@ function windShare(s) {
 
 // The noise bed and the program's level over it, dB; the program: its frames within 40 dB of the loudest. Frames
 // within 80 dB of the loudest count: digital silence is no bed. Two kinds of evidence:
-//   pauses — runs of 0.15 s or more within 6 dB of the 10th percentile of the frame level, holding no lines (each
-//            band's median persistence there: their median under 0.05, none over 0.5) and flat (the bands' median
-//            flatness over 0.4; Gaussian noise reads e^−γ ≈ 0.56). The bed: their median level. A voice pauses; a
-//            dense mix doesn't sink that long without its partials, nor does a held note.
+//   pauses — runs of 0.15 s or more within 6 dB of the 10th percentile of the frame level that hold noise or hold
+//            the floor. Noise: no lines (each band's median persistence there: their median under 0.05, none over
+//            0.5) and flat (the bands' median flatness over 0.4; Gaussian noise reads e^−γ ≈ 0.56). The floor: a bed
+//            lies under the program all the time, so in every band the pauses sit where the band sinks to over the
+//            whole take (its 5th percentile) and no further over it than Gaussian noise's own spread puts them
+//            (1.645 · 4.34/√(n/1.5) dB) plus FLOOR_SLACK for the bed's slow wander (the bands' median), with no
+//            partials that come and go (the bands' median persistence under 0.1, babble's 0.04–0.08). A line held
+//            through every pause, an engine's, a fan's, a mains-like tone, is part of the floor; a quiet passage of
+//            music isn't: its notes come and go, and its pauses stand over the floors other passages sink to. The
+//            bed: the pauses' median level. A voice pauses; a dense mix doesn't sink that long without its partials,
+//            nor does a held note.
 //   steady — bands whose frames at or under the band's median level spread no more than twice what Gaussian noise
 //            would over its bins (4.34/√(n/1.5) dB, Hann-windowed bins correlated in pairs) and hold no lines
 //            (median persistence under 0.05): stationary noise where the program doesn't reach. The bed: those
@@ -227,9 +240,13 @@ function noiseBed({ T, B, nb, test, L, F, C, tot, valid, peak, act, hop, fs }) {
   let at = (A, ts, b) => median(ts.map(t => A[t * B + b]).filter(v => v === v))
   let snrP = Infinity
   if (pause.length) {
-    let c = [], f = []
-    for (let b = 0; b < B; b++) if (test[b]) { c.push(at(C, pause, b)); f.push(at(F, pause, b)) }
-    if (median(c) < 0.05 && Math.max(...c) < 0.5 && median(f) > 0.4) snrP = 10 * Math.log10(act / median(pause.map(t => tot[t])))
+    let c = [], f = [], over = []
+    for (let b = 0; b < B; b++) if (test[b]) {
+      c.push(at(C, pause, b)); f.push(at(F, pause, b))
+      over.push(at(L, pause, b) - quantile(keep.map(t => L[t * B + b]), 0.05) - 1.645 * 4.343 / Math.sqrt(nb[b] / 1.5))
+    }
+    let noise = median(c) < 0.05 && Math.max(...c) < 0.5 && median(f) > 0.4, floor = median(over) <= FLOOR_SLACK && median(c) < 0.1
+    if (noise || floor) snrP = 10 * Math.log10(act / median(pause.map(t => tot[t])))
   }
   let bed = 0
   for (let b = 0; b < B; b++) {

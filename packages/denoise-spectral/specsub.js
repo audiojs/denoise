@@ -63,7 +63,8 @@ function makeProcess(opts) {
   let auto = !opts.profile
   let N = opts.frameSize, hop = opts.hopSize, fs = opts.fs
   let half = N >> 1
-  let est = auto ? minStats(half, { D: Math.round(1.5 * fs / hop), ...opts.estimator }) : null   // Martin's 1.5 s
+  // Martin's 1.5 s; a program's held partials kept out (noise-estimate's `partials`)
+  let est = auto ? minStats(half, { D: Math.round(1.5 * fs / hop), fs, hop, partials: true, ...opts.estimator }) : null
   let profile = opts.profile
 
   return function (mag, phase) {

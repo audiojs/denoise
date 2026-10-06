@@ -1,8 +1,9 @@
-// Measure @audio/denoise-declick on clicks added to speech and music. Run: `node scripts/declick.js [path to a
-// declick.js]` (a minute). Prints the README's "Measured" table: per kind and size of click, how much of its error is
-// gone (dB, over the click and 1 ms either side: 10·log10 of the error before over the error after), the share gone
-// by 10 dB or more; then what declick changes in the clean sound, and the same with each click's surroundings given
-// as `regions`.
+// Measure @audio/denoise-declick on clicks added to speech and music, next to FFmpeg's `adeclick` at its defaults when
+// ffmpeg is on the PATH. Run: `node scripts/declick.js [path to a declick.js]` (a few minutes). Prints the README's
+// "Measured" table: per kind and size of click, how much of its error is gone (median dB, over the click and 1 ms
+// either side: 10·log10 of the error before over the error after), the share gone by 10 dB or more, and adeclick's
+// median after ·; then what each changes in the clean sound, and the same with each click's surroundings given as
+// `regions` (adeclick has none).
 //
 // Clicks, one every 0.25–0.45 s, each peaking at k × the RMS of the clean sound within ±10 ms (k = 2, 5, 15):
 //   tick    an impulse ringing at 2–8 kHz, decaying in 0.05–0.3 ms (vinyl, a dust particle)
@@ -15,6 +16,7 @@
 import raw from 'audio-lena/raw'
 import { readFileSync, existsSync } from 'fs'
 import { homedir } from 'os'
+import { spawnSync } from 'child_process'
 
 const declick = (await import(process.argv[2] ? new URL(process.argv[2], `file://${process.cwd()}/`) : '@audio/denoise-declick')).default
 const fs = 44100
@@ -32,6 +34,13 @@ const kinds = {
   mouth: r => { let L = Math.round((1 + r() * 2) * fs / 1000), q = 0; return Array.from({ length: L }, (_, n) => { let w = r() * 2 - 1, y = w - q; q = w; return y * Math.sin(Math.PI * n / L) ** 2 }) }
 }
 const rms = (x, a, b) => { let s = 0; for (let i = a; i < b; i++) s += x[i] * x[i]; return Math.sqrt(s / (b - a)) }
+const ffmpeg = spawnSync('ffmpeg', ['-version']).status === 0
+function adeclick(x) {
+  let r = spawnSync('ffmpeg', ['-v', 'error', '-f', 'f32le', '-ar', fs, '-ac', '1', '-i', 'pipe:0', '-af', 'adeclick', '-f', 'f32le', 'pipe:1'], { input: Buffer.from(x.buffer, x.byteOffset, x.byteLength), maxBuffer: 1 << 30 })
+  let y = new Float32Array(x.length)
+  y.set(new Float32Array(r.stdout.buffer.slice(r.stdout.byteOffset, r.stdout.byteOffset + r.stdout.length)).subarray(0, x.length))
+  return y
+}
 const changed = (x, y) => { let e = 0, s = 0, c = 0; for (let i = 0; i < x.length; i++) { e += (y[i] - x[i]) ** 2; s += x[i] ** 2; if (y[i] !== x[i]) c++ } return [c, e ? 10 * Math.log10(e / s) : -Infinity] }
 
 // the clicked sound, and each click's span
@@ -51,27 +60,27 @@ const around = (spans, r) => spans.map(([a, b]) => { let l = Math.round((3 + r()
 for (let mode of ['all', 'regions']) {
   console.log(`\n${mode === 'all' ? 'declick(data, { fs })' : 'declick(data, { fs, regions })'}\n\n| click | 2× | 5× | 15× |\n|---|---:|---:|---:|`)
   for (let kind in kinds) {
-    let cells = []
+    let cells = [], ff = ffmpeg && mode === 'all'
     for (let k of [2, 5, 15]) {
-      let gone = []
+      let gone = [], ref = []
       material.forEach(([, clean], m) => {
         let { x, spans } = clicked(clean, kind, k, 7 * k + 13 * m + kind.length), r = lcg(m + 1)
-        let y = declick(x.slice(), mode === 'all' ? { fs } : { fs, regions: around(spans, r) })
+        let y = declick(x.slice(), mode === 'all' ? { fs } : { fs, regions: around(spans, r) }), z = ff && adeclick(x)
         for (let [a, b] of spans) {
-          let before = 0, after = 0
-          for (let i = a - 44; i < b + 44; i++) before += (x[i] - clean[i]) ** 2, after += (y[i] - clean[i]) ** 2
-          gone.push(10 * Math.log10(before / (after || 1e-20)))
+          let before = 0, after = 0, other = 0
+          for (let i = a - 44; i < b + 44; i++) before += (x[i] - clean[i]) ** 2, after += (y[i] - clean[i]) ** 2, other += ff ? (z[i] - clean[i]) ** 2 : 0
+          gone.push(10 * Math.log10(before / (after || 1e-20))), ref.push(10 * Math.log10(before / (other || 1e-20)))
         }
       })
-      gone.sort((p, q) => p - q)
-      cells.push(`${gone[gone.length >> 1].toFixed(1)} dB · ${Math.round(100 * gone.filter(v => v >= 10).length / gone.length)}%`)
+      let med = v => v.sort((p, q) => p - q)[v.length >> 1].toFixed(1)
+      cells.push(`${med(gone)} dB · ${Math.round(100 * gone.filter(v => v >= 10).length / gone.length)}%${ff ? ' · ' + med(ref) : ''}`)
     }
     console.log(`| ${kind} | ${cells.join(' | ')} |`)
   }
   console.log('\nThe clean sound through it: samples changed, error to the sound\n')
   for (let [name, clean] of material) {
     let r = lcg(9), regions = mode === 'all' ? undefined : Array.from({ length: Math.floor(clean.length / fs / 0.4) - 1 }, (_, i) => ({ at: 0.3 + i * 0.4, duration: (3 + r() * 40) / 1000 }))
-    let [c, db] = changed(clean, declick(clean.slice(), { fs, regions }))
-    console.log(`- ${name}: ${c} samples, ${c ? db.toFixed(1) + ' dB' : 'none'}`)
+    let [c, db] = changed(clean, declick(clean.slice(), { fs, regions })), [c2, db2] = ffmpeg && mode === 'all' ? changed(clean, adeclick(clean)) : []
+    console.log(`- ${name}: ${c} samples, ${c ? db.toFixed(1) + ' dB' : 'none'}${c2 != null ? ` · adeclick ${c2} samples, ${db2.toFixed(1)} dB` : ''}`)
   }
 }

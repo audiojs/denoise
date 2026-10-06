@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-declip",
-  "version": "0.2.0",
-  "description": "De-clip: each side's rail found where the sound was cut flat, every clipped sample rebuilt by consistent least-squares AR interpolation; unclipped sound untouched",
+  "version": "0.3.0",
+  "description": "De-clip: each side's rail found where the sound was cut flat, every clipped sample rebuilt twice, sparse (A-SPADE) and AR (Janssen), the two blended by a weight cross-validated region by region; unclipped sound untouched",
   "type": "module",
   "sideEffects": false,
   "main": "declip.js",
@@ -23,7 +23,8 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/lpc": "^1.2.0"
+    "@audio/lpc": "^1.2.0",
+    "fourier-transform": "^2.4.0"
   },
   "keywords": [
     "audio",

@@ -12,11 +12,11 @@ export interface ClassifyScores {
   click: number
   /** 5–9 kHz over 0.2–2 kHz power; deesser above 8 */
   hi: number
-  /** share of 0.15 s blocks with loud, aperiodic low end 6 dB over the mid band; dewind above 0.1 */
+  /** share of 0.15 s blocks with loud, aperiodic low end 6 dB over the mid band; dewind above 0.1, where no bed shows */
   wind: number
-  /** program over noise bed, dB (Infinity: no bed); a reducer under `BED_SNR` */
+  /** program over noise bed, dB (Infinity: no bed); omlsa under `BED_SNR` */
   snr: number
-  /** the bed shows in steady bands (wiener), else in the pauses alone (omlsa) */
+  /** the bed shows in steady bands, not in the pauses alone (informational: every bed goes to omlsa) */
   steady: boolean
 }
 

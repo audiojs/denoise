@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dewind",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "De-wind / de-rumble — per STFT bin, the wind between and under the harmonics taken, the harmonics kept",
   "type": "module",
   "sideEffects": false,

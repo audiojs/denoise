@@ -19,7 +19,8 @@
 #   specsub   Berouti, Schwartz & Makhoul, ICASSP 1979: power subtraction, over-subtraction α(SNR), floor β.
 #   wpe       Nakatani, Yoshioka, Kinoshita, Miyoshi & Juang, IEEE TASLP 18(7), 2010: variance-normalized delayed
 #             linear prediction, one channel, fitted over the whole take (eq. 13–15, iterated), with dereverb's λ floor
-#             and silence rule; then the late power its taps predict taken by Ephraim & Malah's LSA gain (1985).
+#             and silence rule; then the late power the past carries, shaped by its taps and scaled by the take's own
+#             10th percentile, taken by Ephraim & Malah's LSA gain (1985).
 #
 # Time constants are quoted for Cohen's 8 ms frames (512 samples, 128 hop at 16 kHz) and rescaled to the actual
 # frame step Δt as a^(Δt/8 ms); the minimum window keeps its length in seconds.
@@ -234,19 +235,44 @@ def wpe(F, D, K, iters=3):
         g = np.zeros((B, K), complex); g[on] = np.linalg.solve(R[on], r[on][..., None])[..., 0]
     return g, Y
 
-def dereverb(x, fs, N, hop, first=None, strength=1.0, delay=0.05, order=0.11, beta=4.0, gmin=0.2, alpha_dd=0.92, xi_min=1e-3, tilt=500):
-    """@audio/denoise-dereverb: wpe's output d = y − gᴴȳ through the LSA gain (Ephraim & Malah 1985, eq. 20; ξ
-    decision-directed, 1984, eq. 51, its memory Â²/λᵣ from 0) against λᵣ = β(f) Σₖ |gₖ|² |y(t−D−k)|²,
-    β(f) = strength·beta·min(1, f/tilt), floored at gmin; no bin louder than it came."""
+def histq(v, q, lo=-150.0, step=0.1, n=2000):
+    """dereverb's percentile: the centre of the 0.1 dB bin (−150 to +50 dB, the ends clamped) where the cumulative count
+    of v (dB) first reaches q of it; 0 for 20 values or fewer"""
+    if v.size <= 20: return 0.0
+    c = np.cumsum(np.bincount(np.clip(np.floor((v - lo) / step).astype(int), 0, n - 1), minlength=n))
+    return 10 ** ((lo + (np.argmax(c >= q * v.size) + 0.5) * step) / 10)
+
+def dereverb(x, fs, N, hop, first=None, strength=1.0, order=0.11, q=0.1, qdry=0.02, dry=-37.5, pauses=0.5, cap=2.0,
+             gate=0.01, edges=(0, 250, 500, 1000, 2000, 4000), gmin=0.2, alpha_dd=0.85, xi_min=1e-3):
+    """@audio/denoise-dereverb: wpe (D = N/hop) and its output d = y − gᴴȳ through the LSA gain (Ephraim & Malah 1985,
+    eq. 20; ξ decision-directed, 1984, eq. 51, its memory Â²/λᵣ from 0) against λᵣ = strength·s(f)/(−ln 0.9)·u,
+    u = Σₖ wₖ |y(t−D−k)|², wₖ = |gₖ|²/Σ|gⱼ|²; s per octave band the q-th percentile of |y|²/u over the cells that sound
+    (over wpe's floor) with u over gate × the band's mean power, capped `cap` dB over the 0.5–4 kHz bands' geometric
+    mean, interpolated over log2 f between the bands' centres; floored at gmin; no bin louder than it came. The take
+    comes back as it came when the 0.5–4 kHz bands' qdry-th percentile is under `dry` dB, or when under `pauses` of its
+    frames within 60 dB of the loudest (power over 0.5–4 kHz) are under half their mean."""
     dt = hop / fs; r = lambda v: int(np.floor(v + 0.5))                 # Math.round
-    D, K = max(1, r(delay / dt)), max(1, r(order / dt)); F = frames(x, N, hop, first)
-    g, Y = wpe(F, D, K)
-    d = F - np.einsum('bk,tbk->tb', g.conj(), Y); lr = np.einsum('bk,tbk->tb', np.abs(g) ** 2, np.abs(Y) ** 2)
-    bf = strength * beta * np.minimum(1, np.arange(F.shape[1]) * fs / N / tilt)
-    a = alpha_dd ** (dt / REF_DT); eta = np.zeros(F.shape[1]); out = np.empty_like(F)
+    D, K = max(1, r(N / hop)), max(1, r(order / dt)); F = frames(x, N, hop, first)
+    g, Y = wpe(F, D, K); B = F.shape[1]; P = np.abs(F) ** 2; fl = P.max() * 1e-10 + 1e-30
+    w = np.abs(g) ** 2; e = w.sum(1, keepdims=True); w = np.where(e > 0, w / np.where(e > 0, e, 1), 0)
+    u = np.einsum('bk,tbk->tb', w, np.abs(Y) ** 2); d = F - np.einsum('bk,tbk->tb', g.conj(), Y)
+    f = np.arange(B) * fs / N; band = np.searchsorted(edges, f, 'right') - 1; nb = len(edges)
+    v = [None] * nb
+    for b in range(nb):
+        m = band == b; pb, ub = P[:, m], u[:, m]; ok = (pb > fl) & (ub > gate * (pb.mean() if pb.size else 0))
+        v[b] = 10 * np.log10(pb[ok] / ub[ok])
+    gmean = lambda a: np.exp(np.mean(np.log(np.maximum(a, 1e-30))))
+    s = np.array([histq(v[b], q) for b in range(nb)]); fall = gmean([histq(v[b], qdry) for b in (2, 3, 4)])
+    em = P[:, (band >= 2) & (band < 5)].sum(1); on = em[em > em.max() * 1e-6]
+    low = np.mean(on < 0.5 * on.mean()) if on.size else 1.0
+    if 10 * np.log10(max(fall, 1e-30)) < dry or low < pauses: return x.astype(np.float32).astype(np.float64)
+    s = np.minimum(s, gmean(s[2:5]) * 10 ** (cap / 10))
+    cen = np.log2(np.sqrt(np.maximum(edges, 125) * np.append(edges[1:], fs / 2)))
+    lam = strength / -np.log(0.9) * np.interp(np.log2(np.maximum(f, 1)), cen, s) * u
+    a = alpha_dd ** (dt / REF_DT); eta = np.zeros(B); out = np.empty_like(F)
     for t in range(len(F)):
-        G = np.ones(F.shape[1]); on = (lr[t] > 0) & (bf > 0)
-        gm = np.abs(d[t, on]) ** 2 / (bf[on] * lr[t, on]); xi = np.maximum(a * eta[on] + (1 - a) * np.maximum(gm - 1, 0), xi_min)
+        G = np.ones(B); on = lam[t] > 0
+        gm = np.abs(d[t, on]) ** 2 / lam[t, on]; xi = np.maximum(a * eta[on] + (1 - a) * np.maximum(gm - 1, 0), xi_min)
         G[on] = np.clip(xi / (1 + xi) * np.exp(0.5 * exp1(np.maximum(gm * xi / (1 + xi), 1e-300))), gmin, 1); eta[on] = G[on] ** 2 * gm
         out[t] = np.minimum(G * np.abs(d[t]), np.abs(F[t])) * np.exp(1j * np.angle(d[t]))
     return overlap_add(out, N, hop, len(x), first)
@@ -292,7 +318,8 @@ if __name__ == '__main__':
         ms = minstats(P, 96); ola = lambda G: g(overlap_add(F * G, N, hop, len(x), first)[::step])
         return {'omlsa': ola(G), 'wiener': ola(dd_gain(P, ms, rule='mmse-lsa')), 'wienerRule': ola(dd_gain(P, ms, rule='wiener')),
                 'specsub': ola(specsub(P, ms)), 'dereverb': g(dereverb(xr, fs, N, hop, first)[::step])}
-    xr = room(x).astype(np.float32).astype(np.float64)    # dereverb's input: the signal in a room, as test.js makes it
+    xr = room(x[:7000]).astype(np.float32).astype(np.float64)   # dereverb's input: a syllable and the pause after it in a
+                                                                # room, as test.js makes it (the whole signal's noise fills its pauses)
     out = {
         'about': 'scripts/reference.py: numpy references from the papers on its synthetic signal (8 kHz, 256/64 frames)',
         'fs': fs, 'frameSize': N, 'hopSize': hop, 'step': step, 'rms': float(np.sqrt(np.mean(x ** 2))),

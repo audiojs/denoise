@@ -22,8 +22,8 @@ export interface OmlsaOptions {
   hopSize?: number
   /** sample rate, default 44100 */
   fs?: number
-  /** IMCRA options (see @audio/noise-estimate `imcra`) */
-  estimator?: Record<string, number>
+  /** IMCRA options (see @audio/noise-estimate `imcra`); `partials: false` lets the tracker learn held notes as noise, as before 0.5 */
+  estimator?: Record<string, number | boolean | object>
   /** a known noise PSD, `frameSize/2+1` bins (noise-estimate's `noiseProfile` of a noise-only stretch): held, not tracked;
    *  speech presence then read from γ averaged over neighbouring bins, at fixed priors (Gerkmann, Breithaupt
    *  & Martin 2008) */

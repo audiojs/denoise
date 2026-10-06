@@ -1,6 +1,7 @@
 // De-crackle: dense small impulses (a worn record's crackle) found as outliers of the AR prediction error that the
-// model can't have made, all of a window rebuilt at once by least-squares AR interpolation, and looked for again on the
-// rebuilt sound until none is new (Vaseghi & Rayner 1990; Godsill & Rayner 1998, "Digital Audio Restoration" §5).
+// model can't have made, all of a window rebuilt at once by least-squares AR interpolation, looked for again on the
+// rebuilt sound until none is new, then the sound around each made robust to what the search missed (Vaseghi & Rayner
+// 1990; Godsill & Rayner 1998, "Digital Audio Restoration" §5, and IEEE TSAP 6(4) 1998).
 //
 //   1. Per window of 46 ms (Hann-weighted, hop W/2, each fit applied over its middle half) AR(order) fitted to the
 //      sound, and two errors of it: the prediction error e (Godsill & Rayner §5.3.1), and the two-sided error v, each
@@ -21,13 +22,19 @@
 //      of the input's errors too, under the same fits: a rebuilt sample's departure from the model is no crackle.
 //      While searching, rebuilt under AR(order), the detection's order, so a rebuild stands out of its errors the
 //      least; the windows a rebuild reaches fitted again, the rest kept. Once none is new, rebuilt under AR(W/8).
+//   6. A ringing tick's tail and a small impulse beside a large one stand under the threshold, and a rebuild bends to
+//      fit them as sound. So every sample from 0.1 ms before a crackle sample to 0.5 ms after it is soft: the sound
+//      there the posterior mean under AR(W/32) of the rebuilt window with each sample's click of its own variance
+//      (impulsive noise as a scale mixture of Gaussians, Godsill & Rayner 1998 TSAP), the variances by EM: each the
+//      square of what the last estimate took off, no less than the model's excitation variance, 3 times. Where the
+//      sound fits the model the samples stay near as recorded; where it doesn't, the model takes over.
 //
-// Samples no crackle reaches come back bit-exact. The windows and blocks count from the data's start.
+// Samples farther than that from any crackle come back bit-exact. The windows and blocks count from the data's start.
 
 import { arFit, arFill } from '@audio/lpc'
 
-// scales over ±R blocks; PASSES at most (crackle at 1000/s settles in 15–20, clean sound in 2–10)
-const R = 8, PASSES = 20
+// scales over ±R blocks; PASSES at most (crackle at 1000/s settles in 15–20, clean sound in 2–10); EM steps
+const R = 8, PASSES = 20, EM = 3
 
 export default function decrackle(data, params = {}) {
   let fs = params.fs ?? 44100, n = data.length, p = params.order ?? 32, K = params.threshold ?? 4
@@ -55,8 +62,9 @@ export default function decrackle(data, params = {}) {
     moved = fill(out, data, gap, p, W, 2)
     for (let i = 0; i < n; i++) if (gap[i]) gap[i] = 1
   }
-  if (moved) fill(out, data, gap, W >> 3, W, 1)
-  return out
+  if (!moved) return out
+  fill(out, data, gap, W >> 3, W, 1)
+  return robust(out, data, gap, W >> 5, W, Math.round(0.0001 * fs), Math.round(0.0005 * fs))
 }
 
 // AR(p) fitted to f per window of W at hop W/2 (Hann-weighted), applied over the window's middle half to each of xs:
@@ -131,4 +139,61 @@ function fill(out, x, gap, q, W, mark) {
 function some(a, i, j, m) {
   for (i = Math.max(0, i), j = Math.min(a.length, j); i < j; i++) if (a[i] >= m) return true
   return false
+}
+
+// y made robust: every sample from pre before a crackle sample to post after it soft, the sound there the posterior mean
+// under AR(q) fitted to y's window, the click at each sample of variance vn from what the last estimate took off from x
+// (no less than the excitation variance σ²), EM steps of it; each window's middle half kept
+function robust(y, x, gap, q, W, pre, post) {
+  let n = x.length, H = W >> 1, soft = new Uint8Array(n), out = Float32Array.from(y)
+  for (let i = 0; i < n; i++) if (gap[i]) soft.fill(1, Math.max(0, i - pre), Math.min(n, i + post + 1))
+  for (let s = -(H >> 1); s < n; s += H) {
+    let a0 = Math.max(0, s), a1 = Math.min(n, s + W), c0 = s <= 0 ? 0 : s + (W >> 2), c1 = Math.min(n, s + W - (W >> 2))
+    if (!some(soft, c0, c1, 1)) continue
+    let seg = Float64Array.from(y.subarray(a0, a1)), xs = x.subarray(a0, a1), g = []
+    for (let i = a0; i < a1; i++) if (soft[i]) g.push(i - a0)
+    let { a, e } = arFit(seg, Math.min(q, seg.length >> 3)), ve = e / seg.length, d = new Float64Array(g.length)
+    if (!(ve > 0) || !a.every(Number.isFinite)) continue
+    for (let it = 0; it < EM; it++) {
+      for (let k = 0; k < g.length; k++) d[k] = ve / Math.max((xs[g[k]] - seg[g[k]]) ** 2, ve)
+      if (!pull(seg, xs, g, a, d)) break
+    }
+    for (let i = c0; i < c1; i++) if (soft[i]) out[i] = seg[i - a0]
+  }
+  return out
+}
+
+// the posterior mean of seg at the indices g (sorted) under AR model a, each pulled toward xs by d = σ²/vn:
+// (R_gg + diag d)·u = −R_gk·seg_k + d·xs_g, R the autocorrelation of a; banded in g's order (two unknowns couple within
+// the model's order), Cholesky within each row's envelope as lpc's arFill. Writes seg[g]; false if not definite.
+function pull(seg, xs, g, a, d) {
+  let p = a.length - 1, m = g.length, n = seg.length, r = new Float64Array(p + 1)
+  for (let k = 0; k <= p; k++) { let s = 0; for (let i = 0; i + k <= p; i++) s += a[i] * a[i + k]; r[k] = s }
+  let lo = new Int32Array(m), at = new Int32Array(m + 1), unk = new Uint8Array(n)
+  for (let i = 0, j = 0; i < m; i++) {
+    while (g[i] - g[j] > p) j++
+    lo[i] = j, at[i + 1] = at[i] + i - j + 1, unk[g[i]] = 1
+  }
+  let L = new Float64Array(at[m]), u = new Float64Array(m)
+  for (let i = 0; i < m; i++) {
+    let gi = g[i], s = 0, o = at[i] - lo[i]
+    for (let k = Math.max(0, gi - p), e = Math.min(n - 1, gi + p); k <= e; k++) if (!unk[k]) s += r[Math.abs(gi - k)] * seg[k]
+    u[i] = d[i] * xs[gi] - s
+    for (let j = lo[i]; j <= i; j++) L[o + j] = r[gi - g[j]] + (j === i ? d[i] : 0)
+  }
+  for (let i = 0; i < m; i++) {
+    let oi = at[i] - lo[i]
+    for (let j = lo[i]; j <= i; j++) {
+      let oj = at[j] - lo[j], s = L[oi + j]
+      for (let k = Math.max(lo[i], lo[j]); k < j; k++) s -= L[oi + k] * L[oj + k]
+      if (j < i) L[oi + j] = s / L[oj + j]
+      else if (s > 0) L[oi + i] = Math.sqrt(s)
+      else return false
+    }
+  }
+  for (let i = 0; i < m; i++) { let oi = at[i] - lo[i], s = u[i]; for (let k = lo[i]; k < i; k++) s -= L[oi + k] * u[k]; u[i] = s / L[oi + i] }
+  for (let i = m - 1; i >= 0; i--) { let oi = at[i] - lo[i]; u[i] /= L[oi + i]; for (let k = lo[i]; k < i; k++) u[k] -= L[oi + k] * u[i] }
+  if (!u.every(Number.isFinite)) return false
+  for (let i = 0; i < m; i++) seg[g[i]] = u[i]
+  return true
 }

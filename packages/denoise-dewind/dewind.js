@@ -1,7 +1,8 @@
 // De-wind. Wind is turbulence at the microphone: noise under a few hundred Hz with no period, in gusts (Nelke & Vary,
 // IWAENC 2014), where a voice's or an instrument's low end is a row of harmonics. A time-domain high-pass can only take
-// everything under its cutoff, the voice's low harmonics with the wind; here each STFT bin under `cutoff` is weighed
-// against a wind spectrum read from the frame itself, so the harmonics stay and the wind between and under them goes.
+// everything under its cutoff, the voice's low harmonics with the wind; here each STFT bin under `cutoff` (8 kHz: strong
+// wind rushes up to several kHz) is weighed against a wind spectrum read from the frame itself, so the harmonics stay
+// and the wind between and under them goes.
 //
 // The wind spectrum, per frame (Hann, the power of two nearest 85 ms, so a 100 Hz voice's harmonics stand 8 bins apart
 // with valleys between them; a quarter-frame hop):
@@ -16,6 +17,10 @@
 //          100 Hz the floor is held to 4 × a·S: a the floor's energy at 20–100 Hz this frame, S the least floor/a seen
 //          at each bin over the last 1.5 s (minimum statistics, Martin 2001, on the level-normalized floor): where no
 //          voice was
+//   bridge a voiced harmonic whose pitch moves within the frame spreads over more than 5 bins and reads as floor (a
+//          male voice's fundamental, under 100 Hz where the cap doesn't reach): under a peak of P̄ standing 6 dB over
+//          the floor, wider than 5 bins and 15 dB over both minima bounding it, the floor is held to the line joining
+//          its values at those minima, in dB
 // The gain, OM-LSA's form (Cohen & Berdugo 2001): G = G_H1^p · G_min^(1−p), G_H1 the Wiener gain on the
 // decision-directed a priori SNR (Ephraim & Malah 1984, α 0.9 per frame) floored at G_min = `attenuation`, p the speech
 // presence probability at a fixed a priori SNR of 15 dB (Gerkmann & Hendriks 2012) with an a priori absence of 0.2 on a
@@ -40,11 +45,13 @@ const writer = s => chunk => chunk ? s.write(chunk) : s.flush()
 export const frame = fs => 2 ** Math.round(Math.log2(0.085 * fs))
 
 const H = 2                                        // the opening's half-width, bins: 5 bins
+const CUTOFF = 8000                                // Hz, the top of the band wind is taken from, by default
 const BIAS = 1.64                                  // E[P] / E[opening(P̄)] on white Gaussian noise
 const SUB = 20, LEVEL = 100, LOW = 300, MID = 2000 // Hz: subsonic, the level band's top, the low band's, the mid band's
 const CAP = 4, SPAN = 1.5, SUBS = 6, AR = 0.7      // shape cap: × the shape, its memory (s) in sub-windows, smoothing
 const ADD = 0.9, XI_MIN = 1e-3                     // decision-directed α per frame, a priori SNR floor (−30 dB)
 const XI_H1 = 10 ** 1.5, PEAK = 4                  // SPP's a priori SNR (15 dB), a harmonic's standing over the wind
+const VALLEY = 10 ** 1.5                           // a broad peak's standing over its valleys (15 dB), bridged under
 const Q_PEAK = 0.2, Q_ELSE = 0.9                   // a priori speech absence on a harmonic, elsewhere
 const R_MAX = 0.5, FLOOR = 0.01, DECAY = 2         // periodic above; the mid band's floor × its peak, which decays (s)
 const ARM = 3, HOLD = 1, UP = 0.02, DOWN = 0.2     // frames in a row; s held, in, out
@@ -100,7 +107,7 @@ function removal(o, live = o) {
   let peak = 0, run = 0, left = 0, w = 0
 
   return (mag, phase) => {
-    let kHi = Math.min(half, Math.round((live.cutoff ?? 1500) / bin)), n = Math.min(K, kHi + H + 1)
+    let kHi = Math.min(half, Math.round((live.cutoff ?? CUTOFF) / bin)), n = Math.min(K, kHi + H + 1)
     let gMin = 10 ** (Math.min(0, live.attenuation ?? -20) / 20)
     for (let k = 0; k < K; k++) { let p = mag[k] * mag[k]; Pb[k] = t ? (Pb[k] + p) / 2 : p }
 
@@ -115,6 +122,7 @@ function removal(o, live = o) {
       for (let k = kA + 1; k < n; k++) { let m = cur[k]; for (let u of subs) if (u[k] < m) m = u[k]; if (CAP * a * m < lam[k]) lam[k] = CAP * a * m }
     }
     if (++t % V === 0) { subs.push(Float64Array.from(cur)); if (subs.length > SUBS) subs.shift(); cur.fill(Infinity) }
+    bridge(Pb, lam, k20, kHi, n)
 
     // is it wind: the low band aperiodic and over the mid band, for ARM frames in a row; then held
     let El = 0, Em = 0
@@ -143,6 +151,24 @@ function removal(o, live = o) {
       if (w) out[k] = w * (1 - G ** p * gMin ** (1 - p)) * mag[k]
     }
     return { mag: out, phase }
+  }
+}
+
+// A voice's harmonic, its pitch moving within the frame, spreads wider than the opening's element and reads as floor
+// (a male voice's fundamental under 100 Hz, where the cap doesn't reach). Under each peak of P standing PEAK over the
+// floor, wider than the element and 15 dB over both minima bounding it, the floor is held to the line joining their
+// floor in dB: the inverse harmonic mask of Nelke, Naylor & Vary (ICASSP 2015), bridged from the valleys either side,
+// without a pitch track. A gust has no such peak: its spectrum falls smoothly
+function bridge(P, lam, lo, hi, n) {
+  for (let k = lo + 1; k < hi; k++) {
+    if (!(P[k] > P[k - 1] && P[k] >= P[k + 1] && P[k] > PEAK * lam[k])) continue
+    let l = k, r = k
+    while (l > lo && P[l - 1] < P[l]) l--
+    while (r < n - 1 && P[r + 1] < P[r]) r++
+    if (r - l <= 2 * H || P[k] < VALLEY * Math.max(P[l], P[r])) continue
+    let a = Math.log(lam[l] + 1e-300), b = Math.log(lam[r] + 1e-300)
+    for (let j = l + 1; j < r; j++) lam[j] = Math.min(lam[j], Math.exp(a + (j - l) / (r - l) * (b - a)))
+    k = r - 1
   }
 }
 

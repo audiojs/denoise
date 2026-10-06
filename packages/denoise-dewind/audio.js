@@ -47,6 +47,6 @@ dewind.channels = 'any'
 dewind.latency = ({ sampleRate }) => frame(sampleRate) - 1
 dewind.tail = 0
 dewind.params = {
-	cutoff:      { type: 'number', min: 200, max: 4000, default: 1500, unit: 'Hz' },   // the band wind is taken from
+	cutoff:      { type: 'number', min: 200, max: 16000, default: 8000, unit: 'Hz' },  // the band wind is taken from
 	attenuation: { type: 'number', min: -40, max: 0, default: -20, unit: 'dB' },      // the most a bin is turned down
 }

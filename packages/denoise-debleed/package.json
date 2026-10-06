@@ -1,14 +1,14 @@
 {
-  "name": "@audio/denoise-dehum",
-  "version": "0.4.0",
-  "description": "Mains hum removal: measured, then subtracted; no hum, no change",
+  "name": "@audio/denoise-debleed",
+  "version": "0.1.0",
+  "description": "De-bleed: a source's spill taken out of another microphone, given that source's own track. A Kalman filter cancels it through the room path it learns, a Wiener gain takes the residual it predicts",
   "type": "module",
   "sideEffects": false,
-  "main": "dehum.js",
+  "main": "debleed.js",
   "exports": {
     ".": {
       "types": "./index.d.ts",
-      "default": "./dehum.js"
+      "default": "./debleed.js"
     },
     "./package.json": "./package.json",
     "./audio": {
@@ -17,29 +17,34 @@
     }
   },
   "files": [
-    "dehum.js",
+    "debleed.js",
     "audio.js",
     "index.d.ts",
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/biquad": "^1.1.0"
+    "@audio/noise-estimate": "^2.3.0",
+    "fourier-transform": "^2.4.0"
   },
   "keywords": [
     "audio",
     "dsp",
     "denoise",
     "restoration",
-    "dehum"
+    "debleed",
+    "bleed",
+    "spill",
+    "crosstalk",
+    "echo-cancellation"
   ],
   "license": "MIT",
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/audiojs/denoise.git",
-    "directory": "packages/denoise-dehum"
+    "directory": "packages/denoise-debleed"
   },
-  "homepage": "https://github.com/audiojs/denoise/tree/main/packages/denoise-dehum",
+  "homepage": "https://github.com/audiojs/denoise/tree/main/packages/denoise-debleed",
   "bugs": {
     "url": "https://github.com/audiojs/denoise/issues"
   },

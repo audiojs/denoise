@@ -1,10 +1,10 @@
-/** Hard clipping undone: each side's rail found, every clipped sample rebuilt by consistent least-squares AR interpolation. */
+/** Hard clipping undone: each side's rail found, every clipped sample rebuilt by a sparse (A-SPADE) and an AR (Janssen) consistent rebuild, blended by a weight cross-validated per region. */
 export interface DeclipOptions {
   /** sample rate, Hz; default 44100 */
   fs?: number
   /** a symmetric rail, ± this; omitted or 0: each side's rail found from the sound (none: returned untouched) */
   clipLevel?: number
-  /** AR order of the rebuild; default 256 */
+  /** AR order of the AR rebuild; default 256 */
   order?: number
 }
 

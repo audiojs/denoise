@@ -84,7 +84,8 @@ function makeProcess(opts) {
   let xiMin = opts.xiMin ?? 10 ** (-15 / 10)       // −15 dB, as the manifest's xiFloor
   let auto = !opts.profile
   let half = N >> 1
-  let est = auto ? minStats(half, { D: Math.round(1.5 * fs / hop), ...opts.estimator }) : null   // Martin's 1.5 s
+  // Martin's 1.5 s; a program's held partials kept out (noise-estimate's `partials`)
+  let est = auto ? minStats(half, { D: Math.round(1.5 * fs / hop), fs, hop, partials: true, ...opts.estimator }) : null
   let profile = opts.profile
   // Â²(l−1)/λ(l−1), the decision-directed memory: 1 before the first frame (Cohen's omlsa.m, Loizou's logmmse.m)
   let eta2 = new Float64Array(half + 1).fill(1)

@@ -3,6 +3,7 @@
 //   - minStats: Martin (2001) — track minima of smoothed |X|² in sliding window
 //   - imcra: Cohen (2003) — Improved MCRA, two-iteration smoothing + speech-presence-driven
 //   - known: a noiseProfile held, with imcra's per-frame SNR outputs (OM-LSA on a learned noise)
+//   - partials: a tracker's estimate kept off a program's partials (held notes, sustained vowels, chords)
 //
 // All estimators are stateful: pass the same params object across frames in stream mode.
 
@@ -51,7 +52,8 @@ export function noiseProfile(data, opts = {}) {
 //   stftAnalyse(data, m => est.update(m))
 //   let psd = est.psd  // current noise PSD
 //
-// D = 96 frames ≈ 1.1 s at hop 512, 44.1 kHz.
+// D = 96 frames ≈ 1.1 s at hop 512, 44.1 kHz. `partials` (true, or `partials`'s options; with `fs` and `hop`) passes
+// the estimate through `partials`, so a held note is not learned as noise.
 export function minStats(half, opts = {}) {
   let D = opts.D || 96
   let alpha = opts.alpha ?? 0.7              // smoothing on PSD
@@ -59,6 +61,7 @@ export function minStats(half, opts = {}) {
   let bins = half + 1
   let smoothed = new Float64Array(bins)
   let psd = new Float64Array(bins)
+  let guard = guarded(bins, opts), y2 = guard && new Float64Array(bins)
   // The D-frame minimum per bin, by monotonic deque: each bin keeps the frames that can still be its minimum,
   // values rising from head to tail (O(1) amortized per bin per frame, not a rescan of D frames)
   let val = new Float64Array(bins * D), at = new Int32Array(bins * D)
@@ -71,6 +74,7 @@ export function minStats(half, opts = {}) {
   return {
     psd,
     bias,
+    partials: guard,
     update(mag) {
       let silent = true
       for (let k = 0; k <= half; k++) if (mag[k]) { silent = false; break }
@@ -95,6 +99,7 @@ export function minStats(half, opts = {}) {
         if (i === D - 1) { let s = 0; for (let j = o; j < o + D; j++) s += win[j]; sum[k] = s }  // once a window: no drift
         psd[k] = frame < D - 1 ? val[o + h] * bias : Math.min(val[o + h] * bias, sum[k] / D)
       }
+      if (guard) { for (let k = 0; k <= half; k++) y2[k] = mag[k] * mag[k]; guard.update(y2, psd) }
       frame++
     }
   }
@@ -202,7 +207,8 @@ export function imcra(half, opts = {}) {
   let xi = new Float64Array(K), gamma = new Float64Array(K), v = new Float64Array(K), gain = new Float64Array(K), p = new Float64Array(K)
   let xi0 = new Float64Array(K)
   let n = 0, ri = 0
-  let est = { psd, xi, xi0, gamma, v, gain, p, frames: 0, update }
+  let guard = guarded(K, opts)
+  let est = { psd, xi, xi0, gamma, v, gain, p, partials: guard, frames: 0, update }
 
   // b ∗ x at bin k, zero past the edges (MATLAB conv, central part)
   function smooth(x, k) {
@@ -267,9 +273,75 @@ export function imcra(half, opts = {}) {
       }
     }
     for (let k = 0; k < K; k++) psd[k] = beta * lav[k]
+    if (guard) guard.update(y2, psd)
     snr(true)                                     // on the updated estimate: this frame's gain, the next frame's ξ
     est.frames = n
     return est
   }
   return est
+}
+
+// A program's partials kept out of a tracked noise. Minimum statistics and IMCRA take whatever holds a bin for about a
+// second as noise: a held note, a sustained vowel, a chord's partials were learned, and the gain took them down (clean
+// music through tracked omlsa: 9.9 % of its time-frequency energy cut by more than 3 dB, wiener 14.5 %; VocalSet's
+// long tones 8.8 % and 36 %; @audio/denoise's scripts/broadband.mjs). `update(y2, psd)` reads, each frame, where a
+// partial stands and there holds `psd`, the tracker's estimate, at what the bin held before the partial came:
+//   P   |Y|² smoothed over 30 ms (minimum statistics' α 0.7 per 10.7 ms frame)
+//   F   P's morphological opening across frequency, the least over ±4 bins and then the largest of that over ±4: a peak
+//       narrower than 9 bins is taken off, the floor between partials stays, slopes and all (the inverse harmonic
+//       mask of Nelke, Naylor & Vary, ICASSP 2015, as dewind reads its wind)
+//   a peak: P over 6 F (7.8 dB; Gaussian noise peaks so in 0.6 % of its bins a frame, never for 0.3 s), within ±1 bin
+//       (vibrato, a glide), for 0.3 s running, and 10 dB over the bin's noise memory: a partial that came over a
+//       quieter bin. Flagged with its Hann main lobe, ±2 bins. A voice's harmonics hardly hold a bin 0.3 s, and the
+//       trackers' own speech presence keeps them; held from 54 ms on, the noise rising under them was held down too
+//       (VoiceBank+DEMAND training speech PESQ −0.015), and without the 10 dB a noise's own peaks were held
+//   a flagged bin stays flagged while the tracker reads it over 4 times (6 dB) its memory: the tracker holds what the
+//       partial left for its own window after the partial ends, so a note's decay keeps its bin's noise
+//   memory  the tracker's estimate averaged over the bin's free frames (neither peaked nor flagged), per eighth of `T`
+//       60 s, the least of the last eight that have any; where flagged, the noise is no more than it
+// A line steady from the take's start (hum, a fan's whine, an engine) has no free frame and no memory: it is noise, as
+// ever. One that starts mid-take is held as a partial until its bin has had no free frame for `T`, then it is learned;
+// so is a note held longer. A note sounding from the take's first frame is learned as the noise until its bin is once
+// free of it: nothing tells it from a line there. The tracker's state is untouched: only the estimate it gives is.
+// `flag`: the bins held this frame; `lines`: the bins with no free frame in the window, peaked for `T`/8 running or
+// more (a line, or a note sounding since the take began). `dt`: the frame step in seconds.
+export function partials(K, opts = {}) {
+  let dt = opts.dt ?? 512 / 44100, T = opts.T ?? 60, U = 8, V = Math.max(1, Math.round(T / U / dt))
+  let a = Math.exp(-dt / 0.03), need = Math.max(1, Math.round(0.3 / dt)), W = 4, TH = 6, RISE = 10, KAPPA = 4
+  let P = new Float64Array(K), E = new Float64Array(K), F = new Float64Array(K), pk = new Uint8Array(K)
+  let run = new Int32Array(K), flag = new Uint8Array(K), lines = new Uint8Array(K), mem = new Float64Array(K).fill(Infinity)
+  let sum = new Float64Array(K), cnt = new Int32Array(K), SW = new Float64Array(U * K).fill(Infinity), n = 0, ri = 0
+  function update(y2, psd) {
+    for (let k = 0; k < K; k++) P[k] = n ? a * P[k] + (1 - a) * y2[k] : y2[k]
+    for (let k = 0; k < K; k++) { let m = Infinity; for (let j = Math.max(0, k - W), e = Math.min(K - 1, k + W); j <= e; j++) if (P[j] < m) m = P[j]; E[k] = m }
+    for (let k = 0; k < K; k++) { let m = 0; for (let j = Math.max(0, k - W), e = Math.min(K - 1, k + W); j <= e; j++) if (E[j] > m) m = E[j]; F[k] = m }
+    for (let k = 0; k < K; k++) E[k] = P[k] > TH * F[k] ? 1 : 0
+    for (let k = 0; k < K; k++) {
+      run[k] = E[k] || k > 0 && E[k - 1] || k < K - 1 && E[k + 1] ? run[k] + 1 : 0
+      pk[k] = run[k] >= need && P[k] > RISE * mem[k] ? 1 : 0
+    }
+    for (let k = 0; k < K; k++) {
+      let t = 0
+      for (let j = Math.max(0, k - 2), e = Math.min(K - 1, k + 2); j <= e; j++) t |= pk[j]
+      flag[k] = t || flag[k] && psd[k] > KAPPA * mem[k] ? 1 : 0
+      if (!flag[k] && !run[k]) { sum[k] += psd[k]; cnt[k]++ }
+      let m = cnt[k] ? sum[k] / cnt[k] : Infinity
+      for (let j = k; j < U * K; j += K) if (SW[j] < m) m = SW[j]
+      mem[k] = m
+      lines[k] = m === Infinity && run[k] >= V ? 1 : 0
+      if (flag[k] && m < psd[k]) psd[k] = m
+    }
+    if (++n % V === 0) {                          // a subwindow ends: its free frames' mean joins the last eight
+      for (let k = 0; k < K; k++) SW[ri * K + k] = cnt[k] ? sum[k] / cnt[k] : Infinity
+      ri = (ri + 1) % U; sum.fill(0); cnt.fill(0)
+    }
+    return psd
+  }
+  return { flag, lines, mem, update }
+}
+
+// a tracker's guard from its options: `partials` true or an options object, the frame step from `fs` and `hop`
+function guarded(K, o) {
+  if (!o.partials) return null
+  return partials(K, { dt: o.fs && o.hop ? o.hop / o.fs : undefined, ...(typeof o.partials === 'object' ? o.partials : {}) })
 }

@@ -18,12 +18,14 @@
 //   4. track     the mains phase δ: the grid's frequency wanders ±0.02–0.05 Hz, h times that at harmonic h. The fitted
 //                phasors' turn from frame to frame, over h, weighted by h²·SNR (harmonics combined as for ENF
 //                estimation: Hajj-Ahmad, Garg & Wu, IEEE SPL 20(9), 2013), averaged over 8 s and integrated; twice,
-//                the phasors refitted along it.
+//                the phasors refitted along it. Where it turns on average by more than 0.01 Hz, the measured f0 was
+//                off, as when cuts in an edited take jump the hum's phase and spread its line in the measurement (eight
+//                cuts in a minute: 0.07 Hz): f0 is moved by that turn and all estimated again.
 //   5. subtract  Σ_h Re(a_h·e^(j·h·(ω₀·t + δ))), a_h and δ interpolated between frames.
 //
 // What it takes of the program is what lies within a fraction of a hertz of a line, mostly from where the program is
 // quiet around it; a note held within ~0.5 Hz of a line for seconds goes with the hum. A cut in the recording jumps the
-// hum's phase: within a second of it the fit blends the two phases.
+// hum's phase: within a second of it the fit blends the two phases (~9 dB down there, not ~40).
 //
 //   freq       fundamental, Hz; omitted (or 0): measured, the 50 or 60 Hz series. Given: that series, its exact
 //              frequency measured within ±0.4 % (mains tolerance), or within ±drift Hz (default 0.5) when adaptive.
@@ -37,6 +39,7 @@ import { cascade, lowpass } from '@audio/biquad'
 
 const MIN = 1, FMAX = 1000
 const CYCLES = 2, T = 2, TR = 0.1, TT = 8, KAPPA = 0.01      // hop (cycles); fit, weights, tracking (s); weight floor
+const DF = 0.01                                              // Hz: f0 found further off is estimated again
 
 export default function dehum(data, params = {}) {
   if (!data?.length) return data
@@ -56,14 +59,24 @@ function plan(data, fs, params) {
   return { f0, hs }
 }
 
-// estimate the hum at harmonics hs of f0 and subtract it from x, in place
+// estimate the hum at harmonics hs of f0 and subtract it from x, in place. Where the tracked mains phase turns on
+// average, f0 is off: estimated again at f0 moved by that turn, up to four times, on the same frames
 function subtract(x, fs, f0, hs) {
-  let H = Math.round(CYCLES * fs / f0), M = Math.floor(x.length / H)
-  if (M < 2 || !hs.length) return
+  let H = Math.round(CYCLES * fs / f0), e = estimate(x, fs, f0, hs, H)
+  for (let it = 0; e && it < 4 && Math.abs(e.df) > DF; it++) e = estimate(x, fs, f0 += e.df, hs, H)
+  if (e) synthesize(x, ...e.args)
+}
+
+// the hum at harmonics hs of f0 in x, in frames of 2H hopped by H: synthesize()'s arguments, and the tracked phase's
+// mean turn in Hz; null under two frames
+function estimate(x, fs, f0, hs, H) {
+  let M = Math.floor(x.length / H)
+  if (M < 2 || !hs.length) return null
   let w0 = 2 * Math.PI * f0 / fs, fr = fs / H
   let g = hann(T * fr), gr = hann(TR * fr), lin = M >= g.length          // a clip shorter than the window: constant fit
   let { c, full } = phasors(x, H, M, w0, hs), w = weigh(c, full, g, gr, lin), delta = track(c, w, hs, g, gr, lin, fr)
-  synthesize(x, H, M, w0, hs, c.map((ck, k) => fit(rotate(ck, delta, hs[k]), w[k], g, lin)), delta)
+  let df = (delta[M - 1] - delta[0]) / (M - 1) * fs / (2 * Math.PI * H)
+  return { df, args: [H, M, w0, hs, c.map((ck, k) => fit(rotate(ck, delta, hs[k]), w[k], g, lin)), delta] }
 }
 
 // each frame's weight: the inverse of the residual's local power around the line, from a uniform fit and then twice

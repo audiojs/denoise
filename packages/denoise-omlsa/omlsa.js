@@ -10,7 +10,8 @@
 //                                                      over time (23) and over neighbouring bins (24)-(28)
 //   ξ_c: the a priori SNR smoothed in the cepstrum (Breithaupt, Gerkmann & Martin, ICASSP 2008), see `cepstral`
 //
-// The noise spectrum λ_d and ξ, γ, G_H1 come from @audio/noise-estimate's imcra. Constants: Table 1 of the 2001
+// The noise spectrum λ_d and ξ, γ, G_H1 come from @audio/noise-estimate's imcra, a program's held partials kept out of
+// λ_d (its `partials`: a held note, a sustained vowel, a chord are not learned as noise). Constants: Table 1 of the 2001
 // paper, with Cohen's omlsa.m for what the paper leaves open (P_min 0.005, the frame term's bookkeeping, 50 Hz–10 kHz
 // for the frame average). Time constants, the decision-directed α among them, are quoted per 8 ms frame (512 samples,
 // 128 hop at 16 kHz) and rescaled to the actual frame step as a^(Δt/8 ms) (omlsa.m raises them to the reciprocal
@@ -222,7 +223,7 @@ function makeProcess(opts) {
   let gMin = db2lin(opts.gMinDb ?? opts.gMin ?? -15) // `gMinDb` = documented name
   let qFixed = opts.qPrior || null                  // a fixed a priori speech absence; omitted (or 0): estimated
   if (held && opts.profile.length !== K) throw new RangeError(`omlsa: profile has ${opts.profile.length} bins, a ${N} frame has ${K}`)
-  let est = held ? known(opts.profile, { fs, hop, alphaDD, xiMin }) : imcra(half, { fs, hop, alphaDD, xiMin, ...opts.estimator })
+  let est = held ? known(opts.profile, { fs, hop, alphaDD, xiMin }) : imcra(half, { fs, hop, alphaDD, xiMin, partials: true, ...opts.estimator })
   // q from the cepstro-temporally smoothed a priori SNR, or (qFrom 'dd') from the decision-directed one, as the paper
   let snr = opts.qFrom === 'dd' ? null : cepstral(N, fs, hop, xiMin)
   let spp = held ? presence(N, fs) : null

@@ -7,7 +7,9 @@
 // Clean material through the op at its defaults, as the `audio` host runs it (deplosive in 1024-sample calls; dewind's
 // stream equals its batch sample for sample, so one call):
 //   thinned   the share of voiced 10 ms frames (normalized autocorrelation ≥ 0.6 at a 60–400 Hz lag over 40 ms of the
-//             50–1000 Hz band; within 35 dB of the 99th-percentile frame) whose level under 250 Hz fell by over 3 dB
+//             50–1000 Hz band; within 35 dB of the 99th-percentile frame) whose level under 250 Hz fell by over 3 dB;
+//             dewind: only those from the first to the last frame within 20 dB of it (a take's room tone before and
+//             after the words is no voice, though its hum reads periodic)
 //   20–63, 63–125, 125–250   each band's level change over the whole input, dB (4th-order Butterworth bands)
 //   untouched dewind: the share of inputs that come back sample for sample
 // The defect, added to the speech:
@@ -129,9 +131,10 @@ function passthrough(K, xs, fs, vs) {
     let lx = sos(x, lp4(250, fs)), ly = sos(y, lp4(250, fs)), n = fs / 100, et = [], ex = [], ey = []
     for (let k = 0; k < v.length; k++) { let a = 0, b = 0, t = 0; for (let i = k * n; i < (k + 1) * n; i++) { a += lx[i] ** 2; b += ly[i] ** 2; t += x[i] ** 2 } ex.push(a); ey.push(b); et.push(t) }
     let ref = [...et].sort((a, b) => a - b)[Math.floor(0.99 * (et.length - 1))]
+    let a0 = op === 'dewind' ? et.findIndex(e => e > ref / 100) : 0, a1 = op === 'dewind' ? et.findLastIndex(e => e > ref / 100) : et.length
     let d = Math.round(fs / 8000), r = fs / d, W = Math.round(0.04 * r), lo = Math.round(r / 400), hi = Math.round(r / 60)
     let dx = op === 'dewind' && Float64Array.from({ length: Math.floor(x.length / d) }, (_, i) => lx[i * d]), dy = dx && Float64Array.from(dx, (_, i) => ly[i * d])
-    for (let k = 0; k < v.length; k++) if (v[k] && et[k] > ref * 10 ** -3.5 && ex[k] > 0) {
+    for (let k = Math.max(0, a0); k <= Math.min(v.length - 1, a1); k++) if (v[k] && et[k] > ref * 10 ** -3.5 && ex[k] > 0) {
       N++; if (ey[k] < ex[k] / 2) thin++
       let c = Math.round((k * n + n / 2) / d) - (W >> 1)
       if (!dx || c < 0 || c + W + hi > dx.length) continue

@@ -7,6 +7,7 @@
 // dehum adapts to its input, so the two are told apart by phase inversion (Hagerman & Olofsson, Acta Acustica 90(2),
 // 2004): y₊ = dehum(x + h), y₋ = dehum(x − h); (y₊ + y₋)/2 is what became of the program, (y₊ − y₋)/2 of the hum.
 //
+// Then the same hum under an edited take, cut in eight places (below).
 // Hum: 12 harmonics of f0 at 1/h (−6 dB per octave), random phases, each harmonic's level drifting ±10 % over ~10 s;
 // f0 0.05 Hz off nominal and wandering as the grid's frequency does (ENF: a smooth random walk, ~4 s time constant,
 // peaks about ±0.02 or ±0.05 Hz), scaled to 20 or 30 dB under the program's RMS.
@@ -105,6 +106,36 @@ for (let f0 of [50.05, 59.95]) {
   let fs = 48000, h = Float32Array.from(hum(30 * fs, fs, f0, 0.02, 3), v => v * 0.01), y = dehum(h.slice(), { fs })
   console.log(`${f0 < 55 ? '\n' : ''}Hum alone, ${f0} Hz ±0.02 Hz, 30 s: ${(10 * Math.log10(energy(h) / energy(y))).toFixed(1)} dB down`)
 }
+// an edited take: eight stretches cut out, from a pause to a pause (speech: the quietest 50 ms within 0.5 s of each
+// spot) or anywhere (music); the hum ran on while they were, so its phase jumps at each cut. Hum down within 1 s of a
+// cut and elsewhere, and the program SDR, by phase inversion as above
+function edited(x0, fs, pauses) {
+  let r = lcg(3), quiet = t => {
+    if (!pauses) return Math.round(t * fs)
+    let best = 0, bv = Infinity
+    for (let i = Math.round((t - 0.5) * fs); i < (t + 0.5) * fs; i += fs / 100) { let e = energy(x0, i, i + fs / 20); if (e < bv) bv = e, best = i + fs / 40 }
+    return best
+  }
+  let keep = [], at = 0, T = x0.length / fs / 60
+  for (let k = 0; k < 8; k++) {
+    let t = (4 + k * 6.5 + r() * 2) * T, c = quiet(t), e = pauses ? quiet(t + 1.2 + 0.8 * r()) : c + Math.round((0.1 + 0.4 * r()) * fs)
+    keep.push([at, c]); at = Math.max(e, c + fs / 20)
+  }
+  keep.push([at, x0.length])
+  let n = keep.reduce((s, [a, b]) => s + b - a, 0), h0 = hum(x0.length, fs, 50.05, 0.02, 5), g = Math.sqrt(energy(x0) / energy(h0)) * 0.1
+  let x = new Float32Array(n), h = new Float64Array(n), o = 0, near = new Uint8Array(n)
+  for (let [a, b] of keep) { x.set(x0.subarray(a, b), o); for (let i = a; i < b; i++) h[o + i - a] = g * h0[i]; o += b - a; if (b < x0.length) near.fill(1, Math.max(0, o - fs), Math.min(n, o + fs)) }
+  let yp = dehum(Float32Array.from(x, (v, i) => v + h[i]), { fs }), ym = dehum(Float32Array.from(x, (v, i) => v - h[i]), { fs }), e = [0, 0, 0, 0], pe = 0
+  for (let i = 0; i < n; i++) { e[near[i]] += h[i] ** 2; e[2 + near[i]] += ((yp[i] - ym[i]) / 2) ** 2; pe += ((yp[i] + ym[i]) / 2 - x[i]) ** 2 }
+  return [10 * Math.log10(e[1] / e[3]), 10 * Math.log10(e[0] / e[2]), 10 * Math.log10(energy(x) / pe)]
+}
+console.log('\nAn edited take, eight cuts, 50 Hz hum 20 dB under, ±0.02 Hz: hum down within 1 s of a cut / elsewhere, program SDR, dB\n')
+console.log('| material | within 1 s | elsewhere | program SDR |\n|---|---:|---:|---:|')
+for (let [name, x, fs] of material.filter(([name]) => name !== 'vibeace' && name !== 'trumpet')) {
+  let r = edited(x, fs, name === 'speech' || name === 'narration')
+  console.log(r[2] > 100 ? `| ${name} | no hum found | | |` : `| ${name} | ${r.map(f1).join(' | ')} |`)
+}
+
 console.log('\nThe clean material through it: samples changed\n')
 for (let [name, x, fs] of material) {
   let y = dehum(x.slice(), { fs }), c = 0

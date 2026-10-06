@@ -10,6 +10,8 @@ export interface WienerOptions {
   xiMin?: number
   /** noise PSD; omit for minimum statistics (Martin 2001, 1.5 s window) */
   profile?: Float64Array
+  /** minimum statistics options (see @audio/noise-estimate `minStats`); `partials: false` lets it learn held notes as noise */
+  estimator?: Record<string, number | boolean | object>
   /** leading noise-only frames to average for the profile */
   noiseFrames?: number
   /** noise profile segment start (samples) */

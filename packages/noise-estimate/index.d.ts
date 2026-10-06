@@ -21,6 +21,12 @@ export interface MinStatsOptions {
   alpha?: number
   /** bias compensation, default B_min(D, alpha) (Martin 2001 eq. 17): 3.44 for the defaults; a full window's mean caps the estimate */
   bias?: number
+  /** sample rate: with `hop`, the frame step `partials` keeps its times in */
+  fs?: number
+  /** frame step, samples */
+  hop?: number
+  /** a program's held partials kept out of the estimate (`partials`): true or its options; default off */
+  partials?: boolean | PartialsOptions
 }
 
 export interface Estimator {
@@ -28,6 +34,8 @@ export interface Estimator {
   psd: Float64Array
   /** the bias compensation in use */
   bias: number
+  /** the `partials` guard, when on */
+  partials: Partials | null
   /** one STFT magnitude frame; frames of digital silence are skipped */
   update(mag: Float64Array): void
 }
@@ -64,6 +72,8 @@ export interface ImcraOptions {
   alphaDD?: number
   /** a priori SNR floor, linear, default 10^-2.5 (−25 dB) */
   xiMin?: number
+  /** a program's held partials kept out of the estimate (`partials`): true or its options; default off */
+  partials?: boolean | PartialsOptions
 }
 
 export interface ImcraEstimator {
@@ -83,6 +93,8 @@ export interface ImcraEstimator {
   p: Float64Array
   /** frames processed (digital silence not counted) */
   frames: number
+  /** the `partials` guard, when on (imcra) */
+  partials?: Partials | null
   /** `sppOverride` (number or per-bin array) replaces the speech presence probability. */
   update(mag: Float64Array, sppOverride?: number | ArrayLike<number>): ImcraEstimator
 }
@@ -98,3 +110,25 @@ export interface KnownOptions {
 }
 /** A known noise PSD (e.g. `noiseProfile` of a noise-only stretch), held: imcra's per-frame SNR outputs on it, `p` 0. */
 export function known(profile: ArrayLike<number>, opts?: KnownOptions): ImcraEstimator
+
+export interface PartialsOptions {
+  /** frame step, seconds, default 512/44100 (a tracker's `fs` and `hop` set it) */
+  dt?: number
+  /** the long window, seconds, default 60: a line with no free frame for T is learned; the noise memory spans it */
+  T?: number
+}
+
+export interface Partials {
+  /** 1 where a program's partial holds the bin this frame (its noise held at the memory) */
+  flag: Uint8Array
+  /** 1 where the bin has had no free frame in the window and has peaked for T/8 running or more: a line (or a note since the take began) */
+  lines: Uint8Array
+  /** per bin, the tracker's noise over its free frames, the least of the last eight subwindows' means (Infinity: none) */
+  mem: Float64Array
+  /** one frame's |Y|² and the tracker's estimate; rewrites `psd` in place under partials and returns it */
+  update(y2: ArrayLike<number>, psd: Float64Array): Float64Array
+}
+
+/** A tracker's noise estimate kept off a program's partials: where a peak over the spectrum's morphological floor has
+ *  held 0.3 s, 10 dB over the bin's noise memory, the noise is held at that memory; a line steady from the start stays noise. */
+export function partials(bins: number, opts?: PartialsOptions): Partials

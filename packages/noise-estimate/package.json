@@ -1,6 +1,6 @@
 {
   "name": "@audio/noise-estimate",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Noise PSD estimation — minimum statistics (Martin 2001), IMCRA (Cohen 2003), and quiet-segment profiling for spectral denoisers",
   "type": "module",
   "sideEffects": false,

@@ -15,5 +15,5 @@ dereverb.channels = 'any'
 dereverb.streaming = false
 dereverb.tail = 0
 dereverb.params = {
-	strength: { type: 'number', min: 0, max: 4, default: 1 },   // the late estimate's scale; 0: the linear prediction alone
+	strength: { type: 'number', min: 0, max: 4, default: 1 },   // the late estimate's scale (1: as the take's own decays read it); 0: the linear prediction alone
 }

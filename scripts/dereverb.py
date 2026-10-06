@@ -21,10 +21,13 @@
 #   PESQ (ITU-T P.862.2 wideband) and STOI (Taal et al. 2011) against the dry take, at 16 kHz; SRMR (Falk, Zheng & Chan,
 #     IEEE TASLP 18(7), 2010), reverberation's modulation signature, higher is drier; DNSMOS P.835 SIG, BAK, OVRL at
 #     the input's loudness (ITU-R BS.1770), as scripts/speech.py scores vbreverb.
-#   dry: the dry takes through it: SI-SDR and PESQ against themselves.
-#   sung and music, through it as they are: SI-SDR, and the level change per octave: VocalSet excerpts (Wilkins et al.,
-#     ISMIR 2018; 8, every 6th of the straight-tone excerpts) and the music scripts/repair.js reads when present
-#     (~/.cache/audiojs/data/repair/: Vibe Ace, Brahms, the Nutcracker, a trumpet loop; 44.1 kHz, the first minute).
+#   dry: the dry takes through it: the share returned untouched (bit for bit), PESQ against themselves.
+#   spoken, sung and music, through it as they are: the share untouched, SI-SDR, the level change per octave; 44.1 kHz:
+#     VocalSet (Wilkins et al., ISMIR 2018; its 20 spoken and 20 straight-tone sung excerpts), the music
+#     scripts/repair.js reads (~/.cache/audiojs/data/repair/: Vibe Ace, Brahms, the Nutcracker, a trumpet loop; the
+#     first minute), the MUSDB18 test set's previews (Rafii et al. 2017; musdb/test-mono as @audio/neural-denoise's
+#     scripts/accuracy.py writes them, the odd-numbered 25) and GuitarSet's microphone takes (Xi et al., ISMIR 2018;
+#     every 18th from the 10th, the first 30 s), when present.
 import os, sys, glob, subprocess, tempfile, numpy as np
 from multiprocessing import Pool
 from scipy.signal import resample_poly, fftconvolve, butter, sosfiltfilt
@@ -109,14 +112,16 @@ def score(a):
     r16 = lambda z: resample_poly(z, 1, 3); m = pyln.Meter(FS); li, lo = m.integrated_loudness(rev), m.integrated_loudness(out)
     try: from srmrpy import srmr; s = float(srmr(r16(out), 16000, fast=False, norm=False)[0])
     except ImportError: s = np.nan
-    return dict(split=split(early, late, out), pesq=pesq(16000, r16(dry), r16(out), 'wb'), stoi=stoi(r16(dry), r16(out), 16000),
-                srmr=s, dns=dnsmos(r16(out * 10 ** ((li - lo) / 20))), dry_sisdr=sisdr(dry, dry_out), dry_pesq=pesq(16000, r16(dry), r16(dry_out), 'wb'))
+    r = dict(split=split(early, late, out), pesq=pesq(16000, r16(dry), r16(out), 'wb'), stoi=stoi(r16(dry), r16(out), 16000),
+             srmr=s, dns=dnsmos(r16(out * 10 ** ((li - lo) / 20))))
+    if dry_out is not None: r.update(dry_same=float(np.array_equal(np.float32(dry), np.float32(dry_out))), dry_pesq=pesq(16000, r16(dry), r16(dry_out), 'wb'))
+    return r
 
 def db(a, b): return 10 * np.log10(max(a, 1e-30) / max(b, 1e-30))
 def rows(label, R):
     S = np.sum([r['split'] for r in R], 0); m = lambda k: np.mean([r[k] for r in R])
     print(f"| {label} | {db(S[0][0], S[0][1]):+.2f} | {db(S[0][2], S[0][3]):+.1f} | {m('pesq'):.2f} | {m('stoi'):.3f} | {m('srmr'):.2f} | "
-          + ' | '.join(f'{v:.2f}' for v in np.mean([r['dns'] for r in R], 0)) + (f" | {np.median([r['dry_sisdr'] for r in R]):.1f} | {m('dry_pesq'):.2f} |" if np.isfinite(m('dry_sisdr')) else ' | – | – |'))
+          + ' | '.join(f'{v:.2f}' for v in np.mean([r['dns'] for r in R], 0)) + (f" | {m('dry_same'):.0%} | {m('dry_pesq'):.2f} |" if 'dry_same' in R[0] else ' | – | – |'))
     print('|   per octave, voice lost | ' + ' | '.join(f'{db(s[0], s[1]):+.2f}' for s in S[1:]) + ' |')
     print('|   per octave, tail taken | ' + ' | '.join(f'{db(s[2], s[3]):+.1f}' for s in S[1:]) + ' |')
 
@@ -124,16 +129,21 @@ def bands(z, fs):
     P = np.abs(np.fft.rfft(z)) ** 2; f = np.fft.rfftfreq(len(z), 1 / fs); return np.array([P[(f >= a) & (f < b)].sum() for a, b in OCT])
 
 def music(kernel, strength):
-    v = sorted(glob.glob(f'{DATA}/vocalset/FULL/*/excerpts/straight/*.wav'))[::6][:8]
-    sets = {'sung (VocalSet, 8)': [rwav(p)[0] for p in v]}
+    v, w = (sorted(glob.glob(f'{DATA}/vocalset/FULL/*/excerpts/{k}/*.wav')) for k in ('spoken', 'straight'))
+    sets = {f'spoken (VocalSet, {len(v)})': [rwav(p)[0] for p in v], f'sung (VocalSet, {len(w)})': [rwav(p)[0] for p in w]}
     for n in ['vibeace', 'brahms', 'nutcracker', 'trumpet']:
         p = f'{DATA}/repair/{n}.f32'
         if os.path.exists(p): sets[n] = [rf32(p)[:44100 * 60]]
-    print('\n| through it as it is | SI-SDR dB | ' + ' | '.join(f'{a}–{b}' for a, b in OCT) + ' |')
-    print('|---|---|' + '---|' * len(OCT))
+    m = sorted(glob.glob(f'{DATA}/musdb/test-mono/*.f32'))[1::2]
+    if m: sets[f'MUSDB18 previews ({len(m)})'] = [rf32(p) for p in m]
+    g = sorted(glob.glob(f'{DATA}/guitarset/audio_mono-mic/*.wav'))[9::18]
+    if g: sets[f'GuitarSet ({len(g)})'] = [rwav(p)[0][:44100 * 30] for p in g]
+    print('\n| through it as it is | untouched | SI-SDR dB | ' + ' | '.join(f'{a}–{b}' for a, b in OCT) + ' |')
+    print('|---|---|---|' + '---|' * len(OCT))
     for k, xs in sets.items():
         ys = through(kernel, 44100, strength, xs); bi, bo = sum(bands(x, 44100) for x in xs), sum(bands(y, 44100) for y in ys)
-        print(f'| {k} | {np.median([sisdr(x, y) for x, y in zip(xs, ys)]):.1f} | ' + ' | '.join(f'{db(o, i):+.2f}' for o, i in zip(bo, bi)) + ' |')
+        same = np.mean([np.array_equal(np.float32(x), np.float32(y)) for x, y in zip(xs, ys)])
+        print(f'| {k} | {same:.0%} | {np.median([sisdr(x, y) for x, y in zip(xs, ys)]):.1f} | ' + ' | '.join(f'{db(o, i):+.2f}' for o, i in zip(bo, bi)) + ' |')
 
 if __name__ == '__main__':
     if sys.argv[1:2] == ['build']: build(); sys.exit()
@@ -143,9 +153,9 @@ if __name__ == '__main__':
     paths = sorted(p[:-8] for p in glob.glob(f'{OUT}/{name}/*.rev.f32'))
     revs, drys = [rf32(p + '.rev.f32') for p in paths], [rf32(p + '.dry.f32') for p in paths]
     outs, douts = through(kernel, FS, strength, revs), through(kernel, FS, strength, drys)
-    with Pool(8) as pool: R0, R = pool.map(score, list(zip(paths, revs, drys))), pool.map(score, list(zip(paths, outs, douts)))
+    with Pool(8) as pool: R0, R = pool.map(score, [(p, x, None) for p, x in zip(paths, revs)]), pool.map(score, list(zip(paths, outs, douts)))
     print(f'{os.path.relpath(kernel)}, strength {strength:g}, {name} set\n')
-    print('| takes | voice lost dB | tail taken dB | PESQ | STOI | SRMR | SIG | BAK | OVRL | dry: SI-SDR dB | dry: PESQ |')
+    print('| takes | voice lost dB | tail taken dB | PESQ | STOI | SRMR | SIG | BAK | OVRL | dry: untouched | dry: PESQ |')
     print('|---|---|---|---|---|---|---|---|---|---|---|')
     for label, keep in [('short', lambda p: 'long-' not in p), ('long', lambda p: 'long-' in p)]:
         for tag, RR in [('input', R0), ('output', R)]: rows(f'{label}, {tag}', [r for p, r in zip(paths, RR) if keep(p)])

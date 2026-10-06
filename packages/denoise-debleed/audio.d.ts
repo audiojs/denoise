@@ -8,25 +8,25 @@ type Live = Record<string, Float32Array | string | boolean>
 type Ctx = { sampleRate: number, maxBlockSize: number, maxChannels: number, currentTime: number, duration?: number, events?: readonly any[], emit?: (name: string, ...args: any[]) => void, [k: string]: unknown }
 type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Live) => void
 
-/** Chainable-host options for 'dewind' */
-export interface DewindOptions {
-  /** 200..16000 Hz (default 8000) */
-  "cutoff"?: Auto
+/** Chainable-host options for 'debleed' */
+export interface DebleedOptions {
   /** -40..0 dB (default -20) */
   "attenuation"?: Auto
+  /** 0.05..1 s (default 0.3) */
+  "span"?: Auto
   at?: number | string
   duration?: number | string
 }
 
-export declare const dewind: {
+export declare const debleed: {
   (ctx: Ctx): Process
-  channels: "any"
+  channels: {"inputs":[2,2],"outputs":[2]}
   latency: (ctx: { sampleRate: number, params: Live }) => number
   tail: 0
   params: {
-    /** 200..16000 Hz (default 8000) */
-    "cutoff": { type: "number", default: 8000 }
     /** -40..0 dB (default -20) */
     "attenuation": { type: "number", default: -20 }
+    /** 0.05..1 s (default 0.3) [restart] */
+    "span": { type: "number", default: 0.3 }
   }
 }

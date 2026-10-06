@@ -1,6 +1,6 @@
-// What the broadband reducers keep of speech and take of noise. Run: `node scripts/broadband.mjs [--train] [BEFORE]`
-// (minutes; BEFORE, a path to an older omlsa.js, makes each omlsa cell read "before → now"). Prints the README's table
-// of what each keeps, under Speech.
+// What the broadband reducers keep of speech and music and take of noise. Run: `node scripts/broadband.mjs [--train]`
+// (minutes). Prints the README's table of what each keeps, under Speech; a tracking system's cells read "without →
+// with" noise-estimate's `partials` (`estimator: { partials: false }` turns it off).
 //
 // Shadow filtering: each frame's gain, as the kernel's own frame process (`processor`) computes it on the noisy mix, is
 // applied to the clean speech and to the noise alone on the same @audio/stft frames, so what the gain does to each is
@@ -11,7 +11,8 @@
 //   0–5 dB        speech kept in bins where it stands 0–5 dB over the noise (the MMSE-optimal Wiener gain keeps −3.9)
 //   noise         the noise taken in all frames
 //   clean cut     clean speech in (the take's own room tone as the noise; omlsa learned: the print of its lead-in), the
-//                 share of its time-frequency energy cut by more than 3 dB; music likewise, 44.1 kHz
+//                 share of its time-frequency energy cut by more than 3 dB; music, sung long tones and Slakh mixes
+//                 likewise
 // Systems at their defaults, 48 kHz (2048/512 frames): `omlsa` tracking the noise (IMCRA), `omlsa learned`
 // on the noise learned from the lead-in before the speaker starts (audio's bench/denoise.mjs `lead`) at G_min −12 dB as
 // audio's denoise() runs it, `wiener`, `specsub`.
@@ -21,7 +22,10 @@
 // training subset `python scripts/speech.py fetch` writes, the set the defaults were chosen on. Ten Spoken Wikipedia
 // narrations (spoken/, --train: spoken-train/; 60 s, see scripts/speech.mjs) with pink Gaussian noise 10 dB under
 // their active speech level (20 ms frames within 40 dB of the loudest), 1 s of it alone first. Music: the four tracks
-// in repair/ (see scripts/repair.js), first 60 s.
+// in repair/ (see scripts/repair.js), first 60 s. Sung long tones: VocalSet 1.1 (Wilkins et al., ISMIR 2018, CC BY 4.0,
+// zenodo.org/records/1193957), each of its 20 singers' straight long tone (vocalset/FULL/<singer>/long_tones/straight/).
+// Slakh2100 (Manilow et al., WASPAA 2019, CC BY 4.0), mixes Track00001–00006 at 44.1 kHz (slakh/mix44/), first 60 s:
+// synthesized band arrangements, held pads and chords throughout, never heard while choosing anything.
 //
 // Then `omlsa learned` where the noise is left alone, the musical noise: the log kurtosis ratio of the power spectral
 // values out over in (Uemura et al., IWAENC 2008; 0 when the noise is only scaled, above where isolated peaks survive),
@@ -41,8 +45,7 @@ import { wiener as wienerM } from '@audio/denoise-wiener/audio'
 import { specsub as specsubM } from '@audio/denoise-spectral/audio'
 import { wav, lead } from './speech.mjs'
 
-let args = process.argv.slice(2), train = args.includes('--train'), beforePath = args.find(a => !a.startsWith('--'))
-const omlsaBefore = beforePath && (await import(new URL(beforePath, `file://${process.cwd()}/`))).processor
+let train = process.argv.includes('--train')
 const D = `${homedir()}/.cache/audiojs/data`
 const f32 = p => new Float32Array(readFileSync(p).buffer.slice(0))
 const db = x => 10 * Math.log10(x)
@@ -50,8 +53,8 @@ const def = m => Object.fromEntries(Object.entries(m.params).map(([k, s]) => [k,
 // the manifests' defaults, as their audio.js passes them
 const om = def(omlsaM), wi = def(wienerM), ss = def(specsubM)
 const SYSTEMS = {
-  omlsa: (p, o) => p({ ...o, xiMin: 10 ** (om.xiFloor / 10), qPrior: om.qPrior, gMin: om.gMin }),   // α: each version's own
-  'omlsa learned': (p, o) => p({ ...o, gMin: -12 }),
+  omlsa: o => omlsaNow({ ...o, xiMin: 10 ** (om.xiFloor / 10), qPrior: om.qPrior, gMin: om.gMin }),
+  'omlsa learned': o => omlsaNow({ ...o, gMin: -12 }),
   wiener: o => wiener({ ...o, rule: wi.rule, alphaDD: wi.alphaDD, xiMin: 10 ** (wi.xiFloor / 10) }),
   specsub: o => specsub({ ...o, alpha: ss.alpha, beta: ss.beta }),
 }
@@ -118,6 +121,13 @@ function* narrations() {
   }
 }
 function* music() { for (let name of ['brahms', 'nutcracker', 'trumpet', 'vibeace']) yield { s: f32(`${D}/repair/${name}.f32`).subarray(0, 60 * 44100), n: null, fs: 44100, lead: 1 } }
+function* sung() {
+  let root = `${D}/vocalset/FULL`
+  for (let singer of readdirSync(root).sort()) for (let f of readdirSync(`${root}/${singer}/long_tones/straight`).filter(f => f.endsWith('.wav')))
+    yield { ...clean(wav(`${root}/${singer}/long_tones/straight/${f}`)), lead: 1 }
+}
+function* slakh() { for (let i = 1; i <= 6; i++) yield { ...clean(wav(`${D}/slakh/mix44/Track0000${i}.wav`), 60), lead: 1 } }
+const clean = ({ x, fs }, sec = Infinity) => ({ s: x.subarray(0, Math.min(x.length, sec * fs)), n: null, fs })
 
 // each measure per take, then their mean over the takes that have it
 function measure(name, make, takes) {
@@ -133,13 +143,13 @@ function measure(name, make, takes) {
 
 let rows = []
 for (let [name, sys] of Object.entries(SYSTEMS)) {
-  let runs = name.startsWith('omlsa') ? [omlsaBefore, omlsaNow].filter(Boolean).map(p => o => sys(p, o)) : [sys]
+  let learned = name === 'omlsa learned', runs = learned ? [sys] : [false, true].map(p => o => sys({ ...o, estimator: { partials: p } }))
   let res = runs.map(make => ({
-    vb: measure(name, make, () => voicebank(false)), narr: measure(name, make, narrations),
-    clean: measure(name, make, () => voicebank(true)), music: name === 'omlsa learned' ? {} : measure(name, make, music)
+    vb: measure(name, make, () => voicebank(false)), narr: measure(name, make, narrations), clean: measure(name, make, () => voicebank(true)),
+    ...learned ? {} : { music: measure(name, make, music), sung: measure(name, make, sung), slakh: measure(name, make, slakh) }
   }))
-  let cell = (set, k, d = 1) => res.map(r => r[set][k] == null ? '–' : r[set][k].toFixed(d).replace('-', '−')).join(' → ')
-  rows.push(`| ${name === 'omlsa learned' ? '`omlsa`, learned noise' : `\`${name}\``} | ${cell('narr', 'on1')} | ${cell('narr', 'on2')} | ${cell('vb', 'quiet')} | ${cell('vb', 'l0')} | ${cell('vb', 'noise')} | ${cell('narr', 'noise')} | ${cell('clean', 'cut')} | ${cell('music', 'cut')} |`)
+  let cell = (set, k, d = 1) => res.map(r => r[set]?.[k] == null ? '–' : r[set][k].toFixed(d).replace('-', '−')).join(' → ')
+  rows.push(`| ${learned ? '`omlsa`, learned noise' : `\`${name}\``} | ${cell('narr', 'on1')} | ${cell('narr', 'on2')} | ${cell('vb', 'quiet')} | ${cell('vb', 'l0')} | ${cell('vb', 'noise')} | ${cell('narr', 'noise')} | ${cell('clean', 'cut')} | ${cell('music', 'cut')} | ${cell('sung', 'cut')} | ${cell('slakh', 'cut')} |`)
   console.error(rows.at(-1))
 }
 // musical noise where the music leaves the learned noise alone
@@ -157,10 +167,10 @@ let after = (p, gMin) => {
   }
   return r
 }
-let stops = [-12, -20].map(gMin => [omlsaBefore, omlsaNow].filter(Boolean).map(p => after(p, gMin)))
+let stops = [-12, -20].map(gMin => [after(omlsaNow, gMin)])
 
 console.log(`\n${train ? 'VoiceBank+DEMAND training subset, spoken-train' : 'VoiceBank+DEMAND test set, spoken'}: speech kept, dB (0: all of it), and noise taken\n`)
-console.log('| op | onset +1 | onset +2 | quiet | 0–5 dB | noise, VB | noise, narr. | clean cut % | music cut % |\n|---|---|---|---|---|---|---|---|---|')
+console.log('| op | onset +1 | onset +2 | quiet | 0–5 dB | noise, VB | noise, narr. | clean cut % | music cut % | sung cut % | Slakh cut % |\n|---|---|---|---|---|---|---|---|---|---|---|')
 console.log(rows.join('\n'))
 let ks = (i, d) => stops[i].map(r => r[d].toFixed(2)).join(' → ')
 console.log(`\n\`omlsa learned\`, musical noise (log kurtosis ratio) in the half second after music stops: ${ks(0, 0)} at G_min −12 dB, ${ks(1, 0)} at −20; in the last second: ${ks(0, 1)} and ${ks(1, 1)}`)
