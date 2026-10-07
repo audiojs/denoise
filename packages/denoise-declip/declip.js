@@ -13,7 +13,23 @@
 //      standing 4 times over the density 2–6 % below it (at 1, 2 and 4 times that scale, for coarser coders), with
 //      samples over it reaching 3 of its spreads σ (the RMS of the samples over the mode) and beyond; the sound is
 //      cut again at κσ under the mode (κ = 6) and rebuilt as a clip there: every sample over the cut is unknown, held
-//      at least at the cut. Sound with no rail and no band comes back bit-exact.
+//      at least at the cut.
+//      Soft saturation (tape, a valve or transistor stage driven hot) leaves no rail and no band: a memoryless curve
+//      bends the peaks over toward a ceiling. With neither, the curve is fitted by maximum likelihood, the sound under
+//      it taken as locally AR Gaussian (a Wiener system inverted blindly: Taleb, Solé-Casals & Jutten 2001): for a
+//      curve f, z = f⁻¹(x) is the sound before it, and the likelihood is AR(24)'s of z per window of 46 ms, its
+//      variance profiled out, times the Jacobian Π (f⁻¹)'(x). Its curves, of unit slope at 0, each side its ceiling c
+//      and both a knee k: c·tanh((|x|/c)^k)^(1/k) (tanh at k = 1, an exponential approach to the ceiling) and
+//      x/(1 + (|x|/c)^k)^(1/k) (an algebraic one, as arctan's). Read over the 48 windows of the highest peaks; kept
+//      when it gains over 0.02 nats a sample on the sound as it is and bends the loudest peak to half its slope or
+//      less (the clean recordings nearest, VocalSet's sung long tones, fit curves leaving 0.6–0.9 of it, 0.01 nats
+//      at most; saturation to 10 dB SDR gains 0.07 or more, its peaks bent to 1/17 or less). A curve undoes peaks
+//      bent over; it can't make new harmonics predictable, so a band the recording left empty (a lowpass, a codec's)
+//      is held at 70 dB under each window (white-noise correction of its fit): a curve's harmonics there cost no more
+//      than that. A limiter is no curve: its gain moves over milliseconds and keeps each wave's shape (MUSDB18's
+//      mixtures 12 dB into one, under 10⁻⁴ nats a sample). The sound is inverted, z = f⁻¹(x), where the curve's slope
+//      is over 1/40 (its noise and the fit's error raised at most 32 dB); above, z is unknown, held at least at f⁻¹
+//      there: a clip, rebuilt as one. Sound with no rail, no band and no curve comes back bit-exact.
 //   2. Three rebuilds of every sample at a rail, each consistent (held at least as far out as it was recorded: a clip
 //      only ever lowers a sample), each strong where the others are weak: sparse methods lead the declipping survey on
 //      music (Záviška, Rajmic, Ozerov & Rencker 2021, IEEE JSTSP 15(1)), an AR model wins on speech and on mild
@@ -33,10 +49,13 @@
 //      the first clip's runs as nothing (only its bound is known there), so it can favour the AR rebuild where its fill
 //      overshoots: a VoiceBank utterance clipped to 7 dB comes back 2.2 dB under its sparse rebuild alone.
 
-import { arFit, arFill } from '@audio/lpc'
+import { arFit, arFill, autocorr, levinson } from '@audio/lpc'
 import { fft, ifft } from 'fourier-transform'
 
 const TAU = 1e-3, K = 10, ITERS = 8, TOL = 0.01, G = 10, KAPPA = 6, PROM = 4
+// a curve: its likelihood's AR order and floor, the windows read, the nats a sample it must gain, the least slope of
+// its inverse at the loudest peak, the inverse's steepest slope
+const P = 24, FLOOR = 1e-7, WS = 48, LR = 0.02, BEND = 2, SLOPE = 40
 // the rebuilds the blend weighs: the AR one, and the sparse one over blocks of 93 and of 186 ms
 const REBUILDS = ['ar', 0.093, 0.186]
 
@@ -49,9 +68,22 @@ export default function declip(data, params = {}) {
     hi = cut(b.hi, 1), lo = cut(b.lo, -1)
     if (hi != null || lo != null) y = Float32Array.from(data, v => hi != null && v > hi ? hi : lo != null && v < lo ? lo : v)
   }
-  if (hi == null && lo == null) return out
-  let th = hi == null ? Infinity : hi - Math.max(TAU * hi, q), tl = lo == null ? -Infinity : lo + Math.max(-TAU * lo, q)
-  let mask = Int8Array.from(y, v => v >= th ? 1 : v <= tl ? -1 : 0)
+  let mask
+  if (hi == null && lo == null) {
+    // no rail, no band: a curve, the sound inverted under it where its slope is over 1/SLOPE, a clip at f⁻¹ above
+    let c = saturation(data, fs)
+    if (!c) return out
+    let F = CURVES[c.curve], o = new Float64Array(2), at = (v, s) => F(v, s > 0 ? c.hi : -c.lo, c.k, o)
+    let T = s => { let a = 0, b = s > 0 ? c.hi : -c.lo; for (let i = 0; i < 50; i++) { let m = (a + b) / 2; if (at(s * m, s)[1] > Math.log(SLOPE)) b = m; else a = m } return a }
+    let tp = T(1), tn = T(-1)
+    hi = at(tp, 1)[0], lo = at(-tn, -1)[0]
+    mask = Int8Array.from(data, v => v > tp ? 1 : v < -tn ? -1 : 0)
+    y = Float32Array.from(data, (v, i) => mask[i] > 0 ? hi : mask[i] < 0 ? lo : v && at(v, v)[0])
+    out = Float32Array.from(y)
+  } else {
+    let th = hi == null ? Infinity : hi - Math.max(TAU * hi, q), tl = lo == null ? -Infinity : lo + Math.max(-TAU * lo, q)
+    mask = Int8Array.from(y, v => v >= th ? 1 : v <= tl ? -1 : 0)
+  }
   if (!mask.some(Boolean)) return out
 
   // pieces of 30 s overlapping by 2 (the blend reads ±1 s, a rebuild 186 ms), each rebuilt alone, crossfaded
@@ -274,6 +306,97 @@ export function bands(x) {
     return best >= PROM && u >= 16 && M - r >= 3 * s ? { r, s } : null
   }
   return { hi: side(1), lo: side(-1) }
+}
+
+// The curves a saturation is fitted with, of unit slope at 0, ceiling c, knee k: each as its inverse at x into o[0] and
+// the log of the inverse's slope into o[1], u = |x|/c < 1. 'tanh': c·tanh(u^k)^(1/k), tanh at k = 1, an exponential
+// approach to the ceiling; 'alg': x/(1 + u^k)^(1/k), x/(1 + |x|/c) at k = 1, x/√(1 + (x/c)²) at 2, an algebraic one.
+export const CURVES = {
+  tanh: (x, c, k, o) => {
+    let u = Math.abs(x) / c, a = u ** k, t = Math.atanh(a)
+    o[0] = Math.sign(x) * c * t ** (1 / k), o[1] = (k - 1) * Math.log(u) - Math.log1p(-a * a) - (1 - 1 / k) * Math.log(t)
+    return o
+  },
+  alg: (x, c, k, o) => { let a = (Math.abs(x) / c) ** k; o[0] = x * (1 - a) ** (-1 / k), o[1] = -(1 / k + 1) * Math.log1p(-a); return o },
+}
+
+// the log-likelihood of x as `curve` (ceilings cp, cn; Infinity: that side as it is; knee k) of a sound that is locally
+// AR(P) Gaussian: per window of W from each start in ws (Hann), AR(P) fitted to z = f⁻¹(x) with a white floor FLOOR
+// under its power, its error over the window's middle half, its variance there profiled out; plus Σ ln (f⁻¹)'(x) over
+// the same samples (the Jacobian)
+function likelihood(x, ws, W, curve, cp, cn, k) {
+  let F = CURVES[curve], o = new Float64Array(2), z = new Float64Array(W), w = new Float64Array(W), L = 0, n = x.length
+  for (let s of ws) {
+    let J = 0
+    for (let j = 0; j < W; j++) {
+      let t = s + j, v = t >= 0 && t < n ? x[t] : 0, c = v > 0 ? cp : cn
+      if (!v || c === Infinity) z[j] = v
+      else {
+        if (Math.abs(v) >= c) return -Infinity
+        F(v, c, k, o), z[j] = o[0]
+        if (j >= W >> 2 && j < W - (W >> 2)) J += o[1]
+      }
+      w[j] = z[j] * Math.sin(Math.PI * (j + 0.5) / W) ** 2
+    }
+    let r = autocorr(w, P)
+    r[0] *= 1 + FLOOR
+    let { a } = levinson(r, P), E = 0
+    for (let j = W >> 2; j < W - (W >> 2); j++) { let e = z[j]; for (let m = 1; m <= P; m++) e += a[m] * z[j - m]; E += e * e }
+    L += -(W >> 2) * Math.log(E / (W >> 1) + 1e-300) + J
+  }
+  return L
+}
+
+// A saturation, or null: { curve, k, hi, lo, gain }, the curve of the most likelihood, its ceilings (lo negative) and
+// the nats a sample it gains. Read over the WS windows of 46 ms of the highest peaks: screened on a quarter of them
+// (both curves at k = 1, a ceiling shared, c = M·(1 + e^u), u from ln 10⁻⁴ to ln 10 by 2: under a quarter of LR,
+// none), then the ceiling and the knee by golden sections in turn, then each side's ceiling with the knee, kept if
+// that gains over ½ ln N (Schwarz 1978). Taken if it gains over LR and bends the loudest peak to 1/BEND of its slope
+// or less
+export function saturation(x, fs = 44100) {
+  let W = 2 ** Math.round(Math.log2(0.046 * fs)), H = W >> 1, n = x.length, Mp = 0, Mn = 0, all = []
+  for (let v of x) if (v > Mp) Mp = v; else if (-v > Mn) Mn = -v
+  if (n < W || !(Mp > 0 && Mn > 0)) return null
+  for (let s = -(H >> 1); s + (W >> 2) < n; s += H) {
+    let m = 0
+    for (let t = Math.max(0, s + (W >> 2)); t < Math.min(n, s + W - (W >> 2)); t++) m = Math.max(m, Math.abs(x[t]))
+    all.push([s, m])
+  }
+  all.sort((a, b) => b[1] - a[1])
+  let M = Math.max(Mp, Mn), like = (ws, curve, up, un, lk) => likelihood(x, ws, W, curve, Mp * (1 + Math.exp(up)), Mn * (1 + Math.exp(un)), Math.exp(lk))
+  let sym = (ws, curve, u, lk) => likelihood(x, ws, W, curve, M * (1 + Math.exp(u)), M * (1 + Math.exp(u)), Math.exp(lk))
+  let ws = all.slice(0, WS >> 2).map(w => w[0]), L0 = sym(ws, 'tanh', Infinity, 0), best = { L: L0 }
+  for (let curve of ['tanh', 'alg']) for (let u = Math.log(1e-4); u <= Math.log(10); u += 2) {
+    let l = sym(ws, curve, u, 0)
+    if (l > best.L) best = { L: l, curve, u }
+  }
+  if (!best.curve || (best.L - L0) / (ws.length * H) < LR / 4) return null
+  ws = all.slice(0, WS).map(w => w[0]), L0 = sym(ws, 'tanh', Infinity, 0)
+  let { curve, u } = best, lk = 0, L = -Infinity, N = ws.length * H
+  for (let r = 1; r <= 2; r++) {
+    ;[u, L] = gold(v => sym(ws, curve, v, lk), u - 2 / r, u + 2 / r)
+    ;[lk, L] = gold(v => sym(ws, curve, u, v), lk - 0.7 / r, lk + 0.7 / r)
+  }
+  let c = M * (1 + Math.exp(u)), up = Math.log(c / Mp - 1), un = Math.log(c / Mn - 1), lk2 = lk, La = L
+  for (let r = 1; r <= 2; r++) {
+    ;[up, La] = gold(v => like(ws, curve, v, un, lk2), up - 1.5 / r, up + 1.5 / r)
+    ;[un, La] = gold(v => like(ws, curve, up, v, lk2), un - 1.5 / r, un + 1.5 / r)
+    ;[lk2, La] = gold(v => like(ws, curve, up, un, v), lk2 - 0.5 / r, lk2 + 0.5 / r)
+  }
+  let s = La > L + Math.log(N) / 2 ? { curve, k: Math.exp(lk2), hi: Mp * (1 + Math.exp(up)), lo: -Mn * (1 + Math.exp(un)), gain: (La - L0) / N }
+    : { curve, k: Math.exp(lk), hi: c, lo: -c, gain: (L - L0) / N }
+  let o = new Float64Array(2), bend = Math.max(CURVES[curve](Mp, s.hi, s.k, o)[1], CURVES[curve](-Mn, -s.lo, s.k, o)[1])
+  return s.gain > LR && bend > Math.log(BEND) ? s : null
+}
+
+// golden section for the most of f over [a, b], 10 steps: [u, f(u)]
+function gold(f, a, b) {
+  let m1 = b - 0.618 * (b - a), m2 = a + 0.618 * (b - a), f1 = f(m1), f2 = f(m2)
+  for (let i = 0; i < 10; i++) {
+    if (f1 > f2) b = m2, m2 = m1, f2 = f1, m1 = b - 0.618 * (b - a), f1 = f(m1)
+    else a = m1, m1 = m2, f1 = f2, m2 = a + 0.618 * (b - a), f2 = f(m2)
+  }
+  return f1 > f2 ? [m1, f1] : [m2, f2]
 }
 
 // the coarsest power-of-two grid every sample sits on (2⁻¹⁵ for 16-bit PCM, 2⁻²³ for 24-bit), 0 off any: below one

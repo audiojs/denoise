@@ -1,11 +1,12 @@
 // atom manifest: wraps the de-clip kernel per @audio/compile CONTRACT. declip.js finds the rails over the whole
-// sound (each sign's extreme, taken when the samples there are a point mass in runs), rebuilds every clipped sample
-// twice (sparse, from 93 ms blocks; AR, from 186 ms windows) and blends the two by a weight read over ±1 s; it exposes a
-// single whole-array call (`declip(data, params)`) with no streaming variant: the "reconstruction over the file" case
-// the CONTRACT's `streaming: false` field is for.
+// sound (each sign's extreme, taken when the samples there are a point mass in runs; a band, where lossy coding spread
+// one; a saturation's curve, fitted by maximum likelihood, where there is neither), rebuilds every clipped sample three
+// times (AR over 186 ms, sparse over 93 and 186 ms) and blends them by weights read over ±1 s; it exposes a single
+// whole-array call (`declip(data, params)`) with no streaming variant: the "reconstruction over the file" case the
+// CONTRACT's `streaming: false` field is for.
 //
-// clipLevel: 0 lets the kernel find each side's rail itself (none found: the sound comes back untouched); a nonzero
-// value is a symmetric rail, passed straight through.
+// clipLevel: 0 lets the kernel find each side's rail (or curve) itself (none found: the sound comes back untouched); a
+// nonzero value is a symmetric rail, passed straight through.
 
 import declip_ from './declip.js'
 

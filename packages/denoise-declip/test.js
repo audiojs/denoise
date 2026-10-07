@@ -1,7 +1,7 @@
 // declip's own tests: what this version added. The rest (rails, bit-exactness, edges) is in the umbrella's test.js.
 import test, { ok } from 'tst'
 import raw from 'audio-lena/raw'
-import declip, { rails, bands } from './declip.js'
+import declip, { rails, bands, saturation } from './declip.js'
 
 const fs = 44100, lena = new Float32Array(raw)
 const peak = x => x.reduce((m, v) => Math.max(m, Math.abs(v)), 0)
@@ -40,14 +40,36 @@ test('declip — a clip lossy coding spread into a band: found, cut under the ba
   ok(snr(x, z) > snr(x, y) + 5, `SDR ${snr(x, y).toFixed(1)} → ${snr(x, z).toFixed(1)} dB`)
 })
 
-test('declip — no band where nothing was cut: speech, a limited master, sines, noise', () => {
+// a lookahead limiter, as a loud master has been through: the gain the 5 ms moving average of the least ceiling/|x|
+// over the next 5 ms, so a peak touches the ceiling and its neighbours follow the wave
+function limited(x, c = 0.98) {
+  let L = Math.round(0.005 * fs), n = x.length, M = new Float64Array(n), y = new Float32Array(n)
+  for (let i = 0; i < n; i++) { M[i] = 1; for (let j = i; j < Math.min(n, i + L); j++) M[i] = Math.min(M[i], c / Math.max(Math.abs(x[j]), c)) }
+  for (let i = 0, s = 0; i < n; i++) { s += M[i]; if (i >= L) s -= M[i - L]; y[i] = x[i] * s / Math.min(i + 1, L) }
+  return y
+}
+
+test('declip — no band and no curve where nothing was cut or bent: speech, a limited master, sines, noise', () => {
   let s = lena.subarray(0, fs), one = scaled(s, 1 / peak(s)), r = 0x9e3779b9, rand = () => ((r = (r * 1664525 + 1013904223) >>> 0) / 2 ** 32) - 0.5
-  let lim = Float32Array.from(scaled(one, 4), v => Math.tanh(v) * 0.98)   // a hard soft-saturation, no flat top: no band
-  for (let [v, x] of [['speech', s], ['peak 1', one], ['coded unclipped', coded(scaled(one, 0.95))], ['saturated', lim],
+  for (let [v, x] of [['speech', s], ['peak 1', one], ['coded unclipped', coded(scaled(one, 0.95))], ['limited 12 dB', limited(scaled(one, 4))],
     ['50 Hz', Float32Array.from({ length: fs }, (_, i) => 0.9 * Math.sin(2 * Math.PI * 50 * i / fs))],
     ['noise', Float32Array.from({ length: fs }, () => rand() + rand() + rand())]]) {
     let b = bands(x)
-    ok(!b.hi && !b.lo && unchanged(x, declip(x, { fs })), `${v}: no band, not a sample changed`)
+    ok(!b.hi && !b.lo && !saturation(x, fs) && unchanged(x, declip(x, { fs })), `${v}: no band, no curve, not a sample changed`)
+  }
+})
+
+test('declip — soft saturation, no rail: its curve fitted blind, the sound inverted under it, the bent peaks rebuilt', () => {
+  // 0.4.0 found no rail and no band and returned each untouched: 0 dB gained
+  let s = lena.subarray(0, fs / 2), x = scaled(s, 2 / peak(s))
+  for (let [v, f, want] of [
+    ['tanh', Math.tanh, 25],
+    ['arctan, outside its curves', u => 2 / Math.PI * Math.atan(Math.PI / 2 * u), 8],
+    ['asymmetric, the negative side to 0.6', u => u > 0 ? Math.tanh(u) : 0.6 * Math.tanh(u / 0.6), 6]
+  ]) {
+    let y = Float32Array.from(x, f), c = saturation(y, fs), z = declip(y, { fs }), b = bands(y), r = rails(y)
+    ok(c && r.hi == null && r.lo == null && !b.hi && !b.lo, `${v}: no rail, no band, a curve (${c?.curve}, k ${c?.k.toFixed(2)}, ceilings ${c?.hi.toFixed(3)} / ${c?.lo.toFixed(3)})`)
+    ok(snr(x, z) > snr(x, y) + want, `${v}: SDR ${snr(x, y).toFixed(1)} → ${snr(x, z).toFixed(1)} dB`)
   }
 })
 
