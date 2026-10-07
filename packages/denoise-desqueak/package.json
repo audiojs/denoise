@@ -1,0 +1,69 @@
+{
+  "name": "@audio/denoise-desqueak",
+  "version": "0.1.0",
+  "description": "Guitar de-noise: string squeaks taken down where a finger slides on a wound string, the notes left as they ring; a pick's harsh attack softened, the amp's hiss and buzz taken down, on request",
+  "type": "module",
+  "sideEffects": false,
+  "main": "desqueak.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./desqueak.js"
+    },
+    "./package.json": "./package.json",
+    "./audio": {
+      "types": "./audio.d.ts",
+      "default": "./audio.js"
+    }
+  },
+  "files": [
+    "desqueak.js",
+    "audio.js",
+    "index.d.ts",
+    "audio.d.ts"
+  ],
+  "audio": "./audio.js",
+  "dependencies": {
+    "@audio/biquad": "^1.2.1",
+    "@audio/denoise-omlsa": "^0.6.0",
+    "@audio/stft": "^2.0.0",
+    "fourier-transform": "^2.4.0"
+  },
+  "devDependencies": {
+    "audio-lena": "^3.0.1",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "audio",
+    "dsp",
+    "denoise",
+    "restoration",
+    "guitar",
+    "squeak",
+    "fret-noise",
+    "pick",
+    "amp-noise"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/denoise.git",
+    "directory": "packages/denoise-desqueak"
+  },
+  "homepage": "https://github.com/audiojs/denoise/tree/main/packages/denoise-desqueak",
+  "bugs": {
+    "url": "https://github.com/audiojs/denoise/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "funding": "https://github.com/sponsors/audiojs"
+}
