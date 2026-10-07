@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-declip",
-  "version": "0.3.0",
-  "description": "De-clip: each side's rail found where the sound was cut flat, every clipped sample rebuilt twice, sparse (A-SPADE) and AR (Janssen), the two blended by a weight cross-validated region by region; unclipped sound untouched",
+  "version": "0.4.0",
+  "description": "De-clip: each side's rail found where the sound was cut flat, or where lossy coding spread the cut into a band, every clipped sample rebuilt three times, AR (Janssen) and sparse (A-SPADE) over 93 and 186 ms, the three blended by weights cross-validated region by region; unclipped sound untouched",
   "type": "module",
   "sideEffects": false,
   "main": "declip.js",
@@ -25,6 +25,9 @@
   "dependencies": {
     "@audio/lpc": "^1.2.0",
     "fourier-transform": "^2.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
   },
   "keywords": [
     "audio",

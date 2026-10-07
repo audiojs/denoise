@@ -1,6 +1,7 @@
 // Measure @audio/denoise-declip on clipped speech and music, and on the same sound unclipped. Run:
-// `node scripts/declip.js [path to a declip.js] [--spade]` (about two hours; FFmpeg's adeclip, run when ffmpeg is on the
-// PATH, a few minutes of it; the A-SPADE reference, `--spade`, as many more). Prints the README's "Measured" tables:
+// `node scripts/declip.js [path to a declip.js] [--spade] [--only=levels,sqam,vb,variants,unclipped]` (about three
+// hours; FFmpeg's adeclip, run when ffmpeg is on the PATH, a few minutes of it; the A-SPADE reference, `--spade`, as
+// many more; `--only` those parts alone). Prints the README's "Measured" tables:
 //   1. SDR after declip, dB, by the input SDR the clipping leaves (the clip level set by bisection so the clipped sound
 //      is 1…20 dB from the original: the convention of Záviška, Rajmic, Ozerov & Rencker 2021, "A survey and an
 //      extensive evaluation of popular audio declipping methods", IEEE JSTSP 15(1)); each sound peak-normalized, clipped
@@ -10,7 +11,8 @@
 //      samples, the mean of the ten beside the means the survey publishes for its leading methods.
 //   3. VoiceBank+DEMAND's clean test set, every 20th utterance (42), clipped to 3, 10 and 20 dB: mean SDR after.
 //   4. SDR before → after on clipped variants, the rails found by the kernel: asymmetric, one side only, clipped then
-//      turned down, 16-bit, 16-bit dithered, a 16-bit converter overdriven (rails at 32767 and −32768).
+//      turned down, 16-bit, 16-bit dithered, a 16-bit converter overdriven (rails at 32767 and −32768), and, with
+//      ffmpeg, through MP3 and AAC at 128 kbit/s (the rails spread into bands).
 //   5. Samples changed in the unclipped sound: as it is, peak-normalized to 1, 16-bit, and through a lookahead limiter
 //      4× over its ceiling (a mastered sound that touches its ceiling often, never flat).
 // Material, 6 s each: audio-lena (speech, devDependency) and, when present in ~/.cache/audiojs/data/repair/ (see
@@ -27,6 +29,8 @@ import { spawnSync } from 'child_process'
 import { homedir, tmpdir } from 'os'
 
 const args = process.argv.slice(2), spade = args.includes('--spade'), path = args.find(a => !a.startsWith('--'))
+// --only=levels,sqam,vb,variants,unclipped: those parts alone
+const only = args.find(a => a.startsWith('--only='))?.slice(7).split(','), part = k => !only || only.includes(k)
 const { default: declip } = await import(path ? new URL(path, `file://${process.cwd()}/`) : '@audio/denoise-declip')
 const fs = 44100, N = 6 * fs, data = `${homedir()}/.cache/audiojs/data`
 const cache = name => `${data}/repair/${name}.f32`
@@ -70,6 +74,15 @@ function limit(x, c = 0.98) {
 }
 
 const hasFF = !spawnSync('ffmpeg', ['-version']).error
+// through a lossy coder at 128 kbit/s and back (FFmpeg trims the coder's delay), the length kept
+function mp3(y, codec = 'libmp3lame', ext = 'mp3') {
+  let dir = mkdtempSync(`${tmpdir()}/declip-`), i = `${dir}/in.f32`, o = `${dir}/out.${ext}`
+  writeFileSync(i, Buffer.from(y.buffer, y.byteOffset, y.byteLength))
+  spawnSync('ffmpeg', ['-v', 'error', '-y', '-f', 'f32le', '-ar', String(fs), '-ac', '1', '-i', i, '-c:a', codec, '-b:a', '128k', o])
+  let r = spawnSync('ffmpeg', ['-v', 'error', '-i', o, '-f', 'f32le', '-'], { maxBuffer: 1 << 27 }), z = new Float32Array(y.length)
+  z.set(new Float32Array(r.stdout.buffer.slice(r.stdout.byteOffset, r.stdout.byteOffset + r.stdout.byteLength)).subarray(0, y.length)); rmSync(dir, { recursive: true })
+  return z
+}
 function adeclip(y, rate = fs) {
   let dir = mkdtempSync(`${tmpdir()}/declip-`), i = `${dir}/in.f32`, o = `${dir}/out.f32`
   writeFileSync(i, Buffer.from(y.buffer, y.byteOffset, y.byteLength))
@@ -121,7 +134,7 @@ function aspade(y, hi) {
 const targets = [1, 3, 7, 10, 15, 20], methods = [['declip', y => declip(y, { fs })]]
 if (hasFF) methods.push(['FFmpeg adeclip', y => adeclip(y)])
 if (spade) methods.push(['A-SPADE', (y, hi) => aspade(y, hi)])
-for (let [name, run] of methods) {
+for (let [name, run] of part('levels') ? methods : []) {
   console.log(`\n${name}: SDR after, dB\n\n| input SDR | ${targets.map(t => `${t} dB`).join(' | ')} | seconds per second |\n|---|${targets.map(() => '---:').join('|')}|---:|`)
   for (let [k, x0] of material) {
     let x = scale(x0, 1 / peak(x0)), cells = [], t0 = performance.now()
@@ -140,7 +153,7 @@ const survey = {
   'Janssen (AR)': [-0.95, -1.28, 0.62, 3.52, 7.87, 17.01, 19.57]
 }
 const sq = `${data}/declip-sqam`, inputs = [1, 3, 5, 7, 10, 15, 20]
-if (existsSync(sq)) {
+if (part('sqam') && existsSync(sq)) {
   let files = readdirSync(sq).filter(f => f.endsWith('.wav')).sort(), d = inputs.map(() => []), dt = 0, secs = 0
   for (let f of files) {
     let x = wav(`${sq}/${f}`)
@@ -158,7 +171,7 @@ if (existsSync(sq)) {
 }
 
 const vb = `${data}/vbdemand/clean_testset_wav`
-if (existsSync(vb)) {
+if (part('vb') && existsSync(vb)) {
   let files = readdirSync(vb).filter(f => f.endsWith('.wav')).sort().filter((_, i) => i % 20 === 0), cells = []
   for (let t of [3, 10, 20]) {
     let a = [], b = []
@@ -168,19 +181,20 @@ if (existsSync(vb)) {
   console.log(`\nVoiceBank+DEMAND's clean test set, ${files.length} utterances clipped: mean SDR after, dB: ${cells.join(', ')}`)
 }
 
-console.log('\nClipped at the 20 dB level, then: rails found → SDR, dB\n')
-for (let [k, x0] of material) {
+if (part('variants')) console.log('\nClipped at the 20 dB level, then: rails found → SDR, dB\n')
+for (let [k, x0] of part('variants') ? material : []) {
   let x = scale(x0, 1 / peak(x0)), hi = level(x, 20), lo = level(x, 10), cells = []
   for (let [v, ref, y] of [
     ['asymmetric (20 / 10 dB levels)', x, clip(x, hi, -lo)], ['one side', x, clip(x, hi, -2)],
     ['then ×0.4', scale(x, 0.4), scale(clip(x, hi), 0.4)], ['16-bit', x, q16(clip(x, hi))], ['16-bit dithered', x, dither16(clip(x, hi))],
-    ['16-bit converter 2.5 dB over', scale(x, 1.33), q16(scale(x, 1.33))]
+    ['16-bit converter 2.5 dB over', scale(x, 1.33), q16(scale(x, 1.33))],
+    ...hasFF ? [['MP3 128 kbit/s', x, mp3(clip(x, hi))], ['AAC 128 kbit/s', x, mp3(clip(x, hi), 'aac', 'm4a')]] : []
   ]) cells.push(`${v} ${sdr(ref, y).toFixed(1)} → ${sdr(ref, declip(y, { fs })).toFixed(1)}`)
   console.log(`- ${k}: ${cells.join('; ')}`)
 }
 
-console.log('\nThe unclipped sound through it: samples changed\n')
-for (let [k, x0] of material) {
+if (part('unclipped')) console.log('\nThe unclipped sound through it: samples changed\n')
+for (let [k, x0] of part('unclipped') ? material : []) {
   let x = scale(x0, 1 / peak(x0)), cells = []
   for (let [v, y] of [['as it is', x0], ['peak 1', x], ['16-bit', q16(x)], ['limited 12 dB', limit(scale(x, 4))]]) cells.push(`${v} ${changed(y, declip(y, { fs }))}`)
   console.log(`- ${k}: ${cells.join(', ')}`)
