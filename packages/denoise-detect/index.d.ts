@@ -60,24 +60,29 @@ export const BED_SNR: number
 export interface DeesserOptions {
   /** sample rate (Hz), default 44100 */
   fs?: number
-  /** center frequency (Hz), default 6000 */
+  /** 'split' (default): the band over `split` alone; 'band': a bell at `fc`; 'broadband': the whole sound */
+  mode?: 'split' | 'band' | 'broadband'
+  /** Hz, where split mode's band starts, the kernel's default (3500) */
+  split?: number
+  /** Hz, band mode's center, the kernel's default (6500) */
   fc?: number
   /** @deprecated former name of `fc` */
   freq?: number
-  /** notch Q, default 1.4 */
+  /** band mode's Q, the kernel's default (1.4) */
   Q?: number
-  /** dB of the sibilance band over the voice body, the kernel's default (0 in @audio/dynamics-deesser 0.3) */
+  /** dB of the sibilance band over the voice body, the kernel's default (0) */
   threshold?: number
-  /** deepest cut, dB, the kernel's default (−6) */
+  /** deepest cut, dB, the kernel's default (−8) */
   range?: number
-  /** default 4 */
+  /** the kernel's default (4) */
   ratio?: number
-  /** seconds, default 0.001 */
+  /** seconds, the kernel's default (0.001) */
   attack?: number
-  /** seconds, default 0.05 */
+  /** seconds, the kernel's default (0.015) */
   release?: number
-  block?: number
+  /** ms read ahead, the kernel's default (5) */
+  lookahead?: number
 }
 
-/** De-esser adapter over @audio/dynamics-deesser (band mode). Processes in place; returns the same buffer. */
+/** De-esser adapter over @audio/dynamics-deesser 0.4. Processes in place; returns the same buffer. */
 export function deesser(data: Float32Array, params?: DeesserOptions): Float32Array

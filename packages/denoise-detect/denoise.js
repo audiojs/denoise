@@ -29,21 +29,17 @@ import dewind from '@audio/denoise-dewind'
 import deesser_ from '@audio/dynamics-deesser'
 import dereverb from '@audio/denoise-dereverb'
 
-// deesser — @audio/dynamics-deesser mode 'band' behind this family's seconds/fs API (2026-07 near-dupe merge).
-// `threshold` (dB of the sibilance band over the voice body) and `range` (the deepest cut) are the kernel's, its
-// defaults kept. Exported: the umbrella index.js re-exports this same adapter instead of carrying its own copy.
+// deesser: @audio/dynamics-deesser behind this family's seconds/fs API (2026-07 near-dupe merge), every setting the
+// kernel's unless given (its split mode: the band over 3.5 kHz alone, 5 ms ahead; `mode: 'band'` a bell at `fc`).
+// Exported: the umbrella index.js re-exports this same adapter instead of carrying its own copy.
+const ms = s => s == null ? undefined : s * 1000
 export const deesser = (data, params = {}) => {
   data.set(deesser_(data, {
     sampleRate: params.fs || 44100,
-    mode: 'band',
-    fc: params.fc ?? params.freq ?? 6000,   // `freq`: former name
-    Q: params.Q ?? 1.4,
-    threshold: params.threshold,
-    range: params.range,
-    ratio: params.ratio ?? 4,
-    attack: (params.attack ?? 0.001) * 1000,
-    release: (params.release ?? 0.05) * 1000,
-    block: params.block,
+    mode: params.mode, split: params.split,
+    fc: params.fc ?? params.freq,   // `freq`: former name
+    Q: params.Q, threshold: params.threshold, range: params.range, ratio: params.ratio,
+    attack: ms(params.attack), release: ms(params.release), lookahead: params.lookahead,
   }))
   return data
 }
