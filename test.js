@@ -1444,6 +1444,35 @@ test('debreath – a breath just before a phrase goes down; the phrases, the roo
   is(dev, 0, 'a held note passes untouched')
 })
 
+// 0.3 bridged a breath to the vowel decaying into it (quiet enough to pass for breath by level alone) and then found no
+// pause before the run, and read a breath through narrow resonances as voiced (@audio/vad's periodicity, over 60 Hz–
+// 4 kHz): both stayed whole (0.0 dB). A vowel holds its energy under 1 kHz, a breath over it; voicing is read in the
+// 50–1000 Hz band, where resonances at 2.5 and 3.5 kHz leave none.
+test('debreath – a breath the phrase\'s vowel decays into, and one through narrow resonances, go down', () => {
+  // a room 80 dB under the loudest speech, as a close-miked narration's
+  let half = Math.round(2.5 * fs), L = Math.round(0.35 * fs), P = Math.round(1.2 * fs), n = fs / 100, top = 0
+  for (let k = 0; k + n <= lena.length; k += n) { let e = 0; for (let i = k; i < k + n; i++) e += lena[i] * lena[i]; top = Math.max(top, e / n) }
+  let take = (tail, res) => {
+    let T = Math.round(tail * fs), at = half + T, x = pinkNoise(at + L + P + half, 11).map(v => 1e-4 * v), s = 13
+    let w = Float32Array.from({ length: L }, () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2147483648 - 1), br = new Float32Array(L)
+    x.set(lena.subarray(0, half).map((v, i) => v + x[i]))
+    // the vowel's decay: 120 Hz under a 600 Hz formant, 30 dB down over `tail`; the breath starts where it ends
+    for (let i = 0; i < T; i++) { let v = 0; for (let h = 1; h * 120 < 4000; h++) v += Math.sin(2 * Math.PI * 120 * h * i / fs) / (1 + ((h * 120 - 600) / 300) ** 2); x[half + i] += 0.1 * v * 10 ** (-1.5 * i / T) }
+    for (let [f, bw] of res) {
+      let R = Math.exp(-Math.PI * bw / fs), c = 2 * R * Math.cos(2 * Math.PI * f / fs), y1 = 0, y2 = 0
+      for (let i = 0; i < L; i++) { let v = (1 - R) * w[i] + c * y1 - R * R * y2; y2 = y1; y1 = v; br[i] += v }
+    }
+    let g = Math.sqrt(top * 1e-3) / rms(br)
+    for (let i = 0; i < L; i++) x[at + i] += g * br[i] * Math.sin(Math.PI * i / L) ** 2
+    x.set(lena.subarray(half, 2 * half).map((v, i) => v + x[at + L + P + i]), at + L + P)
+    let y = debreath(copy(x), { fs }), e = (d, a, b) => { let s = 0; for (let i = a; i < b; i++) s += d[i] * d[i]; return s }
+    return 10 * Math.log10(e(y, at, at + L) / e(x, at, at + L))
+  }
+  let tail = take(0.15, [[1000, 400], [1700, 500], [2600, 600]]), narrow = take(0, [[2500, 30], [3500, 30]])
+  ok(tail < -6, `the breath the vowel decays into down ${tail.toFixed(1)} dB (0.3: 0.0)`)
+  ok(narrow < -6, `the breath through 30 Hz-wide resonances down ${narrow.toFixed(1)} dB (0.3: 0.0)`)
+})
+
 test('debreath — empty, a single sample, shorter than a frame, digital silence', () => {
   is(debreath(new Float32Array(0), { fs }).length, 0, 'empty')
   for (let x of [Float32Array.of(0.5), new Float32Array(1000).fill(0.25)]) {

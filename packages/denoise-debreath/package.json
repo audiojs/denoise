@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-debreath",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "De-breath: breaths between phrases taken down, told by their length, level and the pauses either side; the room and the speech stay",
   "type": "module",
   "sideEffects": false,
