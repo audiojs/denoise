@@ -298,6 +298,17 @@ test('dehum — hum alone, wandering ±0.05 Hz: tracked', () => {
   ok(down > 35, `${down.toFixed(1)} dB down (0.2.0: 22)`)
 })
 
+// buzz (rectifier and ground-loop: odd harmonics at h^−½, even at 0.3·h^−½, rolling off over 3 kHz) reaches 8 kHz;
+// 0.4.0 took the lines under 1 kHz and left the rest: 6.5 dB down
+test('dehum — buzz to 8 kHz under speech: its lines above 1 kHz go too', () => {
+  let x = lena.subarray(0, fs * 8), n = x.length, h = new Float32Array(n), ph = 0
+  for (let i = 0; i < n; i++) { ph += 2 * Math.PI * (59.95 + 0.02 * Math.sin(2 * Math.PI * i / fs / 20)) / fs; for (let k = 1; k * 59.95 < 8000; k++) h[i] += (k % 2 ? 1 : 0.3) / Math.sqrt(k) / Math.hypot(1, k * 59.95 / 3000) * Math.cos(k * ph + k * k) }
+  let g = rms(x) / 10 / rms(h), yp = dehum(x.map((v, i) => v + g * h[i]), { fs }), ym = dehum(x.map((v, i) => v - g * h[i]), { fs })
+  let down = 10 * Math.log10(g * g * sumsq(h) / sumsq(yp.map((v, i) => (v - ym[i]) / 2))), sdr = 10 * Math.log10(sumsq(x) / sumsq(yp.map((v, i) => (v + ym[i]) / 2 - x[i])))
+  ok(down > 14, `buzz 20 dB under: ${down.toFixed(1)} dB down`)
+  ok(sdr > 35, `speech SDR ${sdr.toFixed(1)} dB`)
+})
+
 // a bar repeated exactly is a comb of lines 1/bar apart: at 120 bpm every 2 Hz, 50 and 60 Hz among them
 test('dehum — a loop is no hum, nor a chord beside the series; speech passes untouched', async () => {
   let { measure } = await import('@audio/denoise-dehum')

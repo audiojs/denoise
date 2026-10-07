@@ -1,8 +1,8 @@
-/** Mains hum removal: the harmonics of the measured mains frequency, each estimated as a slowly varying sinusoid and subtracted; no hum, no change. */
+/** Mains hum and buzz removal: the mains phase tracked, each harmonic estimated along it as a slowly varying sinusoid and subtracted; no hum, no change. */
 export interface DehumOptions {
-  /** fundamental (Hz); omitted or 0: measured, the 50 or 60 Hz series. Given: its exact frequency measured within ±0.4 % */
+  /** fundamental (Hz); omitted or 0: the 50 or 60 Hz series, whichever is found. Given: that series, its exact frequency tracked */
   freq?: number
-  /** remove h = 1..harmonics; omitted or 0: every harmonic up to 1 kHz */
+  /** remove h = 1..harmonics as told; omitted or 0: every harmonic to 1 kHz and each line above it that stands out, to 8 kHz */
   harmonics?: number
   /** with `freq`: measure its exact frequency within ±drift Hz instead of ±0.4 %, default false */
   adaptive?: boolean

@@ -2,7 +2,8 @@
 // dehum measures the hum over the whole signal and fits each harmonic over a second either side (without hum it
 // leaves the audio untouched), so it needs the whole clip: streaming: false, as declick and dewow; the host buffers the
 // input and calls process once. Each channel is measured on its own.
-// freq 0 measures the mains series (50 or 60 Hz, at its exact frequency); harmonics 0 removes every harmonic to 1 kHz.
+// freq 0 finds the mains series (50 or 60 Hz, its frequency tracked); harmonics 0 removes every harmonic to 1 kHz and
+// each line above it that stands out, to 8 kHz.
 
 import dehum_ from './dehum.js'
 
@@ -23,6 +24,6 @@ dehum.streaming = false
 dehum.tail = 0
 dehum.params = {
 	freq:      { type: 'number', min: 0, max: 400, default: 0, unit: 'Hz' },   // 0: measured, 50 or 60 Hz series
-	harmonics: { type: 'number', min: 0, max: 40, default: 0 },                  // 0: every harmonic up to 1 kHz
+	harmonics: { type: 'number', min: 0, max: 40, default: 0 },                  // 0: to 1 kHz and the lines above, to 8 kHz
 	adaptive:  { type: 'bool', default: false },                                 // with freq: search it within ±0.5 Hz
 }

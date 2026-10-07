@@ -1,70 +1,424 @@
 // Mains hum removal: the hum measured, then subtracted.
 //
-// Mains hum is a few sinusoids at the harmonics of the mains frequency, each holding its level for seconds; a voice or
-// an instrument passes through those frequencies and moves on. A notch can't tell the two apart: it takes whatever its
-// band holds, a band that grows with the harmonic (Q 30: 1.7 Hz at 50 Hz, 33 Hz at 1 kHz), and rings on it; narrow,
-// it misses the upper harmonics as the mains frequency wanders. So dehum estimates each harmonic as a slowly turning
-// phasor and subtracts the sinusoid it describes (harmonic subtraction, as power-line interference is taken out of ECG:
-// Levkov et al., BioMed Eng OnLine 4:50, 2005):
+// Mains hum is a few sinusoids at the harmonics of the mains frequency, each holding its level for seconds; buzz (a
+// rectifier's pulses, a ground loop) carries them to several kHz. A voice or an instrument passes through those
+// frequencies and moves on. A notch can't tell the two apart: it takes whatever its band holds and rings on it; narrow,
+// it misses the upper harmonics as the mains frequency wanders (h times the wander at harmonic h). So dehum follows
+// the mains phase, estimates each harmonic as a slowly varying phasor along it, and subtracts the sinusoids they
+// describe (harmonic subtraction, as power-line interference is taken out of ECG: Levkov et al., BioMed Eng OnLine
+// 4:50, 2005):
 //
-//   1. measure   the series, 50 or 60 Hz, and its frequency over the whole signal (`measure` below); no hum, no change.
-//   2. analyse   x in Hann frames four mains cycles long, two apart: each harmonic's phasor c_h(m) = 2·Σ w·x·e^(−j·h·ω₀·n)
-//                / Σ w. The other harmonics fall on the window's zeros and the program far from a line on its
-//                sidelobes, so neither leaks into the line's phasors.
-//   3. fit       each phasor over T = 2 s (Hann) by weighted local-linear least squares (normalized convolution,
-//                Knutsson & Westin, CVPR 1993), each frame weighted by the inverse of the program's power around the
-//                line there (the fit's residual over 0.1 s): a passing voice or note is bridged from the frames around
-//                it rather than averaged in. The linear term keeps the fit centred where the weights are lopsided.
-//   4. track     the mains phase δ: the grid's frequency wanders ±0.02–0.05 Hz, h times that at harmonic h. The fitted
-//                phasors' turn from frame to frame, over h, weighted by h²·SNR (harmonics combined as for ENF
-//                estimation: Hajj-Ahmad, Garg & Wu, IEEE SPL 20(9), 2013), averaged over 8 s and integrated; twice,
-//                the phasors refitted along it. Where it turns on average by more than 0.01 Hz, the measured f0 was
-//                off, as when cuts in an edited take jump the hum's phase and spread its line in the measurement (eight
-//                cuts in a minute: 0.07 Hz): f0 is moved by that turn and all estimated again.
-//   5. subtract  Σ_h Re(a_h·e^(j·h·(ω₀·t + δ))), a_h and δ interpolated between frames.
+//   1. detect    the series, 50 or 60 Hz: measure() (one transform over the signal), or two lines or more standing
+//                out alone in a tracked analysis of the band to 1 kHz (detect()); no hum, no change.
+//   2. track     the mains phase θ: first from the harmonics to 1 kHz at the nominal frequency (each harmonic's
+//                phasor per Hann frame four cycles long, fitted over T, their turn combined over 8 s), then the signal
+//                resampled so that the tracked mains period spans P = 2^k samples (computed order tracking: Fyfe &
+//                Munck, MSSP 11(2), 1997) and θ refined from the turn between frames of the harmonics whose lines stand
+//                out alone (to 16, 64, … 8 kHz), each by its precision (the line's power over the program's there),
+//                smoothed by Rauch–Tung–Striebel at the likeliest rate of wander, kept if it draws the lines tighter.
+//                In the resampled signal each harmonic sits on one bin of a P-point transform of each frame, however
+//                the mains wander: one transform gives them all.
+//   3. lines     which harmonics hold hum: those to 1 kHz, and above them each whose line stands out of the program
+//                (lineSNR: its weighted phasors' power at 0 Hz over their median 0.5–8 Hz away, in 8 s blocks).
+//   4. changes   where the hum itself jumps (an edit's splice turns its phase, a level step, hum switched on or off):
+//                every line's phasors before and after a frame differ beyond their spread at once (changes()). The
+//                tracking does not integrate across a jump, each segment is estimated alone, and the hum switches
+//                from one segment's to the next at the sample that best splits the signal between them.
+//   5. estimate  each line's phasors fitted over T by weighted local-linear least squares within its segment
+//                (normalized convolution, Knutsson & Westin, CVPR 1993), each frame weighted by the inverse of the
+//                program's power around the line there: a passing voice or note is bridged from the frames around it.
+//   6. subtract  Σ_h Re(a_h·e^(j2πhi/P)) per frame of the resampled signal, blended between frame centres, brought
+//                back to the original samples (Kaiser-windowed sinc) and subtracted.
 //
 // What it takes of the program is what lies within a fraction of a hertz of a line, mostly from where the program is
-// quiet around it; a note held within ~0.5 Hz of a line for seconds goes with the hum. A cut in the recording jumps the
-// hum's phase: within a second of it the fit blends the two phases (~9 dB down there, not ~40).
+// quiet around it; a note held within ~0.5 Hz of a line for seconds goes with the hum.
 //
-//   freq       fundamental, Hz; omitted (or 0): measured, the 50 or 60 Hz series. Given: that series, its exact
-//              frequency measured within ±0.4 % (mains tolerance), or within ±drift Hz (default 0.5) when adaptive.
-//   harmonics  remove h = 1..harmonics; omitted (or 0): every harmonic up to 1 kHz.
+//   freq       fundamental, Hz; omitted (or 0): the 50 or 60 Hz series, whichever is found. Given: that series, its
+//              exact frequency tracked from there (measure() within ±0.4 %, or ±drift Hz when adaptive).
+//   harmonics  remove h = 1..harmonics as told; omitted (or 0): those to 1 kHz and every line above to 8 kHz.
 //
-// Returns the same buffer, processed in place. One call takes the whole signal: the fit looks a second either side,
-// the measurement wants a second at least. Shorter, nothing is measured: without `freq` the audio passes through, with
-// it the harmonics are removed as told.
+// Returns the same buffer, processed in place. One call takes the whole signal: the estimate looks seconds either
+// side, the detection wants a second at least. Shorter, nothing is detected: without `freq` the audio passes through,
+// with it the harmonics are removed as told.
 
 import { cascade, lowpass } from '@audio/biquad'
 
-const MIN = 1, FMAX = 1000
+const MIN = 1, FMAX = 1000, BAND = 0.4                     // s; Hz first tracked on; at most this share of fs
 const CYCLES = 2, T = 2, TR = 0.1, TT = 8, KAPPA = 0.01      // hop (cycles); fit, weights, tracking (s); weight floor
 const DF = 0.01                                              // Hz: f0 found further off is estimated again
+const TMAX = 8000                                            // Hz: the band tracked and removed unless told
+const RATES = [0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3] // Hz/√s: the mains' wander, the likeliest of these
+const SCALES = [1, 4, 16, 64, 256]                           // the turns' noise, of what their precision says
+const LB = 8, LINE = 18, ISO = 6, FLOOR = 1e-4, QUIET = 1e-6 // a line: blocks (s), dB over the median, over its neighbours; floor; level
+const KC = 0.5, CHG = 15, SHARE = 0.9                        // a change: span each side (s), power per line, the most one line holds
 
 export default function dehum(data, params = {}) {
   if (!data?.length) return data
-  let fs = params.fs || 44100, p = plan(data, fs, params)
-  if (p) subtract(data, fs, p.f0, p.hs)
+  let fs = params.fs || 44100, freq = params.freq || 0, harmonics = params.harmonics || 0, short = data.length < MIN * fs
+  let tol = freq && params.adaptive ? (params.drift ?? 0.5) / freq : 0.004
+  let found = !short && detect(data, fs, freq ? [freq] : [50, 60], tol), f0 = found ? found.f0 : (short || harmonics) && freq
+  if (f0) remove(data, fs, f0, Math.floor((harmonics ? Math.min(harmonics * f0, BAND * fs) : Math.min(TMAX, BAND * fs)) / f0), harmonics > 0, found || null)
   return data
 }
 
-// the fundamental and the harmonics to remove, or null
-function plan(data, fs, params) {
-  let freq = params.freq || 0, harmonics = params.harmonics || 0, short = data.length < MIN * fs
-  let m = short ? null : measure(data, fs, freq ? [freq] : [50, 60], freq && params.adaptive ? (params.drift ?? 0.5) / freq : 0.004)
-  let f0 = m ? m.f0 : (short || harmonics) && freq
-  if (!f0) return null
-  let hs = []
-  for (let h = 1; h <= (harmonics || Math.floor(FMAX / f0)) && h * f0 < fs / 2; h++) hs.push(h)
-  return { f0, hs }
+// The series and whether there is hum: measure() (one transform over the signal) finds it, or a tracked analysis
+// does: the signal to 1 kHz (taken down to ~3 kHz as measure() does), tracked along each candidate series, two lines or
+// more among its first 20 harmonics that stand out (lineSNR over LINE), are heard at all (60 dB under the signal at
+// most) and stand alone (ISO over any other peak within 3 Hz), a third of those standing out at least (a bar repeated
+// exactly is a comb of lines 1/bar apart, few alone): hum under music, whose lines are too faint against the program
+// over the whole signal for measure(). The series: measure()'s, else the one with the most lines. Returns its
+// fundamental, as the tracking found it, and the tracked phase (knots in samples of the data), or null
+function detect(data, fs, candidates, tol) {
+  let M = Math.max(1, Math.floor(fs / 3000)), fd = fs / M, x = Float32Array.from(data, v => Number.isFinite(v) ? v : 0)
+  if (M > 1) {
+    cascade(x, [0.5098, 0.6013, 0.9, 2.5629].map(q => lowpass(1100, q, fs)))   // Butterworth pole pairs, order 8
+    x = Float32Array.from({ length: Math.floor(x.length / M) }, (_, i) => x[i * M])
+  }
+  let pw = 0
+  for (let i = 0; i < data.length; i++) if (Number.isFinite(data[i])) pw += data[i] * data[i]
+  pw /= data.length
+  let known = measure(data, fs, candidates, tol), best = null
+  for (let f of known ? [known.f0] : candidates) {
+    let t = trace(x, fd, f, Math.min(20, Math.floor(1100 / f), Math.floor(fd / 2 / f) - 1))
+    if (!t) continue
+    let n = 0, all = 0, sum = 0, ls = lines(t.an, t.fr, [])
+    for (let l of ls) if (l.snr >= LINE && l.amp / 2 >= QUIET * pw) { all++; if (l.iso >= ISO) n++, sum += l.snr }
+    if ((known || n >= 2 && 3 * n >= all) && (!best || n > best.n || n === best.n && sum > best.sum)) best = { f0: t.f0, n, sum, tk: t.tk.map(v => v * M), th: t.th }
+  }
+  return best
 }
 
-// estimate the hum at harmonics hs of f0 and subtract it from x, in place. Where the tracked mains phase turns on
-// average, f0 is off: estimated again at f0 moved by that turn, up to four times, on the same frames
-function subtract(x, fs, f0, hs) {
-  let H = Math.round(CYCLES * fs / f0), e = estimate(x, fs, f0, hs, H)
-  for (let it = 0; e && it < 4 && Math.abs(e.df) > DF; it++) e = estimate(x, fs, f0 += e.df, hs, H)
-  if (e) synthesize(x, ...e.args)
+// The mains phase tracked through x and each harmonic's phasors along it. Tracked first on the harmonics to 1 kHz at
+// the nominal frequency (where the tracked phase turns on average, f0 is off: estimated again at f0 moved by that
+// turn, up to four times); then x is resampled so that the tracked mains period spans P = 2^k samples (computed order
+// tracking: Fyfe & Munck, MSSP 11(2), 1997), where every harmonic, however the mains wander, sits on one bin of a
+// P-point transform, and the phase is refined from the turn between frames of the harmonics to 16, 64, … 8 kHz whose
+// lines stand out alone (lineSNR: a partial beside a line turns it with the program), each refinement kept if the
+// lines' coherent power (lineSNR's amp, summed) grows. `from`: a phase tracked already ({ tk, th }: detect()'s, on
+// the signal taken down), refined from there. Returns { xs, an, w, P, fr, hm, f0, tk, th } or null under two frames
+function trace(x, fs, f0, hmax, from) {
+  let tk, th
+  if (from) tk = Float64Array.from(from.tk), th = Float64Array.from(from.th)
+  else {
+    let lo = []
+    for (let h = 1; h <= Math.min(hmax, Math.floor(FMAX / f0)); h++) lo.push(h)
+    let H = Math.round(CYCLES * fs / f0), e = estimate(x, fs, f0, lo, H)
+    for (let it = 0; e && it < 4 && Math.abs(e.df) > DF; it++) e = estimate(x, fs, f0 += e.df, lo, H)
+    if (!e) return null
+    let w0 = 2 * Math.PI * f0 / fs, M = e.delta.length
+    tk = new Float64Array(M), th = new Float64Array(M)
+    for (let m = 0; m < M; m++) tk[m] = m * H + H - (H >> 1) - 0.5, th[m] = w0 * tk[m] + e.delta[m]
+  }
+  let P = 2 ** Math.ceil(Math.log2(fs / f0)), fr = f0 / CYCLES, hm = Math.min(hmax, P / 2 - 1), w, an
+  let xs = Float64Array.from(x, v => Number.isFinite(v) ? v : 0)
+  let ht = Math.min(hm, Math.max(1, Math.floor(TMAX / f0)))
+  let ls = (an, H) => Array.from({ length: H }, (_, i) => lineSNR(an.c[i], weights(an, i, an.full, 'L', fr).w, fr))
+  let held = l => l.reduce((q, l) => q + l.amp, 0)
+  w = warpAt(x.length, tk, th, P); an = analyse(warp(xs, w.k), P, hm)
+  for (let hn = from ? 64 : 16; ; hn *= 4) {                        // the turn, coarse to fine: harmonics to 16, 64, … TMAX
+    let H = Math.min(hn, ht), l0 = ls(an, H), use = l0.map(l => l.snr >= LINE && l.iso >= ISO)
+    if (use.some(Boolean)) {
+      let [tk1, th1] = knots(w, P, turns(an, fr, H, [], use)), w1 = warpAt(x.length, tk1, th1, P), an1 = analyse(warp(xs, w1.k), P, hm)
+      if (held(ls(an1, H)) >= held(l0)) tk = tk1, th = th1, w = w1, an = an1   // kept if it holds the lines tighter
+    }
+    if (hn >= ht) break
+  }
+  return { xs, an, w, P, fr, hm, f0, tk, th }
+}
+
+// remove the hum at harmonics 1..hmax of f0 from x, in place: those to FMAX (mains hum is there when there is hum)
+// and above them the lines that stand out (all of them when `told`), estimated between the hum's jumps (changes())
+// and subtracted
+function remove(x, fs, f0, hmax, told, from) {
+  let t = trace(x, fs, f0, hmax, from)
+  if (!t) return
+  let { xs, an, w, P, fr, hm, tk, th } = t, all = an.c.map(() => true), pick = ls => ls.map((l, i) => (i + 1) * f0 <= FMAX || l.snr >= LINE)
+  let on = told ? all : pick(lines(an, fr, []))
+  if (!on.some(Boolean)) return
+  let cut = changes(an, fr, on)
+  if (cut.length) {                                                 // the turn again, not across the hum's jumps
+    ;[tk, th] = knots(w, P, turns(an, fr, Math.min(hm, Math.floor(TMAX / f0)), cut, on))
+    w = warpAt(x.length, tk, th, P); an = analyse(warp(xs, w.k), P, hm)
+    if (!told) on = pick(lines(an, fr, cut))
+  }
+  let y = humOf(xs, an, w.k, P, fr, on, cut)
+  for (let n = 0; n < x.length; n++) if (Number.isFinite(x[n])) x[n] -= y[n]
+}
+
+// the frames each segment holds between the hum's jumps (cut: the first of the two frames each jump straddles), and a
+// frame mask per segment (whole frames only)
+function segments(full, cut) {
+  let M = full.length, out = [], a = 0
+  for (let m of [...cut, M]) {
+    let mask = new Float64Array(M), b = Math.min(m, M)
+    for (let j = a; j < b; j++) mask[j] = full[j]
+    if (b > a) out.push({ a, b, mask })
+    a = m + 2
+  }
+  return out
+}
+
+// how far each harmonic's line stands out (lineSNR over the frames clear of the jumps): [{ snr, iso }]
+function lines(an, fr, cut) {
+  let { c, full, M } = an
+  let g = hann(T * fr), gr = hann(TR * fr), lin = M >= g.length, mask = Float64Array.from(full)
+  for (let m of cut) mask[m] = mask[m + 1] = 0
+  return c.map((ck, i) => lineSNR(ck, weights(an, i, mask, cut.join() + 'L', fr).w, fr))
+}
+
+// where the hum itself changes: an edit's splice (its phase jumps), a level step, a hum switched on or off. At each
+// frame, each line's phasors averaged over KC before it and after the frame after it (the two frames a change may
+// straddle left out), their difference over its spread, summed over the lines: under a steady hum about one per line,
+// at a change its power over the noise. A change: a local maximum over CHG per line, spread over the lines (no single
+// line holding half of it: a note beside one line moves that line alone), KC apart at least
+function changes(an, fr, on) {
+  let { c, full, M } = an
+  let g = hann(T * fr), gr = hann(TR * fr), lin = M >= g.length, K = Math.max(2, Math.round(KC * fr)), hs = []
+  on.forEach((v, i) => v && hs.push(i))
+  if (!hs.length || M < 2 * K + 2) return []
+  let C = new Float64Array(M), big = new Float64Array(M)
+  for (let i of hs) {
+    let [cr, ci] = c[i], w = weights(an, i, full, 'L', fr).w, sw = new Float64Array(M + 1), sr = new Float64Array(M + 1), si = new Float64Array(M + 1)
+    for (let m = 0; m < M; m++) sw[m + 1] = sw[m] + w[m], sr[m + 1] = sr[m] + w[m] * cr[m], si[m + 1] = si[m] + w[m] * ci[m]
+    for (let m = K; m + K + 2 <= M; m++) {
+      let wl = sw[m] - sw[m - K], wr = sw[m + K + 2] - sw[m + 2]
+      if (!(wl > 0 && wr > 0)) continue
+      let dr = (sr[m + K + 2] - sr[m + 2]) / wr - (sr[m] - sr[m - K]) / wl, di = (si[m + K + 2] - si[m + 2]) / wr - (si[m] - si[m - K]) / wl
+      let q = (dr * dr + di * di) / (1 / wl + 1 / wr)
+      C[m] += q; big[m] = Math.max(big[m], q)
+    }
+  }
+  let n = hs.length, out = []
+  for (let m = K; m + K + 2 <= M; m++) {
+    if (C[m] < CHG * n || big[m] > SHARE * C[m]) continue
+    let peak = true
+    for (let j = Math.max(0, m - K); j <= Math.min(M - 1, m + K); j++) if (C[j] > C[m]) peak = false
+    if (peak && (!out.length || m - out[out.length - 1] >= K)) out.push(m)
+  }
+  return out
+}
+
+// the hum on the original samples: each segment's lines fitted on its own frames (held past its ends), synthesized in
+// the warped signal and brought back; between two segments, the switch at the sample that best splits the signal into
+// the hum before and the hum after (least squares, over the frames the jump straddles)
+function humOf(xs, an, k, P, fr, on, cut) {
+  let { c, M, K } = an, N = k.length, y = new Float64Array(N), g = hann(T * fr), gr = hann(TR * fr), lin = M >= g.length, prev = null
+  let sample = kw => { let lo = 0, hi = N; while (lo < hi) { let mid = (lo + hi) >> 1; if (k[mid] < kw) lo = mid + 1; else hi = mid } return lo }
+  for (let s of segments(an.full, cut)) {
+    let a = c.map((ck, i) => {
+      if (!on[i]) return null
+      let f = fit(ck, weights(an, i, s.mask, cut.length ? `S${s.a}` : 'L', fr).w, g, lin)
+      for (let m = 0; m < M; m++) { let j = Math.min(Math.max(m, s.a), s.b - 1); if (m !== j) f[0][m] = f[0][j], f[1][m] = f[1][j] }
+      return f
+    })
+    let k0 = Math.max(-PAD, (2 * (s.a - 2) + 1) * P), k1 = Math.min(K + PAD, (2 * (s.b + 2) + 1) * P), hw = synth(a, M, P, k0, k1)
+    let n0 = sample(k0), n1 = sample(k1), h = new Float64Array(n1 - n0)
+    for (let n = n0; n < n1; n++) h[n - n0] = at(hw, k[n] - k0 + PAD)
+    let start = n0
+    if (prev) {                                                      // the switch, within the frames the jump straddles
+      let m = s.a - 2, lo = Math.max(n0, sample((2 * m + 1) * P - P)), hi = Math.min(prev.n1, sample((2 * m + 3) * P + P))
+      let cost = 0, best = lo, bc = Infinity
+      for (let n = lo; n < hi; n++) cost += (xs[n] - h[n - n0]) ** 2
+      for (let n = lo; n <= hi; n++) {
+        if (cost < bc) bc = cost, best = n
+        if (n < hi) cost += (xs[n] - prev.h[n - prev.n0]) ** 2 - (xs[n] - h[n - n0]) ** 2
+      }
+      start = best
+    }
+    for (let n = start; n < n1; n++) y[n] = h[n - n0]
+    prev = { n0, n1, h }
+  }
+  return y
+}
+
+// the warped hum over warped samples k0..k1 (PAD more each side) from each frame's phasors a[h][re|im][m] (null: a
+// harmonic left alone): Re Σ a_h e^(j2πhi/P) per frame (the transform of conj(a), its real part), blended linearly
+// between frame centres
+function synth(a, M, P, k0, k1) {
+  let re = new Float64Array(P), im = new Float64Array(P), wave = new Array(M)
+  let fa = Math.min(M - 1, Math.max(0, Math.floor((k0 - PAD - P) / (2 * P)))), fb = Math.max(fa, Math.min(M - 1, Math.ceil((k1 + PAD - P) / (2 * P))))
+  for (let m = fa; m <= fb; m++) {
+    re.fill(0); im.fill(0)
+    a.forEach((ah, i) => { if (ah) re[i + 1] = ah[0][m], im[i + 1] = -ah[1][m] })
+    fft(re, im)
+    wave[m] = Float64Array.from(re)
+  }
+  let y = new Float64Array(k1 - k0 + 2 * PAD)
+  for (let i = k0 - PAD; i < k1 + PAD; i++) {
+    let u = (i - P) / (2 * P), m = Math.floor(u), l = Math.min(Math.max(m, fa), fb), r = Math.min(Math.max(m + 1, fa), fb), lam = u - m
+    let p = ((i % P) + P) % P
+    y[i - k0 + PAD] = l === r ? wave[l][p] : (1 - lam) * wave[l][p] + lam * wave[r][p]
+  }
+  return y
+}
+
+// the phase knots after a refinement: each warped frame centre (2m + 1)·P in original time, its phase moved by eps[m]
+function knots({ k, t0 }, P, eps) {
+  let M = eps.length, tk = [], th = [], n = 0
+  for (let m = 0; m < M; m++) {
+    let kc = (2 * m + 1) * P
+    if (kc > k[k.length - 1]) break
+    while (n + 2 < k.length && k[n + 1] <= kc) n++
+    tk.push(n + (kc - k[n]) / (k[n + 1] - k[n])); th.push(t0 + 2 * Math.PI * kc / P + eps[m])
+  }
+  return tk.length < 2 ? [Float64Array.of(0, k.length), Float64Array.of(t0, t0 + 2 * Math.PI * k[k.length - 1] / P)] : [Float64Array.from(tk), Float64Array.from(th)]
+}
+
+// the mains phase's error per frame of the warped signal from its turn between frames, harmonics 1..hn, no reference:
+// each pair's c_h(m+1)·c_h(m)* holds h times the turn; the turn that best explains them all (Newton's steps from 0 on
+// Σ_h q_h·cos(∠ − hν), q_h the angle's precision: the two frames' fitted power over the program's power there, a
+// harmonic without hum next to nothing), integrated by the Rauch–Tung–Striebel smoother below. The precisions hold
+// only up to a scale (a voice's partial beside a line turns with it, frame after frame), so the scale is chosen with
+// the rate of wander: the likeliest pair
+function turns({ c, full, M }, fr, H, cut = [], use = null) {
+  let g = hann(T * fr), gr = hann(TR * fr), lin = M >= g.length
+  let qr = Array.from({ length: H }, () => new Float64Array(M)), qi = Array.from({ length: H }, () => new Float64Array(M))
+  for (let i = 0; i < H; i++) {
+    if (use && !use[i]) continue
+    let ck = c[i], [cr, ci] = ck, { a } = weighFit(ck, full, g, gr, lin), [lr, li] = a, r = residual(ck, a, gr)
+    for (let m = 0; m + 1 < M; m++) {
+      if (!full[m] || !full[m + 1]) continue
+      let pr = cr[m + 1] * cr[m] + ci[m + 1] * ci[m], pi = ci[m + 1] * cr[m] - cr[m + 1] * ci[m]
+      let v = 0.5 * (r[m] / (lr[m] ** 2 + li[m] ** 2 + 1e-300) + r[m + 1] / (lr[m + 1] ** 2 + li[m + 1] ** 2 + 1e-300)), s = 1 / ((v + 1e-12) * (Math.hypot(pr, pi) || 1e-300))
+      qr[i][m] = s * pr; qi[i][m] = s * pi
+    }
+  }
+  let z = new Float64Array(M), v = new Float64Array(M).fill(Infinity), skip = new Uint8Array(M)
+  for (let m of cut) for (let j = m - 1; j <= m + 1; j++) if (j >= 0 && j < M) skip[j] = 1     // pairs into the two frames a jump straddles
+  for (let m = 0; m + 1 < M; m++) {
+    if (skip[m]) continue
+    let e = 0, d2 = 0
+    for (let it = 0; it < 3; it++) {
+      let d1 = 0; d2 = 0
+      for (let i = 0; i < H; i++) { let h = i + 1, cs = Math.cos(h * e), sn = Math.sin(h * e), p = qr[i][m] * cs + qi[i][m] * sn, q = qi[i][m] * cs - qr[i][m] * sn; d1 += h * q; d2 += h * h * p }
+      if (!(d2 > 0)) break
+      e += Math.max(-0.5, Math.min(0.5, d1 / d2))
+    }
+    if (d2 > 0) z[m] = e, v[m] = 1 / d2                              // a turn: two frames' noise
+  }
+  let best
+  for (let k of SCALES) for (let rate of RATES) { let r = rts(z, v.map(x => x * k), (2 * Math.PI * rate / fr) ** 2 / fr, true); if (!best || r.ll > best.ll) best = r }
+  return best.out
+}
+
+// RTS smoother: phase φ and turn ν per frame, φ' = φ + ν, ν' = ν + noise (variance q); z = φ + noise (variance v)
+function rts(z, v, q, turn = false) {
+  let M = z.length, X = new Float64Array(2 * M), C = new Float64Array(3 * M), Xp = new Float64Array(2 * M), Cp = new Float64Array(3 * M)
+  let x0 = 0, x1 = 0, p00 = 1e2, p01 = 0, p11 = 1e-2, ll = 0
+  for (let m = 0; m < M; m++) {
+    if (m) { x0 += x1; p00 += 2 * p01 + p11; p01 += p11; p11 += q }
+    Xp[2 * m] = x0; Xp[2 * m + 1] = x1; Cp[3 * m] = p00; Cp[3 * m + 1] = p01; Cp[3 * m + 2] = p11
+    if (Number.isFinite(v[m]) && turn) {                              // the turn observed
+      let s = p11 + v[m], k0 = p01 / s, k1 = p11 / s, r = z[m] - x1
+      if (m > 1) ll -= 0.5 * (Math.log(s) + r * r / s)
+      x0 += k0 * r; x1 += k1 * r
+      ;[p00, p01, p11] = [p00 - k0 * p01, p01 - k0 * p11, (1 - k1) * p11]
+    } else if (Number.isFinite(v[m])) {                               // the phase observed
+      let s = p00 + v[m], k0 = p00 / s, k1 = p01 / s, r = z[m] - x0
+      if (m > 1) ll -= 0.5 * (Math.log(s) + r * r / s)                // the innovations' log-likelihood
+      x0 += k0 * r; x1 += k1 * r
+      ;[p00, p01, p11] = [(1 - k0) * p00, (1 - k0) * p01, p11 - k1 * p01]
+    }
+    X[2 * m] = x0; X[2 * m + 1] = x1; C[3 * m] = p00; C[3 * m + 1] = p01; C[3 * m + 2] = p11
+  }
+  let out = new Float64Array(M), s0 = X[2 * M - 2], s1 = X[2 * M - 1]
+  out[M - 1] = s0
+  for (let m = M - 2; m >= 0; m--) {
+    // gain G = P_m F' (P⁻_{m+1})⁻¹, F = [[1, 1], [0, 1]]
+    let a = C[3 * m], b = C[3 * m + 1], d = C[3 * m + 2], pa = Cp[3 * m + 3], pb = Cp[3 * m + 4], pd = Cp[3 * m + 5], det = pa * pd - pb * pb
+    let f00 = a + b, f01 = b, f10 = b + d, f11 = d                      // P_m F'
+    let i00 = pd / det, i01 = -pb / det, i11 = pa / det
+    let g00 = f00 * i00 + f01 * i01, g01 = f00 * i01 + f01 * i11, g10 = f10 * i00 + f11 * i01, g11 = f10 * i01 + f11 * i11
+    let e0 = s0 - Xp[2 * m + 2], e1 = s1 - Xp[2 * m + 3]
+    s0 = X[2 * m] + g00 * e0 + g01 * e1; s1 = X[2 * m + 1] + g10 * e0 + g11 * e1
+    out[m] = s0
+  }
+  return { out, ll }
+}
+
+// each harmonic's phasor per frame of the warped signal xw (P samples per mains period): Hann over four periods, hop
+// two; folded to one period, one P-point transform gives every harmonic (the window's zeros fall on the others).
+// full: 1 for frames whole within the signal (or every frame, renormalized, when under two are)
+function analyse(xw, P, hmax) {
+  let K = xw.length, M = Math.max(2, Math.floor(K / (2 * P))), N = 4 * P
+  let win = Float64Array.from({ length: N }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N))
+  let c = Array.from({ length: hmax }, () => [new Float64Array(M), new Float64Array(M)]), full = new Float64Array(M)
+  let re = new Float64Array(P), im = new Float64Array(P)
+  for (let m = 0; m < M; m++) {
+    let s0 = (2 * m - 1) * P, sum = 0
+    re.fill(0); im.fill(0)
+    for (let i = 0; i < N; i++) { let n = s0 + i; if (n >= 0 && n < K) re[i % P] += win[i] * xw[n], sum += win[i] }
+    full[m] = s0 >= 0 && s0 + N <= K ? 1 : 0
+    fft(re, im)
+    for (let h = 1; h <= hmax; h++) c[h - 1][0][m] = 2 * re[h] / (sum || 1), c[h - 1][1][m] = 2 * im[h] / (sum || 1)
+  }
+  if (full.reduce((s, v) => s + v, 0) < 2) full.fill(1)
+  return { c, full, M, K }
+}
+
+// each sample's place in the warped signal: P samples per turn of the mains phase θ (linear between knots tk, th)
+function warpAt(N, tk, th, P) {
+  let k = new Float64Array(N), M = tk.length, j = 0, s = P / (2 * Math.PI), t0
+  for (let n = 0; n < N; n++) {
+    while (j + 2 < M && n > tk[j + 1]) j++
+    let t = th[j] + (n - tk[j]) * (th[j + 1] - th[j]) / (tk[j + 1] - tk[j])
+    if (!n) t0 = t
+    k[n] = s * (t - t0)
+  }
+  return { k, t0 }
+}
+
+// x resampled at the warped grid: sample i at the time n where k(n) = i
+function warp(x, k) {
+  let K = Math.floor(k[k.length - 1]) + 1, y = new Float64Array(K), n = 0
+  for (let i = 0; i < K; i++) {
+    while (n + 2 < k.length && k[n + 1] <= i) n++
+    y[i] = at(x, n + (i - k[n]) / (k[n + 1] - k[n]))
+  }
+  return y
+}
+
+// how far a harmonic's line stands out: its phasors in blocks of LB (the tracked phase holds that long), weighted (w:
+// the inverse of the program's power around the line), Hann-tapered and transformed; the power at the line (within the
+// taper's main lobe of 0 Hz) over the median power 0.5–8 Hz from it (snr) and over the strongest within 3 Hz (iso),
+// neither under FLOOR of the block's strongest component, each averaged over the blocks, dB; and the line's amplitude²
+// (amp: the weighted mean phasor's)
+function lineSNR([re, im], w, fr) {
+  let M = re.length, B = Math.min(M, Math.round(LB * fr)), N = 2 ** Math.ceil(Math.log2(2 * B)), a = new Float64Array(N), b = new Float64Array(N)
+  let bin = fr / N, lobe = Math.ceil(2 * fr / B / bin), snr = 0, iso = 0, amp = 0, nb = 0
+  for (let s0 = 0; s0 + B <= M; s0 += Math.max(1, B >> 1)) {
+    a.fill(0); b.fill(0)
+    let su = 0
+    for (let m = 0; m < B; m++) { let u = w[s0 + m] * (0.5 - 0.5 * Math.cos(2 * Math.PI * (m + 0.5) / B)); a[m] = u * re[s0 + m]; b[m] = u * im[s0 + m]; su += u }
+    fft(a, b)
+    let pk = 0, near = [], other = 0, top = 0
+    for (let i = 0; i < N; i++) top = Math.max(top, a[i] ** 2 + b[i] ** 2)
+    for (let k = -lobe; k <= lobe; k++) { let i = (k + N) % N; pk = Math.max(pk, a[i] ** 2 + b[i] ** 2) }
+    for (let k = Math.ceil(0.5 / bin); k <= Math.min(N / 2 - 1, 8 / bin); k++) for (let i of [k, N - k]) {
+      let p = a[i] ** 2 + b[i] ** 2; near.push(p)
+      if (k > lobe && k * bin <= 3) other = Math.max(other, p)
+    }
+    near.sort((u, v) => u - v)
+    let floor = FLOOR * top                                         // a line among the block's components, not their rounding
+    snr += pk / Math.max(near[near.length >> 1], floor, 1e-300); iso += pk / Math.max(other, floor, 1e-300); amp += su > 0 ? pk / (su * su) : 0; nb++
+  }
+  return { snr: 10 * Math.log10(snr / nb), iso: 10 * Math.log10(iso / nb), amp: amp / nb }
+}
+
+// x at fractional position t: Kaiser-windowed sinc (β 9, 2·Q taps, tabulated); zero past the ends
+const Q = 16, S = 512, PAD = Q + 2
+let ROWS
+function at(x, t) {
+  let R = ROWS ??= rows(), i = Math.floor(t), u = (t - i) * S, p = Math.floor(u), a = u - p, r0 = R[p], r1 = R[p + 1], s0 = 0, s1 = 0, n0 = i - Q + 1
+  if (n0 >= 0 && i + Q < x.length) for (let q = 0; q < 2 * Q; q++) { let v = x[n0 + q]; s0 += v * r0[q]; s1 += v * r1[q] }
+  else for (let q = Math.max(0, -n0), q1 = Math.min(2 * Q, x.length - n0); q < q1; q++) { let v = x[n0 + q]; s0 += v * r0[q]; s1 += v * r1[q] }
+  return s0 + a * (s1 - s0)
+}
+// the kernel at each of S + 1 fractional offsets p/S: taps q − Q + 1 − p/S, q = 0…2Q−1
+function rows() {
+  let i0 = v => { let s = 1, t = 1; for (let j = 1; j < 40; j++) { t *= (v / 2 / j) ** 2; s += t } return s }, b = 9
+  let k = u => (u = Math.abs(u)) >= Q ? 0 : (u ? Math.sin(Math.PI * u) / (Math.PI * u) : 1) * i0(b * Math.sqrt(1 - (u / Q) ** 2)) / i0(b)
+  return Array.from({ length: S + 1 }, (_, p) => Float64Array.from({ length: 2 * Q }, (_, q) => k(q - Q + 1 - p / S)))
 }
 
 // the hum at harmonics hs of f0 in x, in frames of 2H hopped by H: synthesize()'s arguments, and the tracked phase's
@@ -75,14 +429,17 @@ function estimate(x, fs, f0, hs, H) {
   let w0 = 2 * Math.PI * f0 / fs, fr = fs / H
   let g = hann(T * fr), gr = hann(TR * fr), lin = M >= g.length          // a clip shorter than the window: constant fit
   let { c, full } = phasors(x, H, M, w0, hs), w = weigh(c, full, g, gr, lin), delta = track(c, w, hs, g, gr, lin, fr)
-  let df = (delta[M - 1] - delta[0]) / (M - 1) * fs / (2 * Math.PI * H)
-  return { df, args: [H, M, w0, hs, c.map((ck, k) => fit(rotate(ck, delta, hs[k]), w[k], g, lin)), delta] }
+  return { df: (delta[M - 1] - delta[0]) / (M - 1) * fs / (2 * Math.PI * H), delta }
 }
 
 // each frame's weight: the inverse of the residual's local power around the line, from a uniform fit and then twice
 // from the weighted one; floored at KAPPA of the line's mean power
 function weigh(c, full, g, gr, lin) {
-  return c.map(ck => {
+  return c.map(ck => weighFit(ck, full, g, gr, lin).w)
+}
+// one harmonic's weights and its weighted fit with them
+function weighFit(ck, full, g, gr, lin) {
+  {
     let M = ck[0].length, w = Float64Array.from(full), a = fit(ck, w, g, lin)
     for (let it = 0; it < 2; it++) {
       let r = residual(ck, a, gr), p = 0
@@ -90,8 +447,13 @@ function weigh(c, full, g, gr, lin) {
       for (let m = 0; m < M; m++) w[m] = full[m] / (r[m] + KAPPA * p / M + 1e-30)
       a = fit(ck, w, g, lin)
     }
-    return w
-  })
+    return { w, a }
+  }
+}
+// the weights of harmonic i of an analysis under a frame mask (kept on the analysis: one key per mask)
+function weights(an, i, mask, key, fr) {
+  let g = hann(T * fr), memo = (an.memo ??= {})[key] ??= []
+  return memo[i] ??= weighFit(an.c[i], mask, g, hann(TR * fr), an.M >= g.length)
 }
 
 // the mains phase δ per frame: the fitted phasors' turn from frame to frame over h, weighted by h²·SNR, averaged over
@@ -157,7 +519,7 @@ function fit([re, im], w, g, lin) {
     }
     let det = s0 * s2 - s1 * s1
     if (lin && det > 1e-9 * s0 * s2) { fr[m] = (s2 * r0 - s1 * r1) / det; fi[m] = (s2 * i0 - s1 * i1) / det }
-    else { fr[m] = r0 / s0; fi[m] = i0 / s0 }
+    else if (s0 > 0) { fr[m] = r0 / s0; fi[m] = i0 / s0 }
   }
   return [fr, fi]
 }
@@ -204,32 +566,6 @@ function hann(len) {
   let L = Math.max(3, 2 * Math.round(len / 2) + 1), g = new Float64Array(L)
   for (let j = 0; j < L; j++) g[j] = 0.5 - 0.5 * Math.cos(2 * Math.PI * (j + 1) / (L + 1))
   return g
-}
-
-// x −= Σ_h Re(a_h·e^(j·h·(ω₀·n + δ))), a_h and δ linear between frame centres; held (δ extrapolated) past the ends
-function synthesize(x, H, M, w0, hs, a, delta) {
-  let t = m => m * H + H - (H >> 1) - 0.5, y = new Float64Array(H + 1)              // frame centres, as phasors() has them
-  for (let j = -1; j < M; j++) {
-    let n0 = j < 0 ? 0 : Math.ceil(t(j)), n1 = j + 1 < M ? Math.ceil(t(j + 1)) : x.length, N = n1 - n0
-    if (N <= 0) continue
-    let l = Math.max(j, 0), r = Math.min(j + 1, M - 1), inner = l !== r
-    let sl = (j < 0 ? delta[1] - delta[0] : j + 1 >= M ? delta[M - 1] - delta[M - 2] : delta[r] - delta[l]) / H
-    if (N > y.length) y = new Float64Array(N)
-    y.fill(0, 0, N)
-    for (let k = 0; k < hs.length; k++) {
-      let h = hs[k], [re, im] = a[k]
-      let ph = h * (w0 * n0 + delta[l] + sl * (n0 - t(l))), er = Math.cos(ph), ei = Math.sin(ph)
-      let st = h * (w0 + sl), sr = Math.cos(st), si = Math.sin(st)
-      let dr = inner ? (re[r] - re[l]) / H : 0, di = inner ? (im[r] - im[l]) / H : 0
-      let br = re[l] + (n0 - t(l)) * dr, bi = im[l] + (n0 - t(l)) * di
-      for (let i = 0; i < N; i++) {
-        y[i] += br * er - bi * ei
-        let e = er * sr - ei * si; ei = er * si + ei * sr; er = e
-        br += dr; bi += di
-      }
-    }
-    for (let i = 0; i < N; i++) x[n0 + i] -= y[i]
-  }
 }
 
 // Measure mains hum near the candidate fundamentals: null when the signal is shorter than MIN seconds or no series
@@ -283,6 +619,9 @@ export function measure(data, fs, candidates = [50, 60], tol = 0.004) {
   // 504 noisy VoiceBank training utterances these find hum in one, which carries a steady 49.86 Hz tone at the
   // speech's level; in 164 music clips (144 MUSDB18 7 s excerpts, the 20 BabySlakh mixes), in one, with real 50 Hz
   // hum (0.2.0: in 19); with hum 20 dB under the speech, in 95 % (50 Hz) and 92 % (60 Hz) of the utterances.
+  let pw = 0
+  for (let i = 0; i < data.length; i++) if (Number.isFinite(data[i])) pw += data[i] * data[i]
+  pw /= data.length
   let best = null
   for (let f of candidates) {
     let first = []
