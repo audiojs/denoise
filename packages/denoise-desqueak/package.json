@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-desqueak",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Guitar de-noise: string squeaks taken down where a finger slides on a wound string, the notes left as they ring; a pick's harsh attack softened, the amp's hiss and buzz taken down, on request",
   "type": "module",
   "sideEffects": false,

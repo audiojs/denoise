@@ -146,7 +146,8 @@ function notes(S, fs, harmonic, k0, k1) {
 // of the band not harmonic, that part 10 dB or more over the band's quiet (its 10th-percentile frame), and no note
 // starting. Runs bridged over five frames, widened while the ratio stays 6 dB over its floor and half the band is not
 // harmonic, 45 ms or more: real squeaks on the tuning takes ran 46–134 ms, while the pick's touch before a pluck, which
-// the same cues catch, ran 12–35 ms (at 20 ms the pluck's touch lost a median 5.8 dB over 1–10 kHz, RX 12's 3.0). A region with a note starting in its first half (or 3 frames before it) is that note's
+// the same cues catch, ran 12–35 ms (at 20 ms the pluck's touch lost a median 5.8 dB over 1–10 kHz, RX 12's 3.0). A
+// shorter run may be a slow slide's moving part between its still steps: widened over the band's rise and kept if a comb. A region with a note starting in its first half (or 3 frames before it) is that note's
 // attack (a strum's pick noise comes before its partials); a squeak ends as the next note starts, or before.
 function detect(S, fs) {
   let { F, hop } = S, { hi, harmonic, k0, k1 } = hpr(S, fs), { on, at } = notes(S, fs, harmonic, k0, k1)
@@ -169,10 +170,33 @@ function detect(S, fs) {
     while (e + 1 < F && c[e + 1]) e++
     while (s > 0 && ext(s - 1)) s--
     while (e + 1 < F && ext(e + 1)) e++
+    if (e - s + 1 < minLen) {
+      // a slow slide holds its comb still for tens of ms at a time, and those steps read as partials: the run is
+      // widened, up to 30 ms either way and never into a note's start, while the band stands 3 dB over its level in the
+      // 4 frames before, and kept if then long enough and a comb (peaky), not a scrape
+      let base = 0, c0 = 0, lim = Math.round(0.03 * fs / hop), s1 = s, e1 = e
+      for (let j = Math.max(0, s - 4); j < s; j++) base += hi.tot[j], c0++
+      base = c0 ? base / c0 : 0
+      while (s1 > 0 && s - s1 < lim && !on[s1 - 1] && hi.tot[s1 - 1] > 2 * base) s1--
+      while (e1 + 1 < F && e1 - e < lim && !on[e1 + 1] && hi.tot[e1 + 1] > 2 * base) e1++
+      if (e1 - s1 + 1 >= minLen && flatness(S, fs, s1, e1) <= PEAKY) s = s1, e = e1
+    }
     if (e - s + 1 >= minLen) out.length && s <= out[out.length - 1][1] + 1 ? out[out.length - 1][1] = e : out.push([s, e])
     t = e + 1
   }
   return { regions: out.filter(([s, e]) => !at.some(o => o >= s - 3 && o <= (s + e) / 2)), harmonic }
+}
+
+// A squeak is a comb (Pakarinen et al.), a pick's touch or a scrape noise: the spectral flatness of 1–8 kHz (geometric
+// over arithmetic mean of the power), the median over frames s..e, is at most PEAKY for a comb. On the tuning takes' squeaks
+// as recorded its median was 0.063 (upper quartile 0.101), on the plucks, strums and touches both detectors marked 0.179
+// (lower quartile 0.093); on the test takes 0.032 and 0.090.
+const PEAKY = 0.1
+function flatness(S, fs, s, e) {
+  let { P, K, N } = S, k0 = Math.round(1000 / fs * N), k1 = Math.min(K - 1, Math.round(8000 / fs * N)), n = k1 - k0 + 1, v = []
+  for (let t = s; t <= e; t++) { let lg = 0, ar = 0; for (let k = k0; k <= k1; k++) lg += Math.log(P[t * K + k] + 1e-30), ar += P[t * K + k]; v.push(Math.exp(lg / n) / (ar / n + 1e-30)) }
+  v.sort((a, b) => a - b)
+  return v[v.length >> 1]
 }
 
 // A squeak is a contact held while the hand moves, a click an instant. A region stays if its 1–10 kHz energy spreads over
@@ -189,19 +213,27 @@ function sustained(x, [s, e], S, fs) {
   return true
 }
 
-// Gains in each region, every bin over 300 Hz but a harmonic cell (a partial, where a squeak's comb moves on): down to
-// what the bin holds just outside the region (the lesser side's mean over 4 frames, smoothed over ±2 bins), `squeak` dB
-// at most. (Never under what the bin held for 60 ms on either side as well, as tried on the tuning takes: a real squeak,
-// slow, lingers in its bins, and kept 10.4 dB of it where 11.2 now goes; the long frames' harmonic cells keep the notes.)
+// Gains in each region, every bin over 300 Hz: down to what the bin holds just outside the region (the lesser side's
+// mean over 4 frames, smoothed over ±2 bins), `squeak` dB at most. A harmonic cell (a partial) is left, but in a comb's
+// region (peaky) cut to 6 dB over the greater side: a note that rings through the region, starts or stops in it holds
+// that level or under, a slow slide's still step stands far over what its bin holds outside the squeak. (Never under
+// what the bin held for 60 ms on either side as well, as tried on the tuning takes: a real squeak, slow, lingers in its
+// bins, and kept 10.4 dB of it where 11.2 went.)
 function gains(S, regions, fs, squeak, harmonic) {
   let { P, F, K, N } = S, k0 = Math.round(300 / fs * N), gmin = 10 ** (squeak / 20), G = new Map()
   let side = (a, b) => { let m = new Float64Array(K), c = 0; for (let t = Math.max(0, a); t <= Math.min(F - 1, b); t++, c++) for (let k = 0; k < K; k++) m[k] += P[t * K + k]; return c ? m.map(v => v / c) : null }
   let smooth = m => m.map((_, k) => { let s = 0, c = 0; for (let j = Math.max(0, k - 2); j <= Math.min(K - 1, k + 2); j++) s += m[j], c++; return s / c })
   for (let [s, e] of regions) {
-    let A = side(s - 4, s - 1), B = side(e + 1, e + 4), edge = smooth(A && B ? A.map((v, k) => Math.min(v, B[k])) : A || B)
+    let A = side(s - 4, s - 1), B = side(e + 1, e + 4), lo = smooth(A && B ? A.map((v, k) => Math.min(v, B[k])) : A || B)
+    let hi = smooth(A && B ? A.map((v, k) => Math.max(v, B[k])) : A || B), comb = flatness(S, fs, s, e) <= PEAKY
     for (let t = s; t <= e; t++) {
       let g = new Float32Array(K).fill(1)
-      for (let k = k0; k < K; k++) { let p = P[t * K + k]; if (!harmonic[t * K + k] && p > edge[k]) g[k] = Math.max(gmin, Math.sqrt(edge[k] / p)) }
+      for (let k = k0; k < K; k++) {
+        let p = P[t * K + k], h = harmonic[t * K + k]
+        if (h && !comb) continue
+        let T = h ? 4 * hi[k] : lo[k]
+        if (p > T) g[k] = Math.max(gmin, Math.sqrt(T / p))
+      }
       G.set(t, g)
     }
   }
