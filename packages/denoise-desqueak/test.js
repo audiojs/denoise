@@ -96,6 +96,21 @@ test('desqueak: amp takes steady hiss down between notes, the notes kept', () =>
   ok(db(E(x) / Ed(gtr, x)) > 40, `the guitar's SDR ${db(E(x) / Ed(gtr, x)).toFixed(1)} dB`)
 })
 
+// 0.2 took a buzz down by gain alone, as it does hiss, and a gain can't part a buzz line from a partial in its bin: under
+// a 60 Hz buzz to 8 kHz, 30 dB under four notes, its frequency wandering ±0.02 Hz, 4.8 dB of the buzz went and the
+// notes came out at 46.3 dB SDR. The lines are subtracted now, each held through the take.
+test('desqueak: amp subtracts a steady buzz, the notes kept', () => {
+  let x = new Float32Array(4 * fs), r = lcg(6)
+  for (let [at, f0] of [[1, 110], [1.8, 165], [2.6, 220], [3.2, 147]]) pluck(x, at, f0, 0.2, r)
+  let b = new Float32Array(x.length), ph = 0
+  for (let i = 0; i < b.length; i++) { ph += 2 * Math.PI * (60 + 0.02 * Math.sin(2 * Math.PI * i / fs / 5)) / fs; for (let h = 1; h * 60 <= 8000; h++) b[i] += (h % 2 ? 1 : 0.3) / Math.sqrt(h) / Math.hypot(1, h * 60 / 3000) * Math.sin(h * ph + h * h) }
+  let g = Math.sqrt(E(x) / E(b)) * 10 ** (-30 / 20), n = b.map(v => g * v)
+  let yp = desqueak(x.map((v, i) => v + n[i]), { fs, squeak: 0, amp: -20 }), ym = desqueak(x.map((v, i) => v - n[i]), { fs, squeak: 0, amp: -20 })
+  let res = yp.map((v, i) => (v - ym[i]) / 2), gtr = yp.map((v, i) => (v + ym[i]) / 2)
+  ok(db(E(n) / E(res)) > 15, `${db(E(n) / E(res)).toFixed(1)} dB of the buzz gone`)
+  ok(db(E(x) / Ed(gtr, x)) > 50, `the notes' SDR ${db(E(x) / Ed(gtr, x)).toFixed(1)} dB`)
+})
+
 test('desqueak: short input, digital silence, Float64Array', () => {
   let s = new Float32Array(500).map((_, i) => Math.sin(i / 7))
   ok(desqueak(s.slice(), { fs, pick: -9, amp: -20 }).every((v, i) => v === s[i]), 'shorter than a frame: as it came')

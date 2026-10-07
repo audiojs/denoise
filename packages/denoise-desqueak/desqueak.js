@@ -12,12 +12,14 @@
 // sample.
 //
 // Pick: each pluck's click found on the 2–10 kHz envelope, its first 10 ms taken down to what the note holds 15–35 ms
-// on. Amp: OM-LSA (@audio/denoise-omlsa) on a noise print read from the take's quietest frames.
+// on. Amp: the buzz's mains lines subtracted, each held through the take (@audio/denoise-dehum, steady), then OM-LSA
+// (@audio/denoise-omlsa) on a noise print read from the take's quietest frames.
 
 import { fft, ifft } from 'fourier-transform'
 import { highpass, lowpass, process as filter } from '@audio/biquad'
 import { frame as heldFrame, processor } from '@audio/denoise-omlsa'
 import { stftAnalyse, stftBatch } from '@audio/stft'
+import dehum from '@audio/denoise-dehum'
 
 /** The squeak part's analysis frame at a rate: the power of two nearest 23 ms (1024 at 44.1 and 48 kHz). */
 export const frame = fs => 2 ** Math.max(8, Math.round(Math.log2(0.0232 * fs)))
@@ -307,7 +309,14 @@ function picks(x, fs, pick, attack) {
 
 // ---- amp
 
-// Hiss, hum and buzz hold still under the playing. Their print is read from the frames within 1 dB of the take's
+// Hiss, hum and buzz hold still under the playing. The buzz first: a gain can't part a buzz line from a guitar partial
+// in its bin, and in a take's quiet passages, where the guitar plays 5–8 dB over a buzz 35 dB under the take, half of
+// what OM-LSA took of the guitar lay within ±10 Hz of the 60 Hz lines. Its lines are mains-locked, so they are
+// subtracted: dehum with `steady` (each line one phasor held through the take, the mains phase refined against the
+// held comb; no line found, nothing changed). dehum as it is for edited material (a fit over 2 s, the hum's jumps)
+// took the guitar's partials near the lines and read a chord's attack on many lines as a jump: on the tuning takes
+// under buzz the guitar's SDR 47.6 → 39.3 dB. What the lines leave, and the hiss, then go as before. Their print is
+// read from the frames within 1 dB of the take's
 // 1st-percentile frame (by power over 100 Hz–10 kHz): the amp alone before the playing, where the take has that, all of
 // it, else the gaps between notes. (The quietest few alone are steady noise's quieter frames and read it low; frames
 // within 3 dB took in a chord ringing softly through a take's quietest stretches; and a second of the amp alone before
@@ -323,8 +332,10 @@ function picks(x, fs, pick, attack) {
 // hiss peaks so high in one bin in 22 000 and a buzz's line sits at the print. OM-LSA alone took the last chord of a
 // test take, 22 dB over the hiss, 6 dB down, its speech absence read as certain in the chord's steady bins; on the
 // tuning takes the guitar's SDR under hiss, buzz and both went 47.2, 44.3, 44.2 → 50.1, 47.6, 46.6 dB, the noise taken
-// where it is heard 14.7, 11.6, 12.6 → 13.3, 10.0, 10.7 dB.
+// where it is heard 14.7, 11.6, 12.6 → 13.3, 10.0, 10.7 dB. With the lines subtracted first, under buzz and both
+// 47.6, 46.6 → 54.0, 47.2 dB, the buzz taken where heard 10.0 → 23.8 dB.
 function hush(x, fs, gMin) {
+  dehum(x, { fs, steady: true })
   let N = heldFrame(fs, true), hop = N >> 2, K = (N >> 1) + 1, lo = Math.round(100 / fs * N), hi = Math.min(K - 1, Math.round(10000 / fs * N)), level = [], spec = []
   if (x.length < 2 * N) return
   stftAnalyse(x, mag => {

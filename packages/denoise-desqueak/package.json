@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-desqueak",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Guitar de-noise: string squeaks taken down where a finger slides on a wound string, the notes left as they ring; a pick's harsh attack softened, the amp's hiss and buzz taken down, on request",
   "type": "module",
   "sideEffects": false,
@@ -26,6 +26,7 @@
   "audio": "./audio.js",
   "dependencies": {
     "@audio/biquad": "^1.2.1",
+    "@audio/denoise-dehum": "^0.6.0",
     "@audio/denoise-omlsa": "^0.6.0",
     "@audio/stft": "^2.0.0",
     "fourier-transform": "^2.4.0"

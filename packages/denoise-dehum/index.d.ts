@@ -8,6 +8,8 @@ export interface DehumOptions {
   adaptive?: boolean
   /** search range for `adaptive` (Hz), default 0.5 */
   drift?: number
+  /** the hum held through the take (a buzz under an instrument, no edit): each line one phasor, the mains phase refined against them; default false */
+  steady?: boolean
   /** sample rate, default 44100 */
   fs?: number
 }
