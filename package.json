@@ -61,7 +61,7 @@
     "@audio/denoise-declip": "^0.3.0",
     "@audio/denoise-dewind": "^0.4.0",
     "@audio/denoise-deplosive": "^0.3.0",
-    "@audio/denoise-debreath": "^0.2.1",
+    "@audio/denoise-debreath": "^0.3.0",
     "@audio/denoise-dereverb": "^0.4.0",
     "@audio/denoise-detect": "^0.5.0",
     "@audio/dynamics-gate": "^0.1.4",

@@ -1325,25 +1325,24 @@ test('deesser — preserves low-mid content', () => {
 
 // =================== debreath ===================
 
-test('debreath — attenuates non-speech far more than speech', () => {
-  // Pure noise (VAD all-inactive) must be pulled down; loud speech must survive.
-  // A no-op or a full-mute would fail one side or the other.
-  let speech = lena.subarray(0, fs * 4)
-  let n = noise(fs, 0.05)
-  let retNoise = rms(debreath(copy(n), { fs })) / rms(n)
-  let retSpeech = rms(debreath(copy(speech), { fs })) / rms(speech)
-  ok(retNoise < 0.6, 'pure non-speech attenuated (VAD inactive)')
-  ok(retSpeech > retNoise * 1.5, 'speech retained far more than noise')
+test('debreath – the room stays; `room` turns down what is not speech, as 0.2 did', () => {
+  // Pure noise (VAD all-inactive): no breath in it, untouched; with room, pulled down while loud speech survives
+  let speech = lena.subarray(0, fs * 4), n = noise(fs, 0.05)
+  ok(debreath(copy(n), { fs }).every((v, i) => v === n[i]), 'pure noise, by default: untouched')
+  let retNoise = rms(debreath(copy(n), { fs, room: -12 })) / rms(n)
+  let retSpeech = rms(debreath(copy(speech), { fs, room: -12 })) / rms(speech)
+  ok(retNoise < 0.6, 'room −12: pure non-speech attenuated (VAD inactive)')
+  ok(retSpeech > retNoise * 1.5, 'room −12: speech retained far more than noise')
 })
 
-test('debreath — noise after speech goes down', () => {
+test('debreath – room: noise after speech goes down', () => {
   // the host's case: 1.5 s of lena, then 1.5 s of noise at 0.02. 2.0.0 heard the noise as voiced speech and kept it
   // whole (its floor, read before the noise, lay under it; its voicing, on the Wiener estimate, peaks on noise)
   let s = 5, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296
   for (let [kind, make] of [['white', n => Float32Array.from({ length: n }, () => r() * 2 - 1)], ['pink', n => pinkNoise(n, 9).map(v => v / 4)]]) {
     let sp = lena.subarray(0, Math.round(1.5 * fs)), x = new Float32Array(2 * sp.length), z = make(sp.length)
     x.set(sp); for (let i = 0; i < z.length; i++) x[sp.length + i] = 0.02 * z[i]
-    let y = debreath(copy(x), { fs }), e = (d, a, b) => rms(d.subarray(a, b))
+    let y = debreath(copy(x), { fs, room: -12 }), e = (d, a, b) => rms(d.subarray(a, b))
     ok(e(y, sp.length + 4096, x.length) < 0.6 * e(x, sp.length + 4096, x.length), `${kind}: the noise down (${(e(y, sp.length + 4096, x.length) / e(x, sp.length + 4096, x.length)).toFixed(2)})`)
     ok(e(y, 0, sp.length) > 0.95 * e(x, 0, sp.length), `${kind}: the speech kept`)
   }
@@ -1363,13 +1362,16 @@ test('debreath — speech under noise is not turned down', () => {
   ok(y.every(Number.isFinite), 'finite output')
 })
 
-test('debreath — a breath between phrases goes down by `range`; the phrases, and a held note, stay as they were', () => {
-  // two phrases of lena, a 1.2 s pause on a -70 dB floor, in its middle a breath: noise through three wide resonances
-  // (500, 1500, 2500 Hz) under a 350 ms Hann envelope, 30 dB under the loudest speech
-  let gap = Math.round(1.2 * fs), half = Math.round(2.5 * fs), L = Math.round(0.35 * fs), at = half + (gap - L >> 1)
-  let x = pinkNoise(2 * half + gap, 11).map(v => 3e-4 * v), br = new Float32Array(L), w = pinkNoise(L, 13)
+// 0.2 took everything between phrases down by `range` and kept what lay within 0.15 s of a phrase as its onset: a breath
+// ending 80 ms before the phrase stayed whole (−0.04 dB), the room around it went down. Now the breath goes, the room stays.
+test('debreath – a breath just before a phrase goes down; the phrases, the room, and a held note stay as they were', () => {
+  // two phrases of lena, a 1.2 s pause on a -70 dB floor, and a breath ending 80 ms before the second: white noise
+  // through three wide resonances (1000, 1700, 2600 Hz: the labelled breaths of bench/rx/debreath.mjs hold 67–88 % of
+  // their 0.3–8 kHz energy in 1–4 kHz) under a 350 ms Hann envelope, 30 dB under the loudest speech
+  let gap = Math.round(1.2 * fs), half = Math.round(2.5 * fs), L = Math.round(0.35 * fs), at = half + gap - L - Math.round(0.08 * fs)
+  let x = pinkNoise(2 * half + gap, 11).map(v => 3e-4 * v), br = new Float32Array(L), s = 13, w = Float32Array.from({ length: L }, () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2147483648 - 1)
   x.set(lena.subarray(0, half).map((v, i) => v + x[i])); x.set(lena.subarray(half, 2 * half).map((v, i) => v + x[half + gap + i]), half + gap)
-  for (let [f, bw] of [[500, 300], [1500, 400], [2500, 500]]) {
+  for (let [f, bw] of [[1000, 400], [1700, 500], [2600, 600]]) {
     let R = Math.exp(-Math.PI * bw / fs), c = 2 * R * Math.cos(2 * Math.PI * f / fs), y1 = 0, y2 = 0
     for (let i = 0; i < L; i++) { let v = (1 - R) * w[i] + c * y1 - R * R * y2; y2 = y1; y1 = v; br[i] += v }
   }
@@ -1378,10 +1380,12 @@ test('debreath — a breath between phrases goes down by `range`; the phrases, a
   let g = Math.sqrt(top * 1e-3) / rms(br)
   for (let i = 0; i < L; i++) x[at + i] += g * br[i] * Math.sin(Math.PI * i / L) ** 2
   let y = debreath(copy(x), { fs }), e = (d, a, b) => { let s = 0; for (let i = a; i < b; i++) s += d[i] * d[i]; return s }
-  almost(10 * Math.log10(e(y, at, at + L) / e(x, at, at + L)), -12, 1, 'the breath down by range')
+  let down = 10 * Math.log10(e(y, at, at + L) / e(x, at, at + L))
+  ok(down < -6, `the breath down ${down.toFixed(1)} dB (range −12; its faded edges stay with the room)`)
   let loudKept = true
   for (let k = 0; k + n <= x.length; k += n) if ((k < half || k >= half + gap) && e(x, k, k + n) > top * n / 100) loudKept &&= e(y, k, k + n) === e(x, k, k + n)
   ok(loudKept, 'every loud 10 ms of both phrases untouched')
+  ok(y.subarray(half, at - Math.round(0.05 * fs)).every((v, i) => v === x[half + i]), 'the room before the breath untouched')
   // nothing between phrases: a note held 3 s with vibrato, no pause anywhere, comes out bit-exact
   let note = new Float32Array(3 * fs)
   for (let i = 0, ph = 0; i < note.length; i++) { ph += 2 * Math.PI * 150 * (1 + 0.01 * Math.sin(2 * Math.PI * 5 * i / fs)) / fs; for (let h = 1; h <= 10; h++) note[i] += 0.2 * Math.sin(h * ph) / h }

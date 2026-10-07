@@ -12,9 +12,11 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 export interface DebreathOptions {
   /** -60..0 dB (default -12) */
   "range"?: Auto
+  /** -60..0 dB (default 0) */
+  "room"?: Auto
   /** 0.0005..0.5 s (default 0.005) */
   "attack"?: Auto
-  /** 0.001..2 s (default 0.1) */
+  /** 0.001..2 s (default 0.01) */
   "release"?: Auto
   at?: number | string
   duration?: number | string
@@ -28,9 +30,11 @@ export declare const debreath: {
   params: {
     /** -60..0 dB (default -12) */
     "range": { type: "number", default: -12 }
+    /** -60..0 dB (default 0) */
+    "room": { type: "number", default: 0 }
     /** 0.0005..0.5 s (default 0.005) */
     "attack": { type: "number", default: 0.005 }
-    /** 0.001..2 s (default 0.1) */
-    "release": { type: "number", default: 0.1 }
+    /** 0.001..2 s (default 0.01) */
+    "release": { type: "number", default: 0.01 }
   }
 }

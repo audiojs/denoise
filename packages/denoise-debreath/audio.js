@@ -1,8 +1,7 @@
-// atom manifest — wraps the VAD-driven breath attenuator per @audio/compile CONTRACT. debreath.js decides on the
-// whole clip: @audio/vad's noise floor at each frame is the minimum over 1.5 s centred on it (0.75 s ahead), its speech
-// level the mean over every voiced frame of the input, and the gain is zero-phase (it rises `attack` s before speech
-// starts). A small realtime block would see neither the frames ahead nor the clip's speech level. Declared
-// streaming: false: the host hands it the whole input in one block.
+// atom manifest: wraps the breath remover per @audio/compile CONTRACT. debreath.js decides on the whole clip: @audio/vad's
+// noise floor at each frame is the minimum over 1.5 s centred on it (0.75 s ahead), a breath is told by its run's length,
+// level against the clip's room and speech, and the pauses either side of it. A small realtime block would see none
+// of these. Declared streaming: false: the host hands it the whole input in one block.
 
 import debreath_ from './debreath.js'
 
@@ -13,6 +12,7 @@ export const debreath = (ctx) => {
 		const opts = {
 			fs: ctx.sampleRate,
 			range: params.range[0],
+			room: params.room[0],
 			attack: params.attack[0],
 			release: params.release[0],
 		}
@@ -25,7 +25,8 @@ debreath.channels = 'any'
 debreath.streaming = false
 debreath.tail = 0
 debreath.params = {
-	range:   { type: 'number', min: -60, max: 0, default: -12, unit: 'dB' },
+	range:   { type: 'number', min: -60, max: 0, default: -12, unit: 'dB' },        // how far a breath goes down
+	room:    { type: 'number', min: -60, max: 0, default: 0, unit: 'dB' },          // how far what is neither speech nor breath goes
 	attack:  { type: 'number', min: 0.0005, max: 0.5, default: 0.005, unit: 's' },
-	release: { type: 'number', min: 0.001, max: 2, default: 0.1, unit: 's' },
+	release: { type: 'number', min: 0.001, max: 2, default: 0.01, unit: 's' },
 }
