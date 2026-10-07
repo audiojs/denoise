@@ -9,7 +9,9 @@
 // 4:50, 2005):
 //
 //   1. detect    the series, 50 or 60 Hz: measure() (one transform over the signal), or two lines or more standing
-//                out alone in a tracked analysis of the band to 1 kHz (detect()); no hum, no change.
+//                out alone in a tracked analysis of the band to 1 kHz (detect()), counting only lines that persist
+//                where the program falls silent (persists(): a note held on a line goes quiet with the music, hum
+//                does not); no hum, no change.
 //   2. track     the mains phase θ: first from the harmonics to 1 kHz at the nominal frequency (each harmonic's
 //                phasor per Hann frame four cycles long, fitted over T, their turn combined over 8 s), then the signal
 //                resampled so that the tracked mains period spans P = 2^k samples (computed order tracking: Fyfe &
@@ -19,14 +21,19 @@
 //                In the resampled signal each harmonic sits on one bin of a P-point transform of each frame, however
 //                the mains wander: one transform gives them all.
 //   3. lines     which harmonics hold hum: those to 1 kHz, and above them each whose line stands out of the program
-//                (lineSNR: its weighted phasors' power at 0 Hz over their median 0.5–8 Hz away, in 8 s blocks).
+//                (lineSNR: its weighted phasors' power at 0 Hz over their median 0.5–8 Hz away, in 8 s blocks); of
+//                them, those that persist where the program falls silent.
 //   4. changes   where the hum itself jumps (an edit's splice turns its phase, a level step, hum switched on or off):
 //                every line's phasors before and after a frame differ beyond their spread at once (changes()). The
 //                tracking does not integrate across a jump, each segment is estimated alone, and the hum switches
 //                from one segment's to the next at the sample that best splits the signal between them.
 //   5. estimate  each line's phasors fitted over T by weighted local-linear least squares within its segment
 //                (normalized convolution, Knutsson & Westin, CVPR 1993), each frame weighted by the inverse of the
-//                program's power around the line there: a passing voice or note is bridged from the frames around it.
+//                program's power around the line there, and kept within HOLD (30 %) of the hum bridged through the
+//                program (bridge(): a random walk smoothed by Rauch–Tung–Striebel over the line's phasors with the
+//                tones beside it taken out, its rate the likeliest of a slow few: hum drifts over seconds). Where the
+//                program is loud and steady around a line (a dense mix), the fit takes it in and the bridge does not:
+//                faint hum under music no longer costs the music more than the hum it removes.
 //   6. subtract  Σ_h Re(a_h·e^(j2πhi/P)) per frame of the resampled signal, blended between frame centres, brought
 //                back to the original samples (Kaiser-windowed sinc) and subtracted.
 //
@@ -51,6 +58,7 @@ const RATES = [0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3] // Hz/√s: t
 const SCALES = [1, 4, 16, 64, 256]                           // the turns' noise, of what their precision says
 const LB = 8, LINE = 18, ISO = 6, FLOOR = 1e-4, QUIET = 1e-6 // a line: blocks (s), dB over the median, over its neighbours; floor; level
 const KC = 0.5, CHG = 15, SHARE = 0.9                        // a change: span each side (s), power per line, the most one line holds
+const RHO = [1e-6, 1e-5, 1e-4], HOLD = 0.3                   // the bridge's walk per frame (of the line's power); the fit kept within
 
 export default function dehum(data, params = {}) {
   if (!data?.length) return data
@@ -78,12 +86,13 @@ function detect(data, fs, candidates, tol) {
   for (let i = 0; i < data.length; i++) if (Number.isFinite(data[i])) pw += data[i] * data[i]
   pw /= data.length
   let known = measure(data, fs, candidates, tol), best = null
-  for (let f of known ? [known.f0] : candidates) {
+  for (let f of known ? [known.f0, ...candidates.filter(c => Math.abs(c - known.f0) > 5)] : candidates) {
     let t = trace(x, fd, f, Math.min(20, Math.floor(1100 / f), Math.floor(fd / 2 / f) - 1))
     if (!t) continue
-    let n = 0, all = 0, sum = 0, ls = lines(t.an, t.fr, [])
-    for (let l of ls) if (l.snr >= LINE && l.amp / 2 >= QUIET * pw) { all++; if (l.iso >= ISO) n++, sum += l.snr }
-    if ((known || n >= 2 && 3 * n >= all) && (!best || n > best.n || n === best.n && sum > best.sum)) best = { f0: t.f0, n, sum, tk: t.tk.map(v => v * M), th: t.th }
+    let n = 0, all = 0, sum = 0, ls = lines(t.an, t.fr, []), held = persists(t.an, t.fr), sure = known && f === known.f0
+    ls.forEach((l, i) => { if (l.snr >= LINE && l.amp / 2 >= QUIET * pw && held[i]) { all++; if (l.iso >= ISO) n++, sum += l.snr } })
+    if ((sure ? all >= 1 : n >= 2 && 3 * n >= all) && (!best || n > best.n || n === best.n && sum > best.sum)) best = { f0: t.f0, n, sum, tk: t.tk.map(v => v * M), th: t.th }
+    if (best && sure) break
   }
   return best
 }
@@ -133,13 +142,13 @@ function remove(x, fs, f0, hmax, told, from) {
   let t = trace(x, fs, f0, hmax, from)
   if (!t) return
   let { xs, an, w, P, fr, hm, tk, th } = t, all = an.c.map(() => true), pick = ls => ls.map((l, i) => (i + 1) * f0 <= FMAX || l.snr >= LINE)
-  let on = told ? all : pick(lines(an, fr, []))
+  let held = told ? all : persists(an, fr), on = told ? all : pick(lines(an, fr, [])).map((v, i) => v && held[i])
   if (!on.some(Boolean)) return
   let cut = changes(an, fr, on)
   if (cut.length) {                                                 // the turn again, not across the hum's jumps
     ;[tk, th] = knots(w, P, turns(an, fr, Math.min(hm, Math.floor(TMAX / f0)), cut, on))
     w = warpAt(x.length, tk, th, P); an = analyse(warp(xs, w.k), P, hm)
-    if (!told) on = pick(lines(an, fr, cut))
+    if (!told) on = pick(lines(an, fr, cut)).map((v, i) => v && held[i])
   }
   let y = humOf(xs, an, w.k, P, fr, on, cut)
   for (let n = 0; n < x.length; n++) if (Number.isFinite(x[n])) x[n] -= y[n]
@@ -164,6 +173,24 @@ function lines(an, fr, cut) {
   let g = hann(T * fr), gr = hann(TR * fr), lin = M >= g.length, mask = Float64Array.from(full)
   for (let m of cut) mask[m] = mask[m + 1] = 0
   return c.map((ck, i) => lineSNR(ck, weights(an, i, mask, cut.join() + 'L', fr).w, fr))
+}
+
+// Which lines persist where the program falls silent: mains hum is there in a take's pauses and room tone as under its
+// loudest passage; a note's line goes quiet with the music. The frames where the program around the first 20
+// harmonics (their fits' residual) is 20 dB under its median, half a second of them at least: each line's fitted
+// power there against over the whole take, a tenth at least. A line that holds a note as well as hum fails too: what
+// would go with it is more music than hum. A take with no such frames tells nothing: every line passes
+function persists(an, fr) {
+  let { c, full, M } = an, H = c.length, L = new Float64Array(M), a = c.map((_, i) => weights(an, i, full, 'L', fr).a)
+  for (let i = 0; i < Math.min(H, 20); i++) for (let m = 0; m < M; m++) L[m] += (c[i][0][m] - a[i][0][m]) ** 2 + (c[i][1][m] - a[i][1][m]) ** 2
+  let v = Array.from(L).filter((_, m) => full[m]).sort((p, q) => p - q), med = v[v.length >> 1] || 0
+  let quiet = Array.from({ length: M }, (_, m) => full[m] && L[m] <= 0.01 * med), nq = quiet.filter(Boolean).length
+  if (nq < 0.5 * fr) return c.map(() => true)
+  return a.map(([ar, ai]) => {
+    let pq = 0, pa = 0, na = 0
+    for (let m = 0; m < M; m++) if (full[m]) { let p = ar[m] ** 2 + ai[m] ** 2; pa += p; na++; if (quiet[m]) pq += p }
+    return pq / nq >= 0.1 * pa / na
+  })
 }
 
 // where the hum itself changes: an edit's splice (its phase jumps), a level step, a hum switched on or off. At each
@@ -207,7 +234,11 @@ function humOf(xs, an, k, P, fr, on, cut) {
   for (let s of segments(an.full, cut)) {
     let a = c.map((ck, i) => {
       if (!on[i]) return null
-      let f = fit(ck, weights(an, i, s.mask, cut.length ? `S${s.a}` : 'L', fr).w, g, lin)
+      let w = weights(an, i, s.mask, cut.length ? `S${s.a}` : 'L', fr).w, f = fit(ck, w, g, lin), b = bridge(untone(ck, s.mask, fr), w, s.mask)
+      for (let m = 0; m < M; m++) {                                  // the fit, kept within HOLD of the bridge
+        let dr = f[0][m] - b[0][m], di = f[1][m] - b[1][m], d = Math.hypot(dr, di), t = HOLD * Math.hypot(b[0][m], b[1][m]), q = d > t ? t / d : 1
+        f[0][m] = b[0][m] + q * dr; f[1][m] = b[1][m] + q * di
+      }
       for (let m = 0; m < M; m++) { let j = Math.min(Math.max(m, s.a), s.b - 1); if (m !== j) f[0][m] = f[0][j], f[1][m] = f[1][j] }
       return f
     })
@@ -229,6 +260,62 @@ function humOf(xs, an, k, P, fr, on, cut) {
     prev = { n0, n1, h }
   }
   return y
+}
+
+// A line's phasors without the steady tones beside it: a note held near h·f0 turns the phasor at the difference. In
+// blocks of 2 s (hop half), Hann-tapered, each peak of the transform 0.75 Hz or more from the line and 20 dB over the
+// median is a sinusoid: its frequency interpolated on the log power, its phasor fitted by least squares over the
+// block; the sinusoids overlap-added (the Hann blocks sum to one) and taken out
+function untone([re, im], mask, fr) {
+  let M = re.length, B = Math.min(M, Math.round(2 * fr)), N = 2 ** Math.ceil(Math.log2(4 * B)), H = Math.max(1, B >> 1)
+  let tr = new Float64Array(M), ti = new Float64Array(M), a = new Float64Array(N), b = new Float64Array(N), bin = fr / N, lo = Math.ceil(0.75 / bin)
+  let win = Float64Array.from({ length: B }, (_, m) => 0.5 - 0.5 * Math.cos(2 * Math.PI * (m + 0.5) / B))
+  for (let s0 = -H; s0 < M; s0 += H) {
+    a.fill(0); b.fill(0)
+    for (let m = 0; m < B; m++) { let n = s0 + m; if (n >= 0 && n < M && mask[n]) a[m] = win[m] * re[n], b[m] = win[m] * im[n] }
+    fft(a, b)
+    let P = Float64Array.from({ length: N }, (_, k) => a[k] ** 2 + b[k] ** 2), med = Float64Array.from(P).sort()[N >> 1] || 1e-300
+    for (let k = lo; k <= N - lo; k++) {
+      let k0 = (k - 1 + N) % N, k1 = (k + 1) % N
+      if (!(P[k] > P[k0] && P[k] >= P[k1] && P[k] > 100 * med)) continue
+      let la = Math.log(P[k0] || 1e-300), lb = Math.log(P[k]), lc = Math.log(P[k1] || 1e-300), d = la - 2 * lb + lc ? 0.5 * (la - lc) / (la - 2 * lb + lc) : 0
+      let w = 2 * Math.PI * (k + Math.max(-0.5, Math.min(0.5, d))) / N, zr = 0, zi = 0, sw = 0   // the tone turns by w per frame
+      for (let m = 0; m < B; m++) { let n = s0 + m; if (n < 0 || n >= M || !mask[n]) continue; let cs = Math.cos(w * m), sn = Math.sin(w * m); zr += win[m] * (re[n] * cs + im[n] * sn); zi += win[m] * (im[n] * cs - re[n] * sn); sw += win[m] }
+      if (!(sw > 0)) continue
+      zr /= sw; zi /= sw
+      for (let m = 0; m < B; m++) { let n = s0 + m; if (n < 0 || n >= M) continue; let cs = Math.cos(w * m), sn = Math.sin(w * m); tr[n] += win[m] * (zr * cs - zi * sn); ti[n] += win[m] * (zr * sn + zi * cs) }
+    }
+  }
+  return [Float64Array.from(re, (v, m) => v - tr[m]), Float64Array.from(im, (v, m) => v - ti[m])]
+}
+
+// A line's hum bridged through the program: its phasor a random walk (the hum drifts slowly), seen in each frame with
+// the program's power there as noise (1/w), smoothed by Rauch–Tung–Striebel, the walk's rate per frame the likeliest of
+// RHO (of the line's power). Where the program is quiet around the line it follows the hum; where loud, it carries the
+// hum across from both sides instead of taking the program in, as a fit over a fixed window does
+function bridge([cr, ci], w, mask) {
+  let M = w.length, v = Float64Array.from(w, (x, m) => mask[m] && x > 0 ? 1 / x : Infinity), p = 0, n = 0, best
+  for (let m = 0; m < M; m++) if (Number.isFinite(v[m])) p += cr[m] ** 2 + ci[m] ** 2, n++
+  p = n ? p / n : 0
+  for (let rho of RHO) {
+    let q = rho * p + 1e-30, xr = 0, xi = 0, P = Infinity, ll = 0, X = new Float64Array(2 * M), V = new Float64Array(M), Vp = new Float64Array(M)
+    for (let m = 0; m < M; m++) {
+      P += q; Vp[m] = P
+      if (Number.isFinite(v[m])) {
+        if (Number.isFinite(P)) { let s = P + v[m], er = cr[m] - xr, ei = ci[m] - xi; ll -= Math.log(s) + (er * er + ei * ei) / s; let k = P / s; xr += k * er; xi += k * ei; P *= v[m] / s }
+        else xr = cr[m], xi = ci[m], P = v[m]
+      }
+      X[2 * m] = xr; X[2 * m + 1] = xi; V[m] = P
+    }
+    let out = [new Float64Array(M), new Float64Array(M)], ar = xr, ai = xi
+    out[0][M - 1] = ar; out[1][M - 1] = ai
+    for (let m = M - 2; m >= 0; m--) {
+      let G = Number.isFinite(V[m]) && Number.isFinite(Vp[m + 1]) ? V[m] / Vp[m + 1] : 1
+      ar = X[2 * m] + G * (ar - X[2 * m]); ai = X[2 * m + 1] + G * (ai - X[2 * m + 1]); out[0][m] = ar; out[1][m] = ai
+    }
+    if (!best || ll > best.ll) best = { out, ll }
+  }
+  return best.out
 }
 
 // the warped hum over warped samples k0..k1 (PAD more each side) from each frame's phasors a[h][re|im][m] (null: a

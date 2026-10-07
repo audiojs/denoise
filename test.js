@@ -309,6 +309,27 @@ test('dehum — buzz to 8 kHz under speech: its lines above 1 kHz go too', () =>
   ok(sdr > 35, `speech SDR ${sdr.toFixed(1)} dB`)
 })
 
+// Do no harm: buzz 30 dB under a dense mix (a bass line and chords, each note held over the next, after 2 s of room
+// tone). A fit over 2 s takes the music near every line, more of it than the buzz it removes (0.5.0: 30.0 dB in, 22.6
+// out); the hum bridged through the music from where it stands alone does not
+test('dehum — faint buzz under a dense mix: the music comes out no worse than it went in', () => {
+  let pre = 2 * fs, n = 10 * fs, x = new Float32Array(n), s = 5, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296
+  let notes = [41.2, 49, 55, 61.7, 73.4, 82.4, 98, 110, 123.5, 146.8, 164.8, 196, 220, 246.9, 293.7, 329.6, 392, 440]
+  for (let t = 2; t < 10;) {
+    let d = 0.5 + 0.5 * r(), f = notes[Math.floor(r() * notes.length)], i0 = Math.round(t * fs), L = Math.min(n - i0, Math.round((d + 0.3) * fs)), vr = 4 + 2 * r()
+    for (let k = 1; k * f < 4000; k++) {
+      let a = 0.1 / k, ph = r() * 6.28
+      for (let i = 0; i < L; i++) { let u = i / fs; x[i0 + i] += a * Math.min(1, u / 0.02, (L - i) / (0.05 * fs)) * Math.exp(-u / 1.5) * Math.sin(2 * Math.PI * k * f * (u + 0.002 * Math.sin(2 * Math.PI * vr * u) / (2 * Math.PI * vr)) + ph) }
+    }
+    t += d / 3
+  }
+  let h = new Float32Array(n), ph = 0
+  for (let i = 0; i < n; i++) { ph += 2 * Math.PI * 59.95 / fs; for (let k = 1; k * 59.95 < 8000; k++) h[i] += (k % 2 ? 1 : 0.3) / Math.sqrt(k) / Math.hypot(1, k * 59.95 / 3000) * Math.cos(k * ph + k * k) }
+  let g = rms(x.subarray(pre)) / rms(h) / Math.sqrt(1000), y = dehum(x.map((v, i) => v + g * h[i]), { fs }), xm = x.subarray(pre)
+  let inp = 10 * Math.log10(sumsq(xm) / (g * g * sumsq(h.subarray(pre)))), out = 10 * Math.log10(sumsq(xm) / sumsq(y.subarray(pre).map((v, i) => v - xm[i])))
+  ok(out >= inp, `SDR ${inp.toFixed(1)} dB in, ${out.toFixed(1)} out`)
+})
+
 // a bar repeated exactly is a comb of lines 1/bar apart: at 120 bpm every 2 Hz, 50 and 60 Hz among them
 test('dehum — a loop is no hum, nor a chord beside the series; speech passes untouched', async () => {
   let { measure } = await import('@audio/denoise-dehum')
