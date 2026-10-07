@@ -24,7 +24,7 @@
     "@audio/denoise-declick": "^0.3.0",
     "@audio/denoise-dewind": "^0.4.0",
     "@audio/dynamics-deesser": "^0.3.0",
-    "@audio/denoise-dereverb": "^0.4.0",
+    "@audio/denoise-dereverb": "^0.5.0",
     "@audio/lpc": "^1.2.0",
     "@audio/stft": "^2.0.0"
   },

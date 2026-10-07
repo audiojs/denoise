@@ -29,11 +29,18 @@
 //    linear prediction's late reverberation off in power: Ephraim & Malah's log-spectral amplitude (IEEE TASSP 33(2),
 //    1985, eq. 20), the a priori ratio decision-directed (IEEE TASSP 32(6), 1984, eq. 51), floored at GMIN. No bin
 //    leaves louder than it came.
-// Two checks on the whole take come first; either returns it as it came, bit for bit:
+// Three checks on the whole take come first; any returns it as it came, bit for bit:
 //   dry: no room lets a sound fall faster than its tail. The 2nd percentile of the same ratio over the 0.5–4 kHz bands
 //     is the take's fastest fall: −43 dB on dry VoiceBank takes (median), −27 dB in the MIT rooms; under DRY nothing
 //     is taken (90 % of the dry training takes, 18 % of the reverberant ones, those where it would have gained PESQ
 //     0.07 on average, against 0.3 lost on a dry take).
+//   diffuse: what lies lowest in a room is its tail, whose power over its expectation is exponential: there the 2nd
+//     percentile is ln 0.98 / ln 0.9, 7.2 dB, under the 10th (a voice's cells among them move it to about 8). In the
+//     training rooms the two lay 7.0–8.1 dB apart; where the lowest cells are a dry sound's own decays, a voice's or a
+//     plucked string's, they fall faster than a diffuse field and the percentiles part: 8.6–17.7 dB on dry VoiceBank
+//     takes, 8.3–12.6 on GuitarSet, 11.4–17.4 on VocalSet's sung tones. Over SPREAD apart nothing is taken (dry
+//     training takes processed 12 % → 1 %, GuitarSet 65 % → 5 %, reverberant VoiceBank 83 % → 72 %: rooms with
+//     little tail, where the voice's own falls outnumber the tail's).
 //   pauses: the scale stands on a voice's pauses. Scheirer & Slaney's low-energy-frame share (ICASSP 1997), the share
 //     of frames under half the take's mean power over 0.5–4 kHz, is 0.53–0.86 for speech in the training rooms
 //     (lena's dense reading 0.50–0.54), 0.45–0.48 for three of the four music pieces (Vibe Ace 0.62), 0.03–0.67 for
@@ -46,6 +53,7 @@ import { stftBatch } from '@audio/stft'
 const ORDER = 0.11, ITER = 3                   // 110 ms of past predict a frame; fits, Nakatani's 3
 const Q = 0.1, C = -1 / Math.log(0.9)          // the scale's percentile; a diffuse tail's mean over it
 const QDRY = 0.02, DRY = -37.5                 // the fastest-fall percentile; under it (dB), a dry take
+const SPREAD = -9                              // dB of the fastest fall under the scale's percentile, past which no diffuse tail
 const PAUSES = 0.5, CAP = 2                    // low-energy-frame share under which the take has no pauses; dB
 const GATE = 0.01                              // cells whose past is under 1 % of the band's mean power carry no tail
 const EDGES = [0, 250, 500, 1000, 2000, 4000], MID = [2, 5]   // octave bands, Hz; 0.5–4 kHz
@@ -71,14 +79,29 @@ export default function dereverb(data, opts = {}) {
   let o = framing(opts), w = room(o)
   if (!data.length) return new Float32Array(0)
   for (let i = 0; i < ITER; i++) { stftBatch(data, w.fit(i), o); w.solve() }
-  stftBatch(data, w.read(), o)
+  stftBatch(data, w.read(cuts(data, o)), o)
   let s = w.scale()
   return s ? stftBatch(data, w.take(C * (opts.strength ?? 1), s), o) : Float32Array.from(data)
 }
 
+// The frames whose window reaches past the take's end or into a cut to digital silence (zeros for a hop or longer: an
+// edit, a gate): their power falls by the cut, faster than any room's, and would read as a dry take. edge(pos) for the
+// frame from sample pos (before 0, the input's mirror image: samples 0 … −pos).
+function cuts(data, { frameSize: N, hopSize: hop }) {
+  let n = data.length, c = new Int32Array(n + 1)               // c[i]: samples before i in such a run of zeros
+  for (let i = 0, a = 0; i <= n; i++) {
+    if (i < n && data[i] === 0) continue
+    let cut = i - a >= hop                                      // [a, i): the run of zeros ending here
+    for (let j = a; j < i; j++) c[j + 1] = c[j] + (cut ? 1 : 0)
+    if (i < n) c[i + 1] = c[i]
+    a = i + 1
+  }
+  return pos => pos + N > n || c[Math.min(n, Math.max(pos + N, -pos))] > c[Math.max(0, pos)]
+}
+
 // The per-bin fit and its use. Each pass runs the frames through a ring of the last D + K; fit(i) sums R and r,
-// solve() turns them into g and the shape w, read() histograms the ratio per band, scale() turns the histograms into
-// s per bin (null: leave the take), take(β, s) is the output pass.
+// solve() turns them into g and the shape w, read(edge) histograms the ratio per band (frames at a cut left out),
+// scale() turns the histograms into s per bin (null: leave the take), take(β, s) is the output pass.
 function room({ frameSize: N, hopSize: hop, fs, D, K }) {
   let F = (N >> 1) + 1, M = D + K, KK = K * K, NB = EDGES.length
   let yr = new Float64Array(M * F), yi = new Float64Array(M * F), ix = new Int32Array(K)
@@ -159,15 +182,15 @@ function room({ frameSize: N, hopSize: hop, fs, D, K }) {
     },
     // 10 log10 |y|²/Σ wₖ|y(t−D−k)|² of each cell that sounds and has a past (over GATE of its band's mean power),
     // per band; the 0.5–4 kHz power of each frame
-    read: () => {
+    read: edge => {
       t = 0; first = false; hist.fill(0); mid.length = 0
       let floor = top * 1e-10 + 1e-30, mean = psum.map((p, b) => cells[b] ? p / cells[b] : 0)
-      return (mag, phase) => {
-        let c = push(mag, phase), e = 0
+      return (mag, phase, state, ctx) => {
+        let c = push(mag, phase), e = 0, cut = edge(ctx.pos)
         for (let f = 0; f < F; f++) {
           let p = mag[f] * mag[f], b = band[f]
           if (b >= MID[0] && b < MID[1]) e += p
-          if (p <= floor) continue
+          if (p <= floor || cut) continue
           predict(c, f)
           let u = past(f)
           if (!(u > GATE * mean[b])) continue
@@ -183,7 +206,7 @@ function room({ frameSize: N, hopSize: hop, fs, D, K }) {
       // the low-energy-frame share among frames within 60 dB of the loudest
       let top = mid.reduce((a, e) => Math.max(a, e), 0), on = mid.filter(e => e > top * 1e-6), avg = on.reduce((a, e) => a + e, 0) / on.length
       let low = on.length ? on.filter(e => e < 0.5 * avg).length / on.length : 1
-      if (10 * Math.log10(Math.max(fall, 1e-30)) < DRY || low < PAUSES) return null
+      if (10 * Math.log10(Math.max(fall, 1e-30)) < DRY || 10 * Math.log10(Math.max(fall, 1e-30) / m) < SPREAD || low < PAUSES) return null
       // per bin, interpolated over log frequency between the bands' centres (the lowest taken from 125 Hz up)
       let cen = EDGES.map((e, b) => Math.log2(Math.sqrt(Math.max(e, 125) * (EDGES[b + 1] ?? fs / 2)))), cap = m * 10 ** (CAP / 10)
       s = s.map(v => Math.min(v, cap))

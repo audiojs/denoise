@@ -1479,6 +1479,34 @@ test('dereverb: what no room left passes bit for bit: a dry voice\'s syllables, 
   }
 })
 
+// a dry guitar's comping: five strings strummed every 0.5 s, loud and soft in turn, each string's partials (slightly
+// inharmonic, decaying 60 dB in 3 s/√k) muted over 5 ms as it is struck again
+function strums(n) {
+  let s = 11, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296, x = new Float64Array(n)
+  let chords = [[110, 165, 220, 277, 330], [98, 147, 196, 247, 294], [131, 196, 262, 330, 392], [147, 220, 294, 370, 440]]
+  for (let c = 0; (c + 1) * 0.5 * fs <= n; c++) {
+    let end = Math.round((c + 1) * 0.5 * fs)
+    chords[c % 4].forEach((f, j) => {
+      for (let k = 1; k <= 12 && f * k < 6000; k++) {
+        let fk = f * k * Math.sqrt(1 + 1e-4 * k * k), d = 6.9 * Math.sqrt(k) / 3, ph = r() * 2 * Math.PI, a = 0.02 * (c % 2 ? 0.25 : 1) / k
+        for (let i = Math.round((c * 0.5 + j * 0.012) * fs), i0 = i; i < end; i++) {
+          let t = (i - i0) / fs
+          x[i] += a * Math.min(1, t / 0.001, (end - i) / (0.005 * fs)) * Math.exp(-d * t) * Math.sin(2 * Math.PI * fk * t + ph)
+        }
+      }
+    })
+  }
+  return Float32Array.from(x)
+}
+
+test('dereverb: a dry take whose lowest cells are no diffuse tail passes bit for bit: a guitar\'s muted strums (0.4.0 changed them by −2.7 dB of themselves)', () => {
+  // a room's lowest cells are its tail, exponential in power: the 2nd percentile 7.2 dB under the 10th. A mute falls
+  // faster: they lie 12 dB apart here, while the fastest fall (−25 dB) is a room's and the soft strums give pauses
+  let x = strums(4 * fs), y = dereverb(x, { fs }), dev = 0
+  for (let i = 0; i < x.length; i++) dev = Math.max(dev, Math.abs(y[i] - x[i]))
+  is(dev, 0, 'strums: untouched')
+})
+
 test('dereverb: a take gated to digital silence in its pauses is fitted as the room it is', () => {
   // four seconds of lena 0.6 s apart, the tail filling the pauses; a gate cuts them 100 ms after each. Weighed at λ's
   // floor, the silent bins taught the fit that the past predicts nothing (tail taken +0.1 dB)
