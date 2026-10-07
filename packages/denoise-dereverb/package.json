@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dereverb",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "De-reverb: late reverberation off a voice, one channel: weighted prediction error (WPE, Nakatani et al. 2010) fitted over the take, then the late power the past carries, scaled by the take's own decays, taken by a gain; a dry take or music passes untouched",
   "type": "module",
   "sideEffects": false,

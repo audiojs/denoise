@@ -12,6 +12,8 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 export interface DereverbOptions {
   /** 0..4 (default 1) */
   "strength"?: Auto
+  /** default "pass" */
+  "music"?: "pass" | "enhance"
   at?: number | string
   duration?: number | string
 }
@@ -24,5 +26,7 @@ export declare const dereverb: {
   params: {
     /** 0..4 (default 1) */
     "strength": { type: "number", default: 1 }
+    /** default "pass" */
+    "music": { type: "enum", values: ["pass","enhance"], default: "pass" }
   }
 }

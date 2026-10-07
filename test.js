@@ -1501,9 +1501,10 @@ function combs(x, { ds = [238, 297, 329, 350], gs, t60, sr = fs, mix = 0.25 } = 
 test('dereverb: equals its numpy reference (WPE over the take, Nakatani et al. 2010; the take\'s own late scale; LSA gain, Ephraim & Malah 1985)', () => {
   let fx = JSON.parse(readFileSync(new URL('./fixtures/reference.json', import.meta.url)))
   let { fs: sr, frameSize: N, hopSize: hop, step, rms: r } = fx
-  // reference.py `room` over a syllable and the pause after it (the whole signal's noise fills its pauses: it would pass)
+  // reference.py `room` over a syllable and the pause after it (the whole signal's noise fills its pauses: it would pass);
+  // its voice, a pulse every 64 samples, holds its pitch as no voice does: music: 'enhance' takes it as a room (0.6)
   let x = Float32Array.from(combs(refSignal(7000), { gs: [0.598, 0.527, 0.492, 0.470] }))
-  let y = dereverb(x, { fs: sr, frameSize: N, hopSize: hop }), ref = fx.batch[stftFirst(N, hop) < 0 ? 'reflect' : 'zero'].dereverb
+  let y = dereverb(x, { fs: sr, frameSize: N, hopSize: hop, music: 'enhance' }), ref = fx.batch[stftFirst(N, hop) < 0 ? 'reflect' : 'zero'].dereverb
   let d = ref.reduce((m, v, i) => Math.max(m, Math.abs(y[i * step] - v)), 0) / r
   ok(d < 1e-5, `output within ${d.toExponential(1)} of the RMS`)
 })
@@ -1584,6 +1585,43 @@ test('dereverb: a dry take whose lowest cells are no diffuse tail passes bit for
   let x = strums(4 * fs), y = dereverb(x, { fs }), dev = 0
   for (let i = 0; i < x.length; i++) dev = Math.max(dev, Math.abs(y[i] - x[i]))
   is(dev, 0, 'strums: untouched')
+})
+
+// straight tones, a voice holding each pitch: 0.6 s notes of five harmonics, 20 ms in and out, 1.5 s apart
+function tones(n) {
+  let x = new Float32Array(n), f0 = [220, 247, 262, 294, 330, 294, 262, 247]
+  for (let i = 0; i < n; i++) {
+    let t = i / fs, k = Math.floor(t / 1.5), u = t - 1.5 * k, s = 0
+    if (u >= 0.6) continue
+    for (let h = 1; h <= 5; h++) s += Math.sin(2 * Math.PI * f0[k % f0.length] * h * t) / h
+    x[i] = 0.1 * Math.min(1, u / 0.02, (0.6 - u) / 0.02) * s
+  }
+  return x
+}
+// a beat: a kick (a 60 Hz thump falling over 80 ms) on every half second, 120 bpm, and a hat (noise over 30 ms) between
+function beat(n) {
+  let x = new Float32Array(n), s = 3, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296 - 0.5
+  for (let i = 0; i < n; i++) {
+    let t = i / fs, u = t % 0.5, v = (t + 0.25) % 0.5
+    x[i] = 0.3 * Math.exp(-u / 0.08) * Math.sin(2 * Math.PI * 60 * u) + 0.1 * Math.exp(-v / 0.03) * r()
+  }
+  return x
+}
+
+test('dereverb: music in a room passes bit for bit: held tones, a beat (0.5.0 changed them by −2.4 dB of themselves); music: \'enhance\' takes the room', () => {
+  // both have pauses and a diffuse tail, which the room's checks take for a voice in a room; a held partial and a beat
+  // are music's
+  for (let [kind, x, t60] of [['held tones', tones(8 * fs), 1], ['a beat', beat(8 * fs), 0.6]]) {
+    let late = velvet(x, { t60 }), y = x.map((v, i) => v + late[i]), out = dereverb(y, { fs }), dev = 0
+    for (let i = 0; i < y.length; i++) dev = Math.max(dev, Math.abs(out[i] - y[i]))
+    is(dev, 0, `${kind}: untouched`)
+    let e = dereverb(y, { fs, music: 'enhance' }), s = 0, p = 0
+    for (let i = 0; i < y.length; i++) s += (e[i] - y[i]) ** 2, p += y[i] ** 2
+    ok(10 * Math.log10(s / p) > -10, `${kind}, music: 'enhance': changed by ${(10 * Math.log10(s / p)).toFixed(1)} dB of itself`)
+  }
+  let threw = false
+  try { dereverb(tones(fs), { fs, music: 'keep' }) } catch (e) { threw = e instanceof TypeError }
+  ok(threw, "music is 'pass' or 'enhance'")
 })
 
 test('dereverb: a take gated to digital silence in its pauses is fitted as the room it is', () => {

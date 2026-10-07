@@ -45,10 +45,24 @@
 //     of frames under half the take's mean power over 0.5–4 kHz, is 0.53–0.86 for speech in the training rooms
 //     (lena's dense reading 0.50–0.54), 0.45–0.48 for three of the four music pieces (Vibe Ace 0.62), 0.03–0.67 for
 //     MUSDB18 previews (median 0.33). Under PAUSES nothing is taken: a held note's sustain reads as a room's.
+// One check comes before them all (0.6): music recorded in a room passes the three, and the room's model holds for a
+// voice, whose cells come and go, not for a note that holds: the note's own power reads as the tail it carries
+// (VocalSet's straight tones in the training rooms lost 3.7 dB where the note stood 10 dB over the tail, GuitarSet 2.2).
+// Two marks music has and a voice has not, as Scheirer & Slaney (ICASSP 1997) tell them apart:
+//   a held partial: a spectral peak at one bin (or beside it), LOW–HIGH Hz, its power within 3 dB for HOLD s. A
+//     voice's pitch moves. The share of such cells among those within 30 dB of the loudest bin, in sounding frames:
+//     no voice in a room on the training takes (50 in the rooms, 50 with noise, 42 reverberant VoiceBank utterances,
+//     ten narrations) held over 2.2e-5; one dry utterance of 50, a vowel's pitch held, 3.7e-4.
+//   a beat: onsets recurring at one period. The onsets (each 1/3-octave band's rise in log power, 100 Hz–8 kHz, summed
+//     per frame) correlate with themselves BEAT s later (40–200 bpm); with no beat that correlation, over its value at
+//     0, falls as 1/√(duration), so its highest peak times √(duration in s): voices 1.09 at most.
+// Over HELD or PULSE the take passes, bit for bit: 31 of the 40 training music takes the other checks let through (all
+// 15 of GuitarSet's, 9 of 10 sung, 3 of 5 of the pieces, 4 of 10 MUSDB18 songs, whose 7 s hold their beat under
+// PULSE). `music: 'enhance'` skips it.
 // The constants were chosen on VoiceBank training speakers in MIT IR Survey rooms the test set does not use
-// (scripts/dereverb.py).
+// (scripts/dereverb.py), the music ones on audio's bench/rx/dereverb.mjs train split.
 
-import { stftBatch } from '@audio/stft'
+import { stftBatch, stftAnalyse } from '@audio/stft'
 
 const ORDER = 0.11, ITER = 3                   // 110 ms of past predict a frame; fits, Nakatani's 3
 const Q = 0.1, C = -1 / Math.log(0.9)          // the scale's percentile; a diffuse tail's mean over it
@@ -61,6 +75,9 @@ const HLO = -150, HSTEP = 0.1, HN = 2000       // the ratio's histogram, dB: −
 const GMIN = 0.2, ADD = 0.85, XIMIN = 1e-3     // the gain's floor, −14 dB; decision-directed memory per 8 ms frame
                                                // (rescaled to the hop); ξ's floor
 const REF_DT = 128 / 16000
+const LOW = 200, HIGH = 4000, HOLD = 0.3       // held partials: Hz, the range followed; s, how long a peak holds
+const HELD = 3e-4                              // the held share of the cells within 30 dB of the loudest, over which music
+const BEAT = [0.3, 1.5], PULSE = 1.5           // s, the beat's period (200 to 40 bpm); its peak times √(duration), over which music
 
 // The analysis frame: the power of two nearest 40 ms (512 at 16 kHz, 1024 at 22.05, 2048 at 44.1 and 48), hop a
 // quarter: the 110 ms of prediction stays within 9 to 14 frames
@@ -72,12 +89,14 @@ export function framing(opts = {}) {
   return { ...opts, fs, frameSize: N, hopSize: hop, D: Math.max(1, Math.round(N / hop)), K: Math.max(1, Math.round(ORDER / dt)) }
 }
 
-// ITER passes fit g, one reads the take's late scale; a last one takes the reverberation off, unless the take is dry
-// or has no pauses
+// ITER passes fit g, one reads the take's late scale; a last one takes the reverberation off, unless the take is music,
+// dry or has no pauses
 export default function dereverb(data, opts = {}) {
   if (!ArrayBuffer.isView(data)) throw new TypeError('dereverb(data, opts): the fit needs the whole take (there is no stream form since 0.3)')
-  let o = framing(opts), w = room(o)
+  let o = framing(opts), w = room(o), m = opts.music ?? 'pass'
+  if (m !== 'pass' && m !== 'enhance') throw new TypeError(`dereverb: music is 'pass' or 'enhance', not ${m}`)
   if (!data.length) return new Float32Array(0)
+  if (m === 'pass' && music(data, o)) return Float32Array.from(data)
   for (let i = 0; i < ITER; i++) { stftBatch(data, w.fit(i), o); w.solve() }
   stftBatch(data, w.read(cuts(data, o)), o)
   let s = w.scale()
@@ -97,6 +116,63 @@ function cuts(data, { frameSize: N, hopSize: hop }) {
     a = i + 1
   }
   return pos => pos + N > n || c[Math.min(n, Math.max(pos + N, -pos))] > c[Math.max(0, pos)]
+}
+
+// Music: a held partial or a beat (see the header). Two analysis passes over the take: the first sums each frame's
+// 1/3-octave bands and finds the loudest bin, the second, knowing which frames sound, follows the bins' peaks.
+function music(data, { frameSize: N, hopSize: hop, fs }) {
+  let F = (N >> 1) + 1, bands = [], B = [], tot = [], top = 0, k0 = Math.ceil(LOW * N / fs), k1 = Math.min(F - 1, Math.floor(HIGH * N / fs))
+  for (let e = 100, a = Math.ceil(e * N / fs); (e *= 2 ** (1 / 3)) < 8000 * 1.01; ) {
+    let b = Math.min(F, Math.ceil(e * N / fs))
+    if (b > a) bands.push([a, b])
+    a = b
+  }
+  stftAnalyse(data, mag => {
+    let p = bands.map(([a, b]) => { let s = 0; for (let k = a; k < b; k++) s += mag[k] * mag[k]; return s })
+    B.push(p); tot.push(p.reduce((s, v) => s + v, 0))
+    for (let k = k0; k < k1; k++) top = Math.max(top, mag[k] * mag[k])
+  }, { frameSize: N, hopSize: hop })
+  let T = B.length, K = Math.round(HOLD * fs / hop)
+  if (T < 2) return false
+  let srt = Float64Array.from(tot).sort(), on = tot.map(v => v > srt[Math.floor(0.99 * (T - 1))] * 10 ** -3.5)
+
+  // the beat: onsets, the autocorrelation's highest peak over 0.3–1.5 s lags (unbiased), times √(duration)
+  let o = new Float64Array(T), mean = 0
+  for (let t = 1; t < T; t++) if (on[t]) for (let j = 0; j < bands.length; j++) o[t] += Math.max(0, Math.log10((B[t][j] + 1e-30) / (B[t - 1][j] + 1e-30)))
+  for (let t = 0; t < T; t++) mean += o[t] / T
+  let r0 = 0, ac = [], pulse = 0
+  for (let t = 0; t < T; t++) r0 += (o[t] -= mean) ** 2
+  for (let L = Math.round(BEAT[0] * fs / hop); L <= Math.round(BEAT[1] * fs / hop) && L < T; L++) {
+    let s = 0
+    for (let t = L; t < T; t++) s += o[t] * o[t - L]
+    ac.push(r0 > 0 ? s / r0 * T / (T - L) : 0)
+  }
+  for (let i = 1; i + 1 < ac.length; i++) if (ac[i] > ac[i - 1] && ac[i] >= ac[i + 1]) pulse = Math.max(pulse, ac[i])
+  if (pulse * Math.sqrt(data.length / fs) > PULSE) return true
+  if (T < K) return false
+
+  // held partials: of the cells within 30 dB of the loudest bin in sounding frames, the power of those a peak holds
+  // HOLD s from (a peak or a bin beside it in each frame, its power within 3 dB), kept in a ring of the last K frames
+  let n = k1 - k0, P = new Float64Array(K * n), pk = new Uint8Array(K * n), held = 0, all = 0, t = 0
+  stftAnalyse(data, mag => {
+    let r = (t % K) * n
+    pk.fill(0, r, r + n)
+    for (let k = k0; k < k1; k++) {
+      P[r + k - k0] = mag[k] * mag[k]
+      if (mag[k] > mag[k - 1] && mag[k] > mag[k + 1]) for (let j = Math.max(k0, k - 1); j < Math.min(k1, k + 2); j++) pk[r + j - k0] = 1
+    }
+    let s = t - K + 1, q0 = (((s % K) + K) % K) * n
+    if (s >= 0 && on[s]) for (let k = 0; k < n; k++) {
+      let v = P[q0 + k]
+      if (v < top * 1e-3) continue
+      all += v
+      let lo = v, hi = v, ok = true
+      for (let i = 0; i < K && ok; i++) { let q = i * n + k; ok = pk[q] === 1; lo = Math.min(lo, P[q]); hi = Math.max(hi, P[q]) }
+      if (ok && hi < 2 * lo) held += v
+    }
+    t++
+  }, { frameSize: N, hopSize: hop })
+  return all > 0 && held / all > HELD
 }
 
 // The per-bin fit and its use. Each pass runs the frames through a ring of the last D + K; fit(i) sums R and r,
