@@ -1,4 +1,4 @@
-/** Dense crackle: impulses that stand out of the AR prediction error and of the two-sided interpolation error, rebuilt a window at a time by exact least-squares AR interpolation, searched again on the rebuilt sound until none is new. */
+/** Dense crackle: impulses that stand out of the AR prediction error and of the two-sided interpolation error, rebuilt a window at a time by exact least-squares AR interpolation, searched again on the rebuilt sound until none is new; an event the sound's own excitation explains as well is left as recorded. */
 export interface DecrackleOptions {
   /** sample rate, Hz; default 44100 */
   fs?: number

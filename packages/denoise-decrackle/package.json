@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-decrackle",
-  "version": "0.3.1",
-  "description": "De-crackle: dense small impulses found as outliers of both the AR prediction error and the two-sided error, all of a window rebuilt at once by least-squares AR interpolation, looked for again until none is new, the sound around them made robust by EM under impulsive noise",
+  "version": "0.4.0",
+  "description": "De-crackle: dense small impulses found as outliers of both the AR prediction error and the two-sided error, all of a window rebuilt at once by least-squares AR interpolation, looked for again until none is new, each event kept only where an impulse added to the sound explains it better than the sound's own excitation, the sound around them made robust by EM under impulsive noise",
   "type": "module",
   "sideEffects": false,
   "main": "decrackle.js",
@@ -22,6 +22,9 @@
     "index.d.ts",
     "audio.d.ts"
   ],
+  "scripts": {
+    "test": "node test.js"
+  },
   "dependencies": {
     "@audio/lpc": "^1.2.0"
   },

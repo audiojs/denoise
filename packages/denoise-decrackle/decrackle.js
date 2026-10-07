@@ -21,8 +21,18 @@
 //      gone, the model and the scales they biased come clean and the smaller ones stand out. A new one must stand out
 //      of the input's errors too, under the same fits: a rebuilt sample's departure from the model is no crackle.
 //      While searching, rebuilt under AR(order), the detection's order, so a rebuild stands out of its errors the
-//      least; the windows a rebuild reaches fitted again, the rest kept. Once none is new, rebuilt under AR(W/8).
-//   6. A ringing tick's tail and a small impulse beside a large one stand under the threshold, and a rebuild bends to
+//      least; the windows a rebuild reaches fitted again, the rest kept.
+//   6. Each event (crackle samples within `order` of each other) judged: an impulse added to the sound against the
+//      sound's own excitation, an additive outlier against an innovational one (Chang, Tiao & Chen 1988, as declick
+//      does), under AR(order) fitted to the rebuilt sound about it, so crackle is out of the model. Each explanation
+//      by its fewest freed samples, each costing ln T times the excitation's variance (Schwarz 1978; T the rows the
+//      event reaches): the excitation's, its prediction errors freed where each gains more; the impulse's, the
+//      recording's samples freed one at a time while the next gains more (orthogonal least squares). A voice's glottal
+//      pulse, a bow's or a reed's catch, a drum's attack is one error of the excitation, and the recording there is
+//      its smooth response: freeing its sample takes off 1/r₀ as much. An impulse added stands in order + 1 errors,
+//      and its own sample frees them all. The events the excitation explains as well are left as recorded; crackle
+//      within the model's reach of such a pulse goes with it. The rest rebuilt under AR(W/8).
+//   7. A ringing tick's tail and a small impulse beside a large one stand under the threshold, and a rebuild bends to
 //      fit them as sound. So every sample from 0.1 ms before a crackle sample to 0.5 ms after it is soft: the sound
 //      there the posterior mean under AR(W/32) of the rebuilt window with each sample's click of its own variance
 //      (impulsive noise as a scale mixture of Gaussians, Godsill & Rayner 1998 TSAP), the variances by EM: each the
@@ -62,7 +72,7 @@ export default function decrackle(data, params = {}) {
     moved = fill(out, data, gap, p, W, 2)
     for (let i = 0; i < n; i++) if (gap[i]) gap[i] = 1
   }
-  if (!moved) return out
+  if (!moved || !judge(out, data, gap, p, W)) return Float32Array.from(data)
   fill(out, data, gap, W >> 3, W, 1)
   return robust(out, data, gap, W >> 5, W, Math.round(0.0001 * fs), Math.round(0.0005 * fs))
 }
@@ -133,6 +143,58 @@ function fill(out, x, gap, q, W, mark) {
     if (ok) for (let i = c0; i < c1; i++) if (gap[i]) out[i] = seg[i - a0], moved[i] = 1
   }
   return moved
+}
+
+// Each crackle event (crackle samples within p of each other) judged under AR(p) fitted to the rebuilt sound about
+// it (Hann over W, the events starting in its middle half): an impulse added to the sound against the sound's own
+// excitation (Chang, Tiao & Chen 1988: an additive outlier against an innovational one), each by its fewest freed
+// samples, each freed sample costing ln T of the error variance σ² (Schwarz 1978; T the rows the event reaches). The
+// sound's own: its prediction errors e freed where e² gains over the cost. Added: the recording's samples freed one
+// at a time, the one gaining most next, while it gains over the cost (orthogonal least squares: freeing the set S
+// takes hᵀR_SS⁻¹h off the error, h = r ∗ x, r the model's coefficients' autocorrelation; R_SS by Cholesky, a row a
+// step). Those the excitation explains as well are cleared from gap, the sound there as recorded. Returns the events
+// kept.
+function judge(out, x, gap, p, W) {
+  let n = x.length, H = W >> 1, seg = new Float64Array(W), r = new Float64Array(p + 1), kept = 0
+  for (let s = -(H >> 1); s < n; s += H) {
+    let a0 = Math.max(0, s), a1 = Math.min(n, s + W), c0 = s <= 0 ? 0 : s + (W >> 2), c1 = Math.min(n, s + W - (W >> 2)), ev = []
+    for (let i = Math.max(c0, p); i < Math.min(c1, n - p); i++) if (gap[i] && !some(gap, i - p, i, 1)) {
+      let S = [i]
+      for (let j = i + 1, last = i; j < n - p && j - last <= p; j++) if (gap[j]) S.push(j), last = j
+      ev.push(S)
+    }
+    if (!ev.length) continue
+    let w = seg.subarray(0, a1 - a0)
+    for (let i = a0; i < a1; i++) w[i - a0] = out[i] * Math.sin(Math.PI * (i - s + .5) / W) ** 2
+    let { a, e } = arFit(w, p), s2 = e / (3 * w.length / 8)
+    if (!(s2 > 0) || !a.every(Number.isFinite)) { kept += ev.length; continue }
+    for (let k = 0; k <= p; k++) { let t = 0; for (let i = 0; i + k <= p; i++) t += a[i] * a[i + k]; r[k] = t }
+    for (let S of ev) {
+      let m = S.length, h = new Float64Array(m), cost = Math.log(S[m - 1] - S[0] + 1 + p) * s2, io = 0, ao = 0
+      for (let j = 0; j < m; j++) {
+        let t = S[j], hv = r[0] * x[t], pe = x[t]
+        for (let k = 1; k <= p; k++) hv += r[k] * ((t >= k ? x[t - k] : 0) + (t + k < n ? x[t + k] : 0)), pe += a[k] * (t >= k ? x[t - k] : 0)
+        h[j] = hv, io += Math.max(0, pe * pe - cost)
+      }
+      // q: what each sample would take off next, d its pivot, l its row of the Cholesky factor so far
+      let used = new Uint8Array(m), l = S.map(() => []), d = Float64Array.from(S, () => r[0]), q = h
+      for (;;) {
+        let b = -1, gb = cost
+        for (let j = 0; j < m; j++) if (!used[j] && d[j] > 1e-12 * r[0] && q[j] * q[j] / d[j] > gb) gb = q[j] * q[j] / d[j], b = j
+        if (b < 0) break
+        ao += gb - cost, used[b] = 1
+        let sd = Math.sqrt(d[b]), lb = l[b], qb = q[b] / sd
+        for (let j = 0; j < m; j++) if (!used[j]) {
+          let g = Math.abs(S[j] - S[b]), v = g <= p ? r[g] : 0, lj = l[j]
+          for (let i = 0; i < lb.length; i++) v -= lj[i] * lb[i]
+          v /= sd, lj.push(v), d[j] -= v * v, q[j] -= v * qb
+        }
+      }
+      if (ao > io) kept++
+      else for (let t of S) gap[t] = 0, out[t] = x[t]
+    }
+  }
+  return kept
 }
 
 // any of a[i..j) at m or over
