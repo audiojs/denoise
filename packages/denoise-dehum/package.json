@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-dehum",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Mains hum and buzz removal: the mains phase tracked, every line subtracted along it; no hum, no change",
   "type": "module",
   "sideEffects": false,

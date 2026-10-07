@@ -11,7 +11,9 @@
 //   1. detect    the series, 50 or 60 Hz: measure() (one transform over the signal), or two lines or more standing
 //                out alone in a tracked analysis of the band to 1 kHz (detect()), counting only lines that persist
 //                where the program falls silent (persists(): a note held on a line goes quiet with the music, hum
-//                does not); no hum, no change.
+//                does not); in a take with no such pause, no series the program's own comb runs through (a pattern
+//                it repeats every whole number of mains periods: a kick at 200 bpm, every 15 at 50 Hz, 18 at 60);
+//                no hum, no change.
 //   2. track     the mains phase θ: first from the harmonics to 1 kHz at the nominal frequency (each harmonic's
 //                phasor per Hann frame four cycles long, fitted over T, their turn combined over 8 s), then the signal
 //                resampled so that the tracked mains period spans P = 2^k samples (computed order tracking: Fyfe &
@@ -59,6 +61,7 @@ const SCALES = [1, 4, 16, 64, 256]                           // the turns' noise
 const LB = 8, LINE = 18, ISO = 6, FLOOR = 1e-4, QUIET = 1e-6 // a line: blocks (s), dB over the median, over its neighbours; floor; level
 const KC = 0.5, CHG = 15, SHARE = 0.9                        // a change: span each side (s), power per line, the most one line holds
 const RHO = [1e-6, 1e-5, 1e-4], HOLD = 0.3                   // the bridge's walk per frame (of the line's power); the fit kept within
+const COMB = 0.25                                            // a pattern repeated: a quarter of its teeth over chance
 
 export default function dehum(data, params = {}) {
   if (!data?.length) return data
@@ -74,8 +77,11 @@ export default function dehum(data, params = {}) {
 // more among its first 20 harmonics that stand out (lineSNR over LINE), are heard at all (60 dB under the signal at
 // most) and stand alone (ISO over any other peak within 3 Hz), a third of those standing out at least (a bar repeated
 // exactly is a comb of lines 1/bar apart, few alone): hum under music, whose lines are too faint against the program
-// over the whole signal for measure(). The series: measure()'s, else the one with the most lines. Returns its
-// fundamental, as the tracking found it, and the tracked phase (knots in samples of the data), or null
+// over the whole signal for measure(). Where the take has no pause to hear its lines persist in (persists()), a series
+// on the program's own comb (comb(): a quarter of its teeth to 1 kHz over chance) is the program's: its lines can't be
+// told from the pattern's, and a struck tone rings over its neighbouring teeth as hum stands over them. The series:
+// measure()'s, else the one with the most lines. Returns its fundamental, as the tracking found it, and the tracked
+// phase (knots in samples of the data), or null
 function detect(data, fs, candidates, tol) {
   let M = Math.max(1, Math.floor(fs / 3000)), fd = fs / M, x = Float32Array.from(data, v => Number.isFinite(v) ? v : 0)
   if (M > 1) {
@@ -85,12 +91,13 @@ function detect(data, fs, candidates, tol) {
   let pw = 0
   for (let i = 0; i < data.length; i++) if (Number.isFinite(data[i])) pw += data[i] * data[i]
   pw /= data.length
-  let known = measure(data, fs, candidates, tol), best = null
+  let s = look(data, fs), known = find(s, candidates, tol), best = null
   for (let f of known ? [known.f0, ...candidates.filter(c => Math.abs(c - known.f0) > 5)] : candidates) {
     let t = trace(x, fd, f, Math.min(20, Math.floor(1100 / f), Math.floor(fd / 2 / f) - 1))
     if (!t) continue
     let n = 0, all = 0, sum = 0, ls = lines(t.an, t.fr, []), held = persists(t.an, t.fr), sure = known && f === known.f0
-    ls.forEach((l, i) => { if (l.snr >= LINE && l.amp / 2 >= QUIET * pw && held[i]) { all++; if (l.iso >= ISO) n++, sum += l.snr } })
+    if (!held && s.comb(t.f0) >= COMB) continue                    // no pause to hear it in, and the program's own comb
+    ls.forEach((l, i) => { if (l.snr >= LINE && l.amp / 2 >= QUIET * pw && (!held || held[i])) { all++; if (l.iso >= ISO) n++, sum += l.snr } })
     if ((sure ? all >= 1 : n >= 2 && 3 * n >= all) && (!best || n > best.n || n === best.n && sum > best.sum)) best = { f0: t.f0, n, sum, tk: t.tk.map(v => v * M), th: t.th }
     if (best && sure) break
   }
@@ -142,7 +149,7 @@ function remove(x, fs, f0, hmax, told, from) {
   let t = trace(x, fs, f0, hmax, from)
   if (!t) return
   let { xs, an, w, P, fr, hm, tk, th } = t, all = an.c.map(() => true), pick = ls => ls.map((l, i) => (i + 1) * f0 <= FMAX || l.snr >= LINE)
-  let held = told ? all : persists(an, fr), on = told ? all : pick(lines(an, fr, [])).map((v, i) => v && held[i])
+  let held = told ? all : persists(an, fr) || all, on = told ? all : pick(lines(an, fr, [])).map((v, i) => v && held[i])
   if (!on.some(Boolean)) return
   let cut = changes(an, fr, on)
   if (cut.length) {                                                 // the turn again, not across the hum's jumps
@@ -179,13 +186,13 @@ function lines(an, fr, cut) {
 // loudest passage; a note's line goes quiet with the music. The frames where the program around the first 20
 // harmonics (their fits' residual) is 20 dB under its median, half a second of them at least: each line's fitted
 // power there against over the whole take, a tenth at least. A line that holds a note as well as hum fails too: what
-// would go with it is more music than hum. A take with no such frames tells nothing: every line passes
+// would go with it is more music than hum. A take with no such frames tells nothing: null
 function persists(an, fr) {
   let { c, full, M } = an, H = c.length, L = new Float64Array(M), a = c.map((_, i) => weights(an, i, full, 'L', fr).a)
   for (let i = 0; i < Math.min(H, 20); i++) for (let m = 0; m < M; m++) L[m] += (c[i][0][m] - a[i][0][m]) ** 2 + (c[i][1][m] - a[i][1][m]) ** 2
   let v = Array.from(L).filter((_, m) => full[m]).sort((p, q) => p - q), med = v[v.length >> 1] || 0
   let quiet = Array.from({ length: M }, (_, m) => full[m] && L[m] <= 0.01 * med), nq = quiet.filter(Boolean).length
-  if (nq < 0.5 * fr) return c.map(() => true)
+  if (nq < 0.5 * fr) return null
   return a.map(([ar, ai]) => {
     let pq = 0, pa = 0, na = 0
     for (let m = 0; m < M; m++) if (full[m]) { let p = ar[m] ** 2 + ai[m] ** 2; pa += p; na++; if (quiet[m]) pq += p }
@@ -657,6 +664,10 @@ function hann(len) {
 
 // Measure mains hum near the candidate fundamentals: null when the signal is shorter than MIN seconds or no series
 // stands out, else { f0, harmonics } with the harmonics (up to 1 kHz) whose lines stand out.
+export function measure(data, fs, candidates = [50, 60], tol = 0.004) {
+  return data.length < MIN * fs ? null : find(look(data, fs), candidates, tol)
+}
+
 // Mains hum is a sum of sinusoids that hold their frequency for minutes, speech holds none for long: one Fourier
 // transform over the whole signal (its first 2^18 samples at ~3 kHz, 80–90 s) gathers each hum line into a peak 1/T
 // wide while speech spreads.
@@ -664,9 +675,11 @@ function hann(len) {
 // small. A line stands out by its peak over the median power of the ±8 Hz around it, its own main lobe left out, and
 // stands alone by its peak over every other peak within 3 Hz of it beyond its lobe and the spread the mains' wander
 // gives it (±0.06·h Hz): music that repeats a bar is a comb of lines 1/bar apart, lines at 50 and 60 Hz among them
-// (at 120 bpm the comb is every 2 Hz), none alone.
-export function measure(data, fs, candidates = [50, 60], tol = 0.004) {
-  if (data.length < MIN * fs) return null
+// (at 120 bpm the comb is every 2 Hz), none alone. A faster pattern spaces its teeth past 3 Hz, and where the
+// instrument rings a tooth stands over the next (a kick at 200 bpm: every 3.33 Hz, its tooth on 50 Hz 7 dB over the
+// next in Dark Ride's "Burning Bridges"): comb() finds such a pattern by all its teeth to 1 kHz.
+// Returns line(h, f, lo, hi), comb(f), and the transform's bin and rate
+function look(data, fs) {
   let M = Math.max(1, Math.floor(fs / 3000)), fd = fs / M
   let x = Float32Array.from(data)
   if (M > 1) {
@@ -683,32 +696,54 @@ export function measure(data, fs, candidates = [50, 60], tol = 0.004) {
   for (let k = 0; k < K; k++) P[k] = re[k] * re[k] + im[k] * im[k]
   let lobe = 2 * fd / L                             // Hann main lobe half width, Hz
   let peak = i => P[i] >= P[i - 1] && P[i] >= P[i + 1]
+  let strongest = (lo, hi) => { let k0 = Math.max(1, Math.floor(lo / bin)), k1 = Math.min(K - 2, Math.ceil(hi / bin)), k = k0; for (let i = k0; i <= k1; i++) if (P[i] > P[k]) k = i; return k }
+  let median = (k, f) => {                          // of the ±8 Hz around f, the main lobe at bin k left out
+    let near = []
+    for (let i = Math.round((f - 8) / bin); i <= Math.round((f + 8) / bin); i++) if (i > 0 && i < K && Math.abs(i - k) * bin > 2 * lobe) near.push(P[i])
+    return near.sort((u, v) => u - v)[near.length >> 1]
+  }
   // the strongest peak between two frequencies: its power over the median of ±8 Hz around it (snr, dB), over the
   // strongest other peak near it (iso, dB), its frequency interpolated on the log power; no local maximum, no line
   let line = (h, f, lo, hi) => {
-    let k0 = Math.max(1, Math.floor(lo / bin)), k1 = Math.min(K - 2, Math.ceil(hi / bin)), k = k0
-    for (let i = k0; i <= k1; i++) if (P[i] > P[k]) k = i
+    let k = strongest(lo, hi)
     if (!peak(k)) return { h, snr: -Infinity, iso: -Infinity, p: h * f, power: 0 }
-    let near = [], other = 0, gap = 2 * lobe + 0.06 * h
-    for (let i = Math.round((h * f - 8) / bin); i <= Math.round((h * f + 8) / bin); i++)
-      if (i > 0 && i < K && Math.abs(i - k) * bin > 2 * lobe) near.push(P[i])
+    let other = 0, gap = 2 * lobe + 0.06 * h
     for (let i = Math.max(1, Math.round(k - (gap + 3) / bin)); i <= Math.min(K - 2, Math.round(k + (gap + 3) / bin)); i++)
       if (Math.abs(i - k) * bin > gap && peak(i)) other = Math.max(other, P[i])
-    near.sort((u, v) => u - v)
     let a = Math.log(P[k - 1] || 1e-300), b = Math.log(P[k]), c = Math.log(P[k + 1] || 1e-300)
-    let d = a - 2 * b + c ? 0.5 * (a - c) / (a - 2 * b + c) : 0, snr = 10 * Math.log10(P[k] / Math.max(near[near.length >> 1], 1e-300))
+    let d = a - 2 * b + c ? 0.5 * (a - c) / (a - 2 * b + c) : 0, snr = 10 * Math.log10(P[k] / Math.max(median(k, h * f), 1e-300))
     return { h, snr, iso: 10 * Math.log10(P[k] / Math.max(other, 1e-300)), p: (k + Math.max(-0.5, Math.min(0.5, d))) * bin, power: P[k] }
   }
-  // Hum is there when the fundamental stands out by 20 dB or two of the first six harmonics by 15 dB, each searched
-  // within the mains tolerance and alone by 6 dB, all harmonics of one fundamental (p/h within 0.01 Hz and 2 bins: the
-  // grid's wander moves every harmonic alike). Over noise alone, the largest of M independent exponential powers sits
-  // (ln M + 0.58)/ln 2 times their median: 8–10 dB for the 35–210 independent bins of a 90 s search. On 504 clean and
-  // 504 noisy VoiceBank training utterances these find hum in one, which carries a steady 49.86 Hz tone at the
-  // speech's level; in 164 music clips (144 MUSDB18 7 s excerpts, the 20 BabySlakh mixes), in one, with real 50 Hz
-  // hum (0.2.0: in 19); with hum 20 dB under the speech, in 95 % (50 Hz) and 92 % (60 Hz) of the utterances.
-  let pw = 0
-  for (let i = 0; i < data.length; i++) if (Number.isFinite(data[i])) pw += data[i] * data[i]
-  pw /= data.length
+  // the program's comb through the series of f: a pattern the program repeats every n periods of f puts a line every
+  // f/n Hz, one on each harmonic of f among them. For each n with f/n from 0.5 to 8 Hz (patterns of 1/8 s to 2 s: a
+  // figure, a beat, a bar at 120 bpm) and resolved (two lobes at least), the share of the positions m·f/n from 40 Hz
+  // to 1 kHz (m no multiple of n: not the series' own) holding a peak 10 dB over the ±8 Hz around it (log-mean), less
+  // the share midway between them, where a comb has none and chance has as many: the largest
+  let lg = new Float64Array(K + 1), W = Math.round(8 / bin)
+  for (let k = 0; k < K; k++) lg[k + 1] = lg[k] + Math.log(P[k] + 1e-300)
+  let held = k => { let a = Math.max(0, k - W), b = Math.min(K, k + W + 1); return k > 0 && k < K - 1 && peak(k) && P[k] >= 10 * Math.exp((lg[b] - lg[a]) / (b - a)) }
+  let at = f => { let k = Math.round(f / bin); return held(k - 1) || held(k) || held(k + 1) ? 1 : 0 }
+  let comb = f => {
+    let best = 0
+    for (let n = Math.ceil(f / 8); f / n >= Math.max(0.5, 2 * lobe); n++) {
+      let d = f / n, on = 0, mid = 0, c = 0
+      for (let m = Math.ceil(40 / d); m * d <= 1000; m++) if (m % n) on += at(m * d), mid += at((m + 0.5) * d), c++
+      if (c) best = Math.max(best, (on - mid) / c)
+    }
+    return best
+  }
+  return { line, comb, bin, fd }
+}
+
+// Hum is there when the fundamental stands out by 20 dB or two of the first six harmonics by 15 dB, each searched
+// within the mains tolerance and alone by 6 dB, all harmonics of one fundamental (p/h within 0.01 Hz and 2 bins: the
+// grid's wander moves every harmonic alike). Over noise alone, the largest of M independent exponential powers sits
+// (ln M + 0.58)/ln 2 times their median: 8–10 dB for the 35–210 independent bins of a 90 s search. On 504 clean and
+// 504 noisy VoiceBank training utterances these find hum in one, which carries a steady 49.86 Hz tone at the
+// speech's level; in 164 music clips (144 MUSDB18 7 s excerpts, the 20 BabySlakh mixes), in one (0.2.0: in 19): the
+// kick's tooth on 50 Hz above, which detect() leaves (no pause to hear it persist in, and on the program's comb); with
+// hum 20 dB under the speech, in 95 % (50 Hz) and 92 % (60 Hz) of the utterances.
+function find({ line, bin, fd }, candidates, tol) {
   let best = null
   for (let f of candidates) {
     let first = []

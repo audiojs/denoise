@@ -342,6 +342,24 @@ test('dehum — a loop is no hum, nor a chord beside the series; speech passes u
     ok(!measure(x, fs) && dehum(copy(x), { fs }).every((v, i) => v === x[i]), `${name}: untouched`)
 })
 
+// a kick at 200 bpm, its body falling to 50 Hz: its pattern, every 0.3 s, is a comb of lines 3.33 Hz apart with teeth
+// on 50 and 60 Hz (15 and 18 × 3.33), the 50 Hz tooth over its neighbours where the kick rings; under chords and hats
+// with no pause persists() can't tell them from hum (0.5.1: SDR 1.6 dB; the MUSDB18 preview of Dark Ride's "Burning
+// Bridges", 6.0)
+test('dehum – a kick at 200 bpm, its comb on 50 and 60 Hz, under a mix with no pause: untouched', () => {
+  let n = 7 * fs, x = new Float32Array(n), s = 1, r = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296, P = Math.round(0.3 * fs)
+  for (let i0 = 0; i0 < n; i0 += P) for (let i = 0, ph = 0; i < P && i0 + i < n; i++) {         // each hit cut by the next
+    let u = i / fs; ph += 2 * Math.PI * (50 + 60 * Math.exp(-u / 0.02)) / fs; x[i0 + i] += 0.5 * Math.exp(-u / 0.4) * Math.sin(ph) * Math.min(1, (P - i) / 64)
+  }
+  let chords = [[98, 123.5, 146.8], [110, 130.8, 164.8], [87.3, 110, 130.8], [98, 116.5, 146.8]]
+  for (let c = 0; c * 1.2 * fs < n; c++) for (let f of chords[c % 4]) for (let k = 1; k * f < 3000; k++) {
+    let a = 0.04 / k, p0 = r() * 6.28, i0 = Math.round(c * 1.2 * fs), L = Math.min(n - i0, Math.round(1.25 * fs))
+    for (let i = 0; i < L; i++) x[i0 + i] += a * Math.min(1, i / 400, (L - i) / 400) * Math.sin(2 * Math.PI * k * f * i / fs + p0)
+  }
+  for (let i0 = Math.round(0.15 * fs); i0 < n; i0 += P / 2) for (let i = 0; i < 0.05 * fs && i0 + i < n; i++) x[i0 + i] += 0.05 * Math.exp(-i / 400) * (r() * 2 - 1)
+  ok(dehum(copy(x), { fs }).every((v, i) => v === x[i]), 'untouched')
+})
+
 test('dehum — edges: empty, a sample, silence, half a second as told, NaN', async () => {
   let { measure } = await import('@audio/denoise-dehum')
   is(dehum(new Float32Array(0), { fs }).length, 0, 'empty')
