@@ -18,6 +18,10 @@ export interface ClassifyScores {
   snr: number
   /** the bed shows in steady bands, not in the pauses alone (informational: every bed goes to omlsa) */
   steady: boolean
+  /** steady tones off the mains series, Hz, dehum's tones() finds over the first 90 s */
+  tones: number[]
+  /** their A-weighted level re the program, dB (−Infinity: none); dehum from −50, or dehum before another route */
+  toneLevel: number
 }
 
 export interface Plan {

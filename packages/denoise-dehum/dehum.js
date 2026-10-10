@@ -1,4 +1,4 @@
-// Mains hum removal: the hum measured, then subtracted.
+// Mains hum and steady tone removal: the hum and the tones measured, then subtracted.
 //
 // Mains hum is a few sinusoids at the harmonics of the mains frequency, each holding its level for seconds; buzz (a
 // rectifier's pulses, a ground loop) carries them to several kHz. A voice or an instrument passes through those
@@ -38,6 +38,9 @@
 //                faint hum under music no longer costs the music more than the hum it removes.
 //   6. subtract  Σ_h Re(a_h·e^(j2πhi/P)) per frame of the resampled signal, blended between frame centres, brought
 //                back to the original samples (Kaiser-windowed sinc) and subtracted.
+//   7. tones     then the steady lines off the series (a whine, a test tone, an electrical or fan line): tones() finds
+//                each by how it holds through the program's pauses and under it (below), subtract() takes it out as
+//                step 5 takes a harmonic: its phasor per frame, bridged through the program, resynthesized.
 //
 // What it takes of the program is what lies within a fraction of a hertz of a line, mostly from where the program is
 // quiet around it; a note held within ~0.5 Hz of a line for seconds goes with the hum.
@@ -46,6 +49,7 @@
 //              exact frequency tracked from there (measure() within ±0.4 %, or ±drift Hz when adaptive).
 //   harmonics  remove h = 1..harmonics as told; omitted (or 0): those to 1 kHz and every line above to 8 kHz.
 //   steady     the hum held through the take (a buzz under an instrument, no edit): steady() in place of steps 3–5.
+//   tones      true (default): the steady tones tones() finds; an array: those frequencies (Hz), as told; false: none.
 //
 // Returns the same buffer, processed in place. One call takes the whole signal: the estimate looks seconds either
 // side, the detection wants a second at least. Shorter, nothing is detected: without `freq` the audio passes through,
@@ -71,7 +75,147 @@ export default function dehum(data, params = {}) {
   let tol = freq && params.adaptive ? (params.drift ?? 0.5) / freq : 0.004
   let found = !short && detect(data, fs, freq ? [freq] : [50, 60], tol), f0 = found ? found.f0 : (short || harmonics) && freq
   if (f0) remove(data, fs, f0, Math.floor((harmonics ? Math.min(harmonics * f0, BAND * fs) : Math.min(TMAX, BAND * fs)) / f0), harmonics > 0, found || null, !!params.steady)
+  if (params.tones !== false) {
+    let told = Array.isArray(params.tones) ? params.tones.filter(f => f > 0 && f < fs / 2) : null
+    for (let f of told || (short ? [] : tones(data, fs, found ? found.f0 : 0).map(t => t.freq))) subtract(data, fs, f)
+  }
   return data
+}
+
+// Steady tones: a whine, a test tone, an electrical or fan line off the mains series, held at one frequency and level
+// through the take, under the program and through its pauses alike. A note is struck and released inside the take, is
+// gone where the music falls silent or plays elsewhere, and starts at a new phase each time it is struck. One
+// short-time transform of the take (Hann, ~0.19 s, hop half; 2048 frames at most, spread over a longer take):
+//   candidates  peaks of the power each bin holds in four frames of five (its 20th percentile) standing TLINE dB over
+//               the median of the bins 4–40 away, the TN strongest; a mains series removed above is skipped
+//   program     the power outside the candidates' five bins, per frame. It must come and go (its 90th percentile TDYN
+//               dB over its 10th: lines alone, with nothing passing over them, can't be told from held notes); its
+//               pauses, the frames within 6 dB of its 10th percentile, span half a second at least
+//   held        the line stands 6 dB over the floor of its five bins (the bins 4–20 away) in TPRES of the pauses,
+//   kept        and its five bins hold a quarter of its median power there in TKEEP of all frames: under the program
+//               a line is masked, never gone; a bass note that fills the pauses goes when the band plays on
+//   level       its level spread over the pauses (90th over 10th percentile) TAM dB at most
+//   phase       its phasor turns as a line's does between consecutive pauses holding it: the mean resultant length of
+//               the turns TCOH at least (their spread under ~0.8 Hz at hop 93 ms), and its phase breaks off the turn in
+//               TBRK of the transitions at most, across up to a second of the program too: a note struck again, on
+//               the same pitch or a kick tuned to it, starts at a new phase (van Waterschoot & Moonen's interframe peak
+//               persistence, Proc. IEEE 99(2), 2011, read on the phase rather than the magnitude)
+//   loud        its power in the pauses QUIET of the take's at least
+// Returns [{ freq, level, held, kept, am, coherence, breaks, cents }]: Hz (from the turn), dB re the take's power, the
+// shares held and kept, the level's spread (dB), the turns' mean resultant length, the share of transitions breaking,
+// and the turns' spread as a frequency (cents)
+const TRHO = [...RHO, 1e-3, 1e-2], TF = 0.186, TCAP = 2048, TDYN = 10, TLINE = 12, TPRES = 0.95, TAM = 3, TCOH = 0.9, TBRK = 0.02, TKEEP = 0.9, TSPAN = 0.5, TN = 16
+export function tones(data, fs, hum = 0) {
+  if (!data?.length || data.length < MIN * fs) return []
+  let N = 2 ** Math.round(Math.log2(TF * fs)), half = N >> 1
+  if (data.length < 2 * N) return []
+  let hop = Math.max(N >> 1, Math.ceil((data.length - N) / (TCAP - 1))), M = Math.floor((data.length - N) / hop) + 1
+  let P = new Float32Array(M * half), re = new Float64Array(N), im = new Float64Array(N), tot = 0
+  let win = Float64Array.from({ length: N }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * (i + 0.5) / N))
+  for (let m = 0; m < M; m += 2) {                                   // two frames a transform: z = a + jb
+    let two = m + 1 < M, a0 = m * hop, b0 = a0 + hop
+    for (let i = 0; i < N; i++) {
+      let u = data[a0 + i], v = two ? data[b0 + i] : 0
+      re[i] = (Number.isFinite(u) ? u : 0) * win[i]; im[i] = (Number.isFinite(v) ? v : 0) * win[i]
+    }
+    fft(re, im)
+    for (let k = 1; k < half; k++) {
+      let ar = re[k] + re[N - k], ai = im[k] - im[N - k], br = im[k] + im[N - k], bi = re[N - k] - re[k]
+      let p = 0.25 * (ar * ar + ai * ai), q = 0.25 * (br * br + bi * bi)
+      P[m * half + k] = p; tot += p
+      if (two) P[(m + 1) * half + k] = q, tot += q
+    }
+  }
+  tot /= M
+  if (!(tot > 0)) return []
+  let col = new Float32Array(M), q = (k, r) => { for (let m = 0; m < M; m++) col[m] = P[m * half + k]; col.sort(); return col[Math.min(M - 1, Math.floor(r * M))] }
+  let q20 = Float64Array.from({ length: half }, (_, k) => k ? q(k, 0.2) : 0)
+  let k0 = Math.max(6, Math.ceil(20 * N / fs)), k1 = Math.min(half - 42, Math.floor(Math.min(20000, 0.45 * fs) * N / fs)), cand = []
+  let near = new Float64Array(74)
+  for (let k = k0; k <= k1; k++) {
+    if (!(q20[k] > q20[k - 1] && q20[k] >= q20[k + 1])) continue
+    let n = 0
+    for (let j = 4; j <= 40; j++) { if (k - j > 0) near[n++] = q20[k - j]; near[n++] = q20[k + j] }
+    let r = q20[k] / Math.max(near.subarray(0, n).sort()[n >> 1], 1e-300)
+    if (r < 10 ** (TLINE / 10)) continue
+    let a = Math.log(q20[k - 1] || 1e-300), b = Math.log(q20[k]), c = Math.log(q20[k + 1] || 1e-300), d = a - 2 * b + c ? 0.5 * (a - c) / (a - 2 * b + c) : 0
+    let f = (k + Math.max(-0.5, Math.min(0.5, d))) * fs / N
+    if (hum && Math.abs(f / hum - Math.round(f / hum)) * hum <= Math.max(0.005 * f, 2 * fs / N)) continue
+    cand.push({ k, f, r })
+  }
+  cand = cand.sort((a, b) => b.r - a.r).slice(0, TN)
+  if (!cand.length) return []
+  let B = new Float64Array(M), line = new Uint8Array(half)              // the program: all but the lines, per frame
+  for (let { k } of cand) for (let j = k - 2; j <= k + 2; j++) line[j] = 1
+  for (let m = 0; m < M; m++) { let b = 0; for (let k = 1; k < half; k++) if (!line[k]) b += P[m * half + k]; B[m] = b }
+  let Bs = Float64Array.from(B).sort(), dyn = Bs[Math.min(M - 1, Math.floor(0.9 * M))] / Math.max(Bs[Math.floor(0.1 * M)], 1e-300)
+  if (!(dyn >= 10 ** (TDYN / 10))) return []
+  let F = []                                                          // the pauses: the program at its floor
+  for (let m = 0; m < M; m++) if (B[m] <= 4 * Bs[Math.floor(0.1 * M)]) F.push(m)
+  if ((F.length - 1) * hop + N < TSPAN * fs) return []
+  let out = [], S = new Float64Array(M), A = new Float64Array(M)
+  for (let { k, f } of cand) {
+    let J = []
+    for (let j = k - 20; j <= k + 20; j++) if (Math.abs(j - k) >= 4 && j > 0 && j < half && cand.every(o => Math.abs(o.k - j) > 3)) J.push(j)
+    if (!J.length) continue
+    for (let m = 0; m < M; m++) {
+      let s = 0, a = 0
+      for (let j = k - 2; j <= k + 2; j++) s += P[m * half + j]
+      for (let j of J) a += P[m * half + j]
+      S[m] = s; A[m] = 5 * a / J.length
+    }
+    let held = 0, e = [], on = new Uint8Array(M)
+    for (let m of F) { let v = S[m] - A[m]; e.push(Math.max(v, 1e-30)); if (v >= 4 * A[m]) held++, on[m] = 1 }
+    held /= F.length
+    e.sort((a, b) => a - b)
+    let am = 10 * Math.log10(e[Math.min(e.length - 1, Math.floor(0.9 * e.length))] / e[Math.floor(0.1 * e.length)])
+    let level = e.reduce((s, v) => s + v, 0) / e.length / tot, lp = e[e.length >> 1], kept = 0
+    for (let m = 0; m < M; m++) if (S[m] >= 0.25 * lp) kept++
+    kept /= M
+    // its phase over the pauses holding it: each frame's phasor at f; between consecutive ones the turn, 2π(f' − f)·
+    // hop/fs for a line at f' (R: the turns' mean resultant length; f' from their mean), per run of them and over all;
+    // where it stands 10 dB over its floor, each transition to the next such frame within a second, across the program
+    // too, the phase off the turn on either side by over π/3 is a break: a note struck again starts anew
+    let w = 2 * Math.PI * f / fs, c = new Array(M), tr = new Float64Array(M), ti = new Float64Array(M), ur = 0, ui = 0, np = 0
+    let turnOf = (p, q) => { let dr = q[0] * p[0] + q[1] * p[1], di = q[1] * p[0] - q[0] * p[1], h = Math.hypot(dr, di) || 1; return [dr / h, di / h] }
+    for (let m = 0; m < M; m++) if (on[m]) c[m] = phasor(data, m * hop, N, win, w)
+    for (let m = 0, a = -1; m <= M; m++) {                             // runs a..m−1
+      if (m < M && on[m]) { if (a < 0) a = m; if (m > a) { let [r, i] = turnOf(c[m - 1], c[m]); tr[a] += r; ti[a] += i; ur += r; ui += i; np++ } continue }
+      if (a >= 0) { for (let j = a + 1; j < m; j++) tr[j] = tr[a], ti[j] = ti[a]; a = -1 }
+    }
+    let all = Math.atan2(ui, ur), local = m => tr[m] || ti[m] ? Math.atan2(ti[m], tr[m]) : all, brk = 0, nt = 0
+    for (let m = 0, p = -1; m < M; m++) {
+      if (!on[m] || S[m] - A[m] < 10 * A[m]) continue
+      if (p >= 0 && (m - p) * hop <= fs) {
+        let [r, i] = turnOf(c[p], c[m]), e = Math.atan2(i, r) - (local(p) + local(m)) / 2 * (m - p)
+        nt++; if (Math.abs(Math.atan2(Math.sin(e), Math.cos(e))) > Math.PI / 3) brk++
+      }
+      p = m
+    }
+    let R = np >= 3 ? Math.hypot(ur, ui) / np : 0, turn = 2 * Math.PI * hop / fs, breaks = nt ? brk / nt : 0
+    let ff = f + all / turn, sd = Math.sqrt(-2 * Math.log(Math.max(R, 1e-12))) / turn, cents = 1200 * Math.log2(1 + sd / ff)
+    if (held >= TPRES && kept >= TKEEP && am <= TAM && R >= TCOH && breaks <= TBRK && level >= QUIET) out.push({ freq: ff, level: 10 * Math.log10(level), held, kept, am, coherence: R, breaks, cents })
+  }
+  return out.sort((a, b) => a.freq - b.freq)
+}
+
+// A steady tone at f subtracted from x in place: its frequency refined from its phasors' mean turn (as estimate()
+// refines the mains), its phasor per 80 ms Hann frame, each frame weighted by the inverse of the program's power around
+// the line (weighFit()), the tones beside it taken out (untone()), bridged through the program as a slow random walk
+// (bridge(), the likeliest rate of TRHO: RHO's, and faster for a tone that wanders, ±0.3 Hz: a turn of 0.08 rad a frame),
+// resynthesized, blended linearly between frame centres
+function subtract(x, fs, f) {
+  let H = Math.round(0.04 * fs), M = Math.floor(x.length / H)
+  if (M < 2) return
+  for (let it = 0; it < 6; it++) { let e = estimate(x, fs, f, [1], H); if (!e) return; f += e.df; if (Math.abs(e.df) < 1e-4) break }
+  let w0 = 2 * Math.PI * f / fs, { c, full } = phasors(x, H, M, w0, [1]), fr = fs / H, g = hann(T * fr), lin = M >= g.length
+  let w = weighFit(c[0], full, g, hann(TR * fr), lin).w, [ar, ai] = bridge(untone(c[0], full, fr), w, full, TRHO)
+  let o = H >> 1, c0 = H - o - 0.5
+  for (let n = 0; n < x.length; n++) {
+    let u = (n - c0) / H, m = Math.max(0, Math.min(M - 2, Math.floor(u))), lam = Math.max(0, Math.min(1, u - m))
+    let r = ar[m] + lam * (ar[m + 1] - ar[m]), i = ai[m] + lam * (ai[m + 1] - ai[m])
+    if (Number.isFinite(x[n])) x[n] -= r * Math.cos(w0 * n) - i * Math.sin(w0 * n)
+  }
 }
 
 // The series and whether there is hum: measure() (one transform over the signal) finds it, or a tracked analysis
@@ -387,13 +531,14 @@ function untone([re, im], mask, fr) {
 
 // A line's hum bridged through the program: its phasor a random walk (the hum drifts slowly), seen in each frame with
 // the program's power there as noise (1/w), smoothed by Rauch–Tung–Striebel, the walk's rate per frame the likeliest of
-// RHO (of the line's power). Where the program is quiet around the line it follows the hum; where loud, it carries the
-// hum across from both sides instead of taking the program in, as a fit over a fixed window does
-function bridge([cr, ci], w, mask) {
+// `rhos` (of the line's power: RHO for the mains, TRHO for a tone, whose drift is no grid's). Where the program is
+// quiet around the line it follows the hum; where loud, it carries the hum across from both sides instead of taking the
+// program in, as a fit over a fixed window does
+function bridge([cr, ci], w, mask, rhos = RHO) {
   let M = w.length, v = Float64Array.from(w, (x, m) => mask[m] && x > 0 ? 1 / x : Infinity), p = 0, n = 0, best
   for (let m = 0; m < M; m++) if (Number.isFinite(v[m])) p += cr[m] ** 2 + ci[m] ** 2, n++
   p = n ? p / n : 0
-  for (let rho of RHO) {
+  for (let rho of rhos) {
     let q = rho * p + 1e-30, xr = 0, xi = 0, P = Infinity, ll = 0, X = new Float64Array(2 * M), V = new Float64Array(M), Vp = new Float64Array(M)
     for (let m = 0; m < M; m++) {
       P += q; Vp[m] = P
@@ -862,6 +1007,17 @@ function find({ line, bin, fd }, candidates, tol) {
     if (line(h, f0, h * f0 - w, h * f0 + w).snr >= 13 || best.strong.some(s => s.h === h)) on.push(h)
   }
   return { f0, harmonics: on }
+}
+
+// Σ win[i]·x[n0 + i]·e^(−jw(n0 + i)): one frame's phasor at w, referred to the take's start
+function phasor(x, n0, N, win, w) {
+  let cr = Math.cos(w * n0), ci = -Math.sin(w * n0), sr = Math.cos(w), si = -Math.sin(w), re = 0, im = 0
+  for (let i = 0; i < N; i++) {
+    let v = x[n0 + i]
+    if (Number.isFinite(v)) { v *= win[i]; re += v * cr; im += v * ci }
+    let t = cr * sr - ci * si; ci = cr * si + ci * sr; cr = t
+  }
+  return [re, im]
 }
 
 // in-place radix-2 complex FFT (the measurement's only transform)

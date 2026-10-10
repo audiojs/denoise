@@ -1,7 +1,7 @@
 {
   "name": "@audio/denoise-dehum",
-  "version": "0.6.0",
-  "description": "Mains hum and buzz removal: the mains phase tracked, every line subtracted along it; no hum, no change",
+  "version": "0.7.0",
+  "description": "Mains hum, buzz and steady tone removal: the mains phase tracked, every line subtracted along it, then each tone held through the take (a whine, a test tone) found and subtracted; nothing found, no change",
   "type": "module",
   "sideEffects": false,
   "main": "dehum.js",

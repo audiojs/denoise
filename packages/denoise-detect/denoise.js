@@ -7,7 +7,12 @@
 //   - hi    — 5–9 kHz over 0.2–2 kHz power over 8 → deesser
 //   - bed   — a noise floor within 25 dB of the program, shown in its pauses or as steady bands → omlsa
 //   - wind  — loud, aperiodic low end 6 dB over the mid band in over a tenth of the recording, no bed shown → dewind
+//   - tone  – dehum's tones(): lines held through the program's pauses and under it (a whine, a test tone), A-weighted
+//             within 50 dB of the program → dehum
 //   - none
+// Steady tones are a defect whatever else the take carries: where tones() finds them and another route is taken,
+// dehum runs first: a gain floored per bin takes a line over the bed down by its floor at most (test.js's 7 kHz line
+// under speech and noise: wiener alone 10.5 dB SNR, dehum then wiener 24.2).
 //
 // Every bed goes to omlsa: over 994 noisy tuning takes (VoiceBank+DEMAND's noises, DEMAND's, white, pink, babble,
 // wind; scripts/detect.py) it kept STOI 0.007 ± 0.001 over wiener's at the same PESQ and SIG; wiener's edge, BAK on
@@ -23,7 +28,7 @@ import { stftAnalyse } from '@audio/stft'
 import { arFit } from '@audio/lpc'
 import wiener from '@audio/denoise-wiener'
 import omlsa from '@audio/denoise-omlsa'
-import dehum, { measure as humMeasure } from '@audio/denoise-dehum'
+import dehum, { measure as humMeasure, tones as toneMeasure } from '@audio/denoise-dehum'
 import declick from '@audio/denoise-declick'
 import dewind from '@audio/denoise-dewind'
 import deesser_ from '@audio/dynamics-deesser'
@@ -49,7 +54,8 @@ export default function denoise(data, params = {}) {
   let force = params.force                          // skip classification
   let plan = force ? { method: force, scores: {} } : classify(data, fs)
   let opts = { fs, ...params }
-  let out
+  let out, lines = !force && plan.method !== 'dehum' && plan.method !== 'none' && plan.scores.toneLevel >= HUM_LEVEL
+  if (lines) data = dehum(new Float32Array(data), { fs })
   switch (plan.method) {
     // the series classify heard; dehum measures its exact frequency and harmonics. Forced without `freq`,
     // dehum measures 50 and 60 Hz itself (a fixed 50 missed 60 Hz mains)
@@ -77,16 +83,17 @@ const MAX_FRAMES = 1 << 15                         // ≈ 6 min at 48 kHz; longe
 
 export function classify(data, fs = 44100) {
   let s = sweep(data, fs)
-  if (!s) return { method: 'none', scores: { hum: 0, humFreq: 0, humLevel: -Infinity, click: 0, hi: 0, wind: 0, snr: Infinity, steady: false }, humFreq: 0 }
-  let hum = humLevel(data, fs, s), click = impulseRate(data, fs), hi = s.hi / Math.max(s.mid, 1e-30)
+  if (!s) return { method: 'none', scores: { hum: 0, humFreq: 0, humLevel: -Infinity, click: 0, hi: 0, wind: 0, snr: Infinity, steady: false, tones: [], toneLevel: -Infinity }, humFreq: 0 }
+  let hum = humLevel(data, fs, s), tone = toneLevel(data, fs, s, hum), click = impulseRate(data, fs), hi = s.hi / Math.max(s.mid, 1e-30)
   let wind = windShare(s), bed = noiseBed(s)
   let method = hum.level >= HUM_LEVEL ? 'dehum'
     : click > CLICK_RATE ? 'declick'
     : hi > 8 ? 'deesser'                           // white noise scores ~3.9 by bandwidth alone
     : bed.snr < BED_SNR ? 'omlsa'
     : wind > WIND_SHARE ? 'dewind'
+    : tone.level >= HUM_LEVEL ? 'dehum'
     : 'none'
-  let scores = { hum: hum.harmonics, humFreq: hum.f0, humLevel: hum.level, click, hi, wind, snr: bed.snr, steady: bed.steady }
+  let scores = { hum: hum.harmonics, humFreq: hum.f0, humLevel: hum.level, click, hi, wind, snr: bed.snr, steady: bed.steady, tones: tone.freqs, toneLevel: tone.level }
   return { method, scores, humFreq: hum.f0 }
 }
 
@@ -176,6 +183,15 @@ function humLevel(data, fs, s) {
   for (let i = 0; i < x.length; i++) p += x[i] * x[i]
   for (let k of m.harmonics) h += goertzel(x, k * m.f0, fs) * aWeight(k * m.f0)
   return { f0: m.f0, harmonics: m.harmonics.length, level: 10 * Math.log10(h / (p / x.length * s.aShare) + 1e-30) }
+}
+
+// Steady tones by dehum's tones() over the same 90 s (a found mains series' harmonics left to it), and how loud: their
+// power, each A-weighted at its frequency, over the program's A-weighted power, dB
+function toneLevel(data, fs, s, hum) {
+  let x = data.subarray(0, Math.min(data.length, Math.round(90 * fs))), t = toneMeasure(x, fs, hum.level >= HUM_LEVEL ? hum.f0 : 0)
+  if (!t.length) return { freqs: [], level: -Infinity }
+  let p = t.reduce((a, v) => a + 10 ** (v.level / 10) * aWeight(v.freq), 0)
+  return { freqs: t.map(v => v.freq), level: 10 * Math.log10(p / s.aShare + 1e-30) }
 }
 
 // power of the sinusoid at f in x, amplitude² / 2

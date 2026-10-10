@@ -391,6 +391,56 @@ test('dehum — edges: empty, a sample, silence, half a second as told, NaN', as
   is(measure(t, fs), null, 'measure over a NaN: null')
 })
 
+// A steady line, a whine or a test tone, held through a voice's pauses and under it: dehum 0.7's tones() finds it (its
+// phase turns as one line's through the pauses, its level held there and never gone under the voice) and subtracts
+// it. 0.6 left it (SNR −3.8 dB), and denoise() routed the take to none; a notch at its frequency, told, then wiener:
+// 23.8 dB. With the line gone the bed is all that is left: speech + bed alone is 22.8 dB.
+test('dehum – a steady 7 kHz line under speech and noise is found and subtracted; denoise() routes it to dehum', async () => {
+  let { tones } = await import('@audio/denoise-dehum')
+  let n = fs * 4, speech = lena.subarray(0, n), bed = gauss(n, 0.01), x = add(speech, sine(7000, n, 0.3), bed), floor = snr(speech, add(speech, bed))
+  let t = tones(x, fs)
+  ok(t.length === 1 && Math.abs(t[0].freq - 7000) < 0.01, `tones(): ${t.map(v => v.freq.toFixed(4)).join(', ')} Hz`)
+  let s = snr(speech, dehum(copy(x), { fs }))
+  ok(s > floor - 0.05, `dehum: SNR ${s.toFixed(2)} dB, the bed alone ${floor.toFixed(2)} (0.6: −3.76)`)
+  let w = snr(speech, wiener(dehum(copy(x), { fs }), { fs }))
+  ok(w > 23.8, `dehum then wiener: ${w.toFixed(2)} dB (a notch at 7 kHz, told, then wiener: 23.80)`)
+  let told = snr(speech, dehum(copy(x), { fs, tones: [7000] }))
+  ok(told > floor - 0.05, `tones: [7000], as told: ${told.toFixed(2)} dB`)
+  ok(dehum(copy(x), { fs, tones: false }).every((v, i) => v === x[i]), 'tones: false: the line left, as 0.6')
+  let { out, plan } = denoise(copy(x), { fs, returnPlan: true }), d = snr(speech, out)
+  ok(plan.method === 'dehum' && d > floor - 0.05, `denoise(): ${plan.method}, SNR ${d.toFixed(2)} dB (0.10: none, −3.76)`)
+})
+
+// Held notes are no steady tone, however exactly they hold: struck and released inside the take, gone where the
+// music rests (an organ's chords, a flute's held sines), or held through its rests but gone where the band plays on
+// (a pedal under a melody, a bass filling the breaks of a band). Each comes back bit for bit. The ones that would pass:
+// a note held from the first sample to the last under a melody (no onset, no release, no rest: a tone by every mark
+// the take offers), and lines alone with nothing passing over them (left: nothing to tell them by)
+test('dehum – held notes are no tone: organ chords, held sines, a pedal under a melody, a bass in the breaks', async () => {
+  let { tones } = await import('@audio/denoise-dehum')
+  let s0 = 3, r = () => (s0 = (Math.imul(s0, 1664525) + 1013904223) >>> 0) / 4294967296, n = 10 * fs, mid = m => 440 * 2 ** ((m - 69) / 12)
+  let take = () => Float32Array.from({ length: n }, () => 1e-4 * (r() * 2 - 1))
+  let note = (y, f, t0, t1, parts, a = 0.05, att = 0.02) => {
+    let i0 = Math.round(t0 * fs), i1 = Math.min(n, Math.round(t1 * fs)), ph = parts.map(() => 6.28 * r())
+    for (let i = i0; i < i1; i++) { let e = a * Math.min(1, (i - i0) / fs / att, (i1 - i) / fs / 0.05); for (let k = 0; k < parts.length; k++) y[i] += e * parts[k] * Math.sin(2 * Math.PI * f * (k + 1) * (i - i0) / fs + ph[k]) }
+  }
+  let organ = [1, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 6], flute = [1, 0.03]
+  let chords = take(), sines = take(), pedal = take(), breaks = take()
+  for (let t = 0.3, c = 0; t < 9.5; t += 2.4, c++) for (let s of [0, 4, 7]) note(chords, mid(48 + 2 * c + s), t, t + 2, organ)
+  for (let t = 0.2, m = 72; t < 9.5; t += 1.35, m = 60 + (m * 7) % 24) note(sines, mid(m), t, t + 1.2, flute, 0.08, 0.04)
+  note(pedal, mid(36), 0.7, 9.3, [1, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 6, 1 / 7, 1 / 8])
+  for (let t = 1, m = 67; t < 9; t += 0.9, m = 67 + (m * 5) % 17) note(pedal, mid(m), t, t + 0.7, flute, 0.06, 0.04)
+  for (let t = 0; t < 10; t += 2) {                                 // the band 1.5 s (chords and hits), the bass alone 0.5 s
+    for (let s of [0, 3, 7]) note(breaks, mid(57 + s), t, t + 1.5, organ, 0.03)
+    for (let h = t; h < t + 1.5; h += 0.25) for (let i = Math.round(h * fs); i < Math.round((h + 0.08) * fs); i++) breaks[i] += 0.1 * Math.exp(-(i / fs - h) / 0.02) * (r() * 2 - 1)
+    note(breaks, mid(45), t + 1.5, t + 2, [1, 0.3, 0.1], 0.08)
+  }
+  for (let [name, x] of [['organ chords', chords], ['held sines', sines], ['a pedal under a melody', pedal], ['a bass in the breaks', breaks]]) {
+    let t = tones(x, fs)
+    ok(!t.length && dehum(copy(x), { fs }).every((v, i) => v === x[i]), `${name}: untouched${t.length ? ` (found ${t.map(v => v.freq.toFixed(1)).join(', ')} Hz)` : ''}`)
+  }
+})
+
 // =================== specsub ===================
 
 test('specsub — improves SNR on white-noisy speech', () => {
@@ -722,7 +772,7 @@ test('minStats: a steady line is estimated at its power, not B_min over it; wien
   let amp = y => { let re = 0, im = 0; for (let i = 2 * fs; i < n; i++) { re += y[i] * Math.cos(2 * Math.PI * 7000 * i / fs); im += y[i] * Math.sin(2 * Math.PI * 7000 * i / fs) } return 20 * Math.log10(2 * Math.hypot(re, im) / (n - 2 * fs)) }
   let tracked = amp(wiener(copy(x), { fs })), learned = amp(wiener(copy(x), { fs, profile: psd(add(line, gauss(n, 0.01, 99))) }))
   ok(Math.abs(tracked - learned) < 0.5, `line left ${tracked.toFixed(1)} dBFS tracked, ${learned.toFixed(1)} on its learned profile (was 6 dB over)`)
-  // forced: the line holds through the voice's pauses, as a held note would, so classify() can't call it a defect
+  // forced: wiener alone, the estimator under test (unforced, classify() finds the line and dehum takes it: below)
   let { out, plan } = denoise(copy(x), { fs, force: 'wiener', returnPlan: true }), s = snr(speech, out)
   ok(plan.method === 'wiener' && s > 10, `denoise({ force: 'wiener' }): SNR ${s.toFixed(1)} dB (7.8 before)`)
 })
