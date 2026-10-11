@@ -6,7 +6,7 @@ export interface ClassifyScores {
   hum: number
   /** their fundamental, Hz (0: no hum) */
   humFreq: number
-  /** their A-weighted level re the program, dB; dehum from −50 */
+  /** their A-weighted level re the program, dB; dehum from `HUM_LEVEL` (−50) */
   humLevel: number
   /** isolated impulses per second standing 32σ out of the AR(30) error; declick above `CLICK_RATE` */
   click: number
@@ -20,7 +20,7 @@ export interface ClassifyScores {
   steady: boolean
   /** steady tones off the mains series, Hz, dehum's tones() finds over the first 90 s */
   tones: number[]
-  /** their A-weighted level re the program, dB (−Infinity: none); dehum from −50, or dehum before another route */
+  /** their A-weighted level re the program, dB (−Infinity: none); dehum from `HUM_LEVEL`, or dehum before another route */
   toneLevel: number
 }
 
@@ -60,6 +60,9 @@ export const CLICK_RATE: number
 
 /** Program over noise bed, dB, under which classify() routes to a reducer. */
 export const BED_SNR: number
+
+/** A-weighted level of the lines re the program's, dB, from which classify() routes hum, or a steady tone, to dehum (`humLevel`, `toneLevel`). */
+export const HUM_LEVEL: number
 
 export interface DeesserOptions {
   /** sample rate (Hz), default 44100 */

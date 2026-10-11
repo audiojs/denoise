@@ -441,6 +441,44 @@ test('dehum – held notes are no tone: organ chords, held sines, a pedal under 
   }
 })
 
+// A chord held through the take under a hit once a period passes every mark of a steady tone: it holds through the
+// pauses between hits, the hits never over its lines. Its lines are off one harmonic series (A minor's 220, 277.18,
+// 329.63 Hz: no fundamental makes them whole multiples), and one interference makes one series: a chord, left.
+// @audio/chain's music fixture (the chord at 0.55 peak, a marimba-like hit a second at 0.26), tilted +3 dB/octave or
+// more: dehum 0.7.0 found all three lines and took the chord out. Then the family: 2–4 notes, sines or partials 1–6,
+// under chain's hit, a snare or a kick, its peak 24 dB under the chord's to level with it, tilted 0, 3, 6, 9 dB/octave,
+// 4, 8 and 16 s: tones() finds nothing in any, and every one comes back bit for bit but where the mains path acts, as
+// 0.6 does: G7's F4 with partials, 349.23 Hz, is the 7th harmonic of 49.89 Hz, within the tracker's reach of 50 Hz, its
+// second partial the 14th; with no pause to hear them go, a note on a mains line is taken for hum (README: Hum)
+test('dehum – a chord held under percussion is no tone, at any tilt: untouched', async () => {
+  let { tones } = await import('@audio/denoise-dehum')
+  let mid = m => 440 * 2 ** ((m - 69) / 12), s0 = 5, r = () => (s0 = (Math.imul(s0, 1664525) + 1013904223) >>> 0) / 4294967296
+  let tilt = (x, db) => db ? stftBatch(x, (mag, phase) => { for (let k = 0; k < mag.length; k++) mag[k] *= 10 ** (db * Math.log2(Math.max(1, k * fs / 2048) / 1000) / 20); return { mag, phase } }, { frameSize: 2048, hopSize: 512, fs }) : x
+  let hits = {
+    tonal: t => Math.exp(-15 * t) * (Math.sin(2 * Math.PI * 880 * t) + 0.5 * Math.sin(2 * Math.PI * 1760 * t) + 0.28 * Math.sin(2 * Math.PI * 3520 * t) + 0.16 * Math.sin(2 * Math.PI * 5280 * t)) / 1.94,
+    snare: t => Math.exp(-25 * t) * ((r() * 2 - 1) + 0.5 * Math.sin(2 * Math.PI * 190 * t)),
+    kick: t => Math.exp(-12 * t) * Math.sin(2 * Math.PI * (50 * t + 100 * (1 - Math.exp(-30 * t)) / 30)),
+  }
+  let take = (notes, parts, hit, lvl, dur) => {                     // lvl: the hit's peak re the chord's, dB; null: 0.26 × chain's
+    let n = dur * fs, x = new Float32Array(n), h = new Float32Array(n)
+    for (let m of notes) parts.forEach((a, k) => { let f = mid(m) * (k + 1); for (let i = 0; i < n; i++) x[i] += a * Math.sin(2 * Math.PI * f * i / fs) })
+    for (let i = 0; i < n; i++) { let t = (i / fs) % 1; h[i] = Math.min(1, t / 0.004) * hits[hit](t) }
+    let g = 0.55 / peak(x), gh = lvl == null ? 0.26 : 0.55 * 10 ** (lvl / 20) / peak(h)
+    return Float32Array.from(x, (v, i) => g * v + gh * h[i])
+  }
+  let chain = take([57, 61, 64], [1], 'tonal', null, 4), set = [0, 3, 6, 9].map(db => [`chain's take, +${db} dB/octave`, tilt(chain, db)])
+  let chords = [[57, 64], [57, 60, 64], [55, 59, 62, 65], [45, 52, 57, 61], [48, 55, 64, 71]], organ = [1, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 6]
+  for (let i = 0; i < 12; i++) {
+    let notes = chords[i % 5], parts = i % 2 ? organ : [1], hit = ['tonal', 'snare', 'kick'][i % 3], lvl = [-24, -12, -6.5, 0][(5 * i + Math.floor(i / 4)) % 4], db = 3 * (i % 4), dur = [4, 8, 16][Math.floor(i / 4)]
+    set.push([`${notes.length} notes, ${parts.length > 1 ? 'partials 1–6' : 'sines'}, ${hit} ${lvl} dB, +${db} dB/octave, ${dur} s`, tilt(take(notes, parts, hit, lvl, dur), db), parts.length > 1 && notes.includes(65)])
+  }
+  for (let [name, x, f4] of set) {
+    let t = tones(x, fs), y = dehum(copy(x), { fs }), same = y.every((v, i) => v === x[i])
+    let hum = !same && f4 && dehum(copy(x), { fs, tones: false }).every((v, i) => v === y[i])
+    ok(!t.length && (same || hum), `${name}: ${same ? 'untouched' : hum ? 'no tone; the mains path takes F4 (7 × 49.89 Hz), as 0.6' : 'changed'}${t.length ? ` (found ${t.map(v => v.freq.toFixed(2)).join(', ')} Hz)` : ''}`)
+  }
+})
+
 // =================== specsub ===================
 
 test('specsub — improves SNR on white-noisy speech', () => {

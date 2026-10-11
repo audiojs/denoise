@@ -101,10 +101,16 @@ export default function dehum(data, params = {}) {
 //               the same pitch or a kick tuned to it, starts at a new phase (van Waterschoot & Moonen's interframe peak
 //               persistence, Proc. IEEE 99(2), 2011, read on the phase rather than the magnitude)
 //   loud        its power in the pauses QUIET of the take's at least
+//   one source  the lines kept, together, one harmonic series: each a whole multiple of a fundamental at the lowest or
+//               an octave under it (one too faint to stand is missed), within TSER cents plus their turns' spread. One
+//               interference makes one line or one periodic wave's series (a whine, a fan, a scan); lines off one series
+//               held alike through the take are the notes of a held chord (TET's fifth sits 1.96 cents off 3:2, its
+//               third 13.7 off 5:4), and none goes: a chord under percussion, the hits never over its lines, passes every
+//               mark above (0.7.0 took a triad held under a hit a second, tilted +3 dB/octave or more, whole)
 // Returns [{ freq, level, held, kept, am, coherence, breaks, cents }]: Hz (from the turn), dB re the take's power, the
 // shares held and kept, the level's spread (dB), the turns' mean resultant length, the share of transitions breaking,
 // and the turns' spread as a frequency (cents)
-const TRHO = [...RHO, 1e-3, 1e-2], TF = 0.186, TCAP = 2048, TDYN = 10, TLINE = 12, TPRES = 0.95, TAM = 3, TCOH = 0.9, TBRK = 0.02, TKEEP = 0.9, TSPAN = 0.5, TN = 16
+const TRHO = [...RHO, 1e-3, 1e-2], TF = 0.186, TCAP = 2048, TDYN = 10, TLINE = 12, TPRES = 0.95, TAM = 3, TCOH = 0.9, TBRK = 0.02, TKEEP = 0.9, TSPAN = 0.5, TN = 16, TSER = 0.5
 export function tones(data, fs, hum = 0) {
   if (!data?.length || data.length < MIN * fs) return []
   let N = 2 ** Math.round(Math.log2(TF * fs)), half = N >> 1
@@ -196,7 +202,10 @@ export function tones(data, fs, hum = 0) {
     let ff = f + all / turn, sd = Math.sqrt(-2 * Math.log(Math.max(R, 1e-12))) / turn, cents = 1200 * Math.log2(1 + sd / ff)
     if (held >= TPRES && kept >= TKEEP && am <= TAM && R >= TCOH && breaks <= TBRK && level >= QUIET) out.push({ freq: ff, level: 10 * Math.log10(level), held, kept, am, coherence: R, breaks, cents })
   }
-  return out.sort((a, b) => a.freq - b.freq)
+  out.sort((a, b) => a.freq - b.freq)
+  let tol = TSER + Math.max(0, ...out.map(t => t.cents))
+  let series = k => out.every(({ freq }) => { let h = freq * k / out[0].freq; return Math.abs(1200 * Math.log2(h / Math.round(h))) <= tol })
+  return out.length < 2 || series(1) || series(2) ? out : []
 }
 
 // A steady tone at f subtracted from x in place: its frequency refined from its phasors' mean turn (as estimate()

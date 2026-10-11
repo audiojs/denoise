@@ -75,8 +75,9 @@ export default function denoise(data, params = {}) {
 export const CLICK_RATE = 1
 /** Program over noise bed, dB, under which the bed is reduced. */
 export const BED_SNR = 25
+/** A-weighted level of the hum's or a tone's lines re the program's, dB, from which they are removed: under it they go unheard. */
+export const HUM_LEVEL = -50
 
-const HUM_LEVEL = -50                              // dB A re the program: a line under it goes unheard
 const WIND_SHARE = 0.1                             // share of 0.15 s blocks
 const FLOOR_SLACK = 3                              // dB a bed's pauses may wander over its floor, past Gaussian spread
 const MAX_FRAMES = 1 << 15                         // ≈ 6 min at 48 kHz; longer, 16 spans of it spread across

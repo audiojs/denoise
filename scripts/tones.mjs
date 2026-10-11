@@ -28,8 +28,9 @@
 //         from 1 s to 18 s under a flute melody), strings (partials 1–10, vibrato 5.5 Hz ±30 cents, legato 2–4 s), piano
 //         (partials 1–8, inharmonicity 1e-4, decaying), and drone (an organ note held through the whole take under a
 //         melody: no onset, no release, no pause; a tone by every mark the take offers, reported apart, outside the
-//         criterion). Recorded: VocalSet long tones (Wilkins et al., ISMIR 2018: straight, messa, pp, forte, trill,
-//         trillo, inhaled; tune the odd-numbered singers, test the even), MUSDB18 previews (Rafii et al. 2017; tune
+//         criterion); added with dehum 0.7.1, held chords under percussion (chordTake() below, 24 a split, 4–16 s).
+//         Recorded: VocalSet long tones (Wilkins et al., ISMIR 2018: straight, messa, pp, forte, trill, trillo,
+//         inhaled; tune the odd-numbered singers, test the even), MUSDB18 previews (Rafii et al. 2017; tune
 //         every third training song, test the 50 test songs), BabySlakh mixes rendered at 44.1 kHz (Manilow et al.
 //         2019; tune odd tracks, test even; 30 s from 10 s in), GuitarSet mono mic (Xi et al., ISMIR 2018; every 24th
 //         take, tune odd, test even), and for test the four pieces of scripts/repair.js (30 s).
@@ -50,6 +51,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import raw from 'audio-lena/raw'
 import { cascade, notch } from '@audio/biquad'
+import { stftBatch } from '@audio/stft'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), ROOT = path.join(HERE, '..')
 const DATA = path.join(os.homedir(), '.cache', 'audiojs', 'data'), OUT = path.join(DATA, 'tones')
@@ -235,10 +237,37 @@ function synthMusic(kind, seed) {
   let rf = lcg(seed + 1)
   return Float32Array.from(y, v => v + 1e-4 * gauss(rf))
 }
+// a chord held through the take under a hit once a period (added in dehum 0.7.1, after @audio/chain's music fixture,
+// its chord taken whole by 0.7.0 once tilted): 2–4 notes (sines, or partials 1–6 at 1/k), from the first sample to the
+// last at 0.55 peak; the hit tonal (chain's: 880, 1760, 3520, 5280 Hz at 1, .5, .28, .16, 4 ms attack, decay 15/s), a
+// snare (noise and 190 Hz, decay 25/s) or a kick (150 → 50 Hz, decay 12/s), its peak `lvl` dB re the chord's; then
+// tilted by `tilt` dB/octave around 1 kHz (an STFT magnitude scaling, frame 2048, as chain tilts it); every other take
+// over a −80 dBFS white floor
+const CHORDS = [[0, 7], [0, 4], [0, 3, 7], [0, 4, 7], [0, 4, 7, 10], [0, 7, 12, 16], [0, 7, 16, 23], [0, 3, 7, 10]]
+function chordTake(i, seed, nameOnly) {
+  let fs = 44100, r = lcg(seed), tilt = [0, 3, 6, 9][i % 4], dur = [4, 8, 16][(i >> 2) % 3], harm = (i >> 2) % 6 >= 3
+  let shape = CHORDS[Math.floor(r() * CHORDS.length)], root = 45 + Math.floor(12 * r()), hit = ['tonal', 'snare', 'kick'][Math.floor(3 * r())]
+  let name = `chord-${i}-${shape.length}${harm ? 'h' : 's'}-${hit}-${tilt}dB-${dur}s`
+  if (nameOnly) return { name }
+  let lvl = -24 + 24 * r(), period = 0.5 + 0.7 * r(), n = dur * fs, x = new Float64Array(n), h = new Float64Array(n), parts = harm ? [1, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 6] : [1]
+  for (let m of shape) parts.forEach((a, k) => { let f = (k + 1) * midi(root + m), p = 2 * Math.PI * r(); if (f < fs / 2) for (let j = 0; j < n; j++) x[j] += a * Math.sin(2 * Math.PI * f * j / fs + p) })
+  let pk = x.reduce((a, v) => Math.max(a, Math.abs(v)), 0), lp = 0
+  for (let j = 0; j < n; j++) {
+    let t = (j / fs) % period, env = Math.min(1, t / 0.004)
+    h[j] = hit === 'tonal' ? env * Math.exp(-15 * t) * (Math.sin(2 * Math.PI * 880 * t) + 0.5 * Math.sin(2 * Math.PI * 1760 * t) + 0.28 * Math.sin(2 * Math.PI * 3520 * t) + 0.16 * Math.sin(2 * Math.PI * 5280 * t))
+      : hit === 'snare' ? (lp = 0.6 * lp + 0.4 * gauss(r), env * Math.exp(-25 * t) * (gauss(r) - 0.5 * lp + 0.5 * Math.sin(2 * Math.PI * 190 * t)))
+      : env * Math.exp(-12 * t) * Math.sin(2 * Math.PI * (50 * t + 100 * (1 - Math.exp(-30 * t)) / 30))
+  }
+  let hp = h.reduce((a, v) => Math.max(a, Math.abs(v)), 0), g = 0.55 * 10 ** (lvl / 20) / hp, floor = i % 2 ? 1e-4 : 0
+  let y = Float32Array.from(x, (v, j) => 0.55 * v / pk + g * h[j] + floor * gauss(r))
+  if (tilt) y = stftBatch(y, (mag, phase) => { for (let k = 0; k < mag.length; k++) mag[k] *= 10 ** (tilt * Math.log2(Math.max(1, k * fs / 2048) / 1000) / 20); return { mag, phase } }, { frameSize: 2048, hopSize: 512, fs })
+  return { x: y, fs, name }
+}
 function musicSet() {
   let set = [], tune = split === 'tune'
   for (let kind of ['organ', 'flute', 'pedal', 'strings', 'piano', 'drone']) for (let s = 0; s < 3; s++)
     set.push({ name: `synth-${kind}-${s}`, group: kind === 'drone' ? 'drone (no onset, no pause)' : 'synthetic held notes', load: () => ({ x: synthMusic(kind, (tune ? 1 : 101) + 10 * s + kind.length), fs: 44100 }) })
+  for (let i = 0; i < 24; i++) set.push({ name: chordTake(i, (tune ? 1 : 101) + 7 * i, true).name, group: 'held chords under percussion', load: () => chordTake(i, (tune ? 1 : 101) + 7 * i) })
   for (let f of ls(path.join(DATA, 'vocalset/FULL'), '').flatMap(d => ['straight', 'messa', 'pp', 'forte', 'trill', 'trillo', 'inhaled'].flatMap(t => ls(path.join(d, 'long_tones', t), '.wav')))) {
     let singer = +path.basename(path.dirname(path.dirname(path.dirname(f)))).replace(/\D/g, '')
     if ((singer % 2 === 1) === tune) set.push({ name: path.basename(f, '.wav'), group: 'VocalSet long tones', load: () => wav(f) })
@@ -304,6 +333,7 @@ async function speechSection() {
     let pairs = names.map(nm => [tmp('clean', nm, wav(path.join(cdir, nm)).x), tmp('noisy', nm, wav(path.join(ndir, nm)).x)])
     let s = pesq(pairs); inPesq = Object.fromEntries(names.map((nm, i) => [nm, s[i]])); save('speech', 'input', inPesq)
   }
+  for (let nm of names) if (!existsSync(path.join(OUT, 'tmp', `clean-${nm}.f32`))) tmp('clean', nm, wav(path.join(cdir, nm)).x)   // the references, input PESQ read from the cache
   let res = {}
   for (let b of builds) {
     let lab = label(b), cached = read('speech', lab)

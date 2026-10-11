@@ -44,5 +44,5 @@ export interface Tone {
 export default function dehum<T extends Float32Array | Float64Array>(data: T, options?: DehumOptions): T
 /** Measure mains hum near the candidate fundamentals (default 50 and 60 Hz); null when there is none or the signal is under 1 s. */
 export function measure(data: Float32Array | Float64Array, fs: number, candidates?: number[], tol?: number): Hum | null
-/** Steady tones in a signal (a whine, a test tone), the harmonics of a mains series at `hum` Hz left out; [] when there are none, the program never pauses, or the signal is under 1 s. */
+/** Steady tones in a signal (a whine, a test tone), the harmonics of a mains series at `hum` Hz left out; [] when there are none, the program never pauses, the lines found are off one harmonic series (a held chord), or the signal is under 1 s. */
 export function tones(data: Float32Array | Float64Array, fs: number, hum?: number): Tone[]
