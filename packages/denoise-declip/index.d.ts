@@ -22,3 +22,14 @@ export const CURVES: Record<'tanh' | 'alg', (x: number, c: number, k: number, o:
 
 /** Returns a repaired copy. */
 export default function declip(data: Float32Array, options?: DeclipOptions): Float32Array
+
+/** A job of the rebuild: a sparse block (`r` its length in s) or an AR window (`r` 'ar'), starting at sample `at`. */
+export interface DeclipJob { r: number | 'ar', at: number }
+/** What every job reads: the sound as the rail cuts it, the mask of the samples to rebuild (1 over the top rail, −1 under the bottom), the rate and the AR order. */
+export interface DeclipShared { y: Float32Array, mask: Int8Array, fs: number, p: number }
+
+/** declip(), each batch of its jobs handed to `map` (default: made here in turn), which may make them anywhere at once (worker threads); the same samples, bit for bit. */
+export function declipAsync(data: Float32Array, options?: DeclipOptions, map?: (shared: DeclipShared, jobs: DeclipJob[]) => Float64Array[] | Promise<Float64Array[]>): Promise<Float32Array>
+
+/** One job's result: a sparse block's rebuilt samples (windowed), or an AR window's fill (its masked samples' values, in turn). */
+export function solve(shared: DeclipShared, job: DeclipJob): Float64Array

@@ -1,7 +1,7 @@
 // declip's own tests: what this version added. The rest (rails, bit-exactness, edges) is in the umbrella's test.js.
 import test, { ok } from 'tst'
 import raw from 'audio-lena/raw'
-import declip, { rails, bands, saturation } from './declip.js'
+import declip, { declipAsync, rails, bands, saturation } from './declip.js'
 
 const fs = 44100, lena = new Float32Array(raw)
 const peak = x => x.reduce((m, v) => Math.max(m, Math.abs(v)), 0)
@@ -79,3 +79,14 @@ test('declip — a held chord clipped to 1 dB: the 186 ms sparse rebuild carries
   ok(snr(x, z) > 13, `SDR ${snr(x, y).toFixed(1)} → ${snr(x, z).toFixed(1)} dB`)
   ok(z.every((v, i) => y[i] === v || Math.abs(v) >= Math.abs(y[i])), 'consistent: each rebuilt sample at least as far out as recorded')
 })
+
+test('declipAsync — its jobs made in any order and anywhere come back the same samples, bit for bit', async () => {
+  // a map that makes each batch's jobs last to first, a turn of the event loop between: as threads would hand them back
+  let s = lena.subarray(fs, fs + fs / 2), x = scaled(s, 0.9 / peak(s)), calls = 0
+  let map = async (shared, jobs) => { calls++; await new Promise(r => setTimeout(r)); let out = new Array(jobs.length); for (let i = jobs.length - 1; i >= 0; i--) out[i] = (await import('./declip.js')).solve(structuredClone(shared), jobs[i]); return out }
+  for (let [v, y] of [['hard', clamp(x, cut(x, 5))], ['asymmetric', clamp(x, 0.6, -0.4)], ['soft', Float32Array.from(x, u => Math.tanh(2 * u))], ['clean', x]]) {
+    let a = declip(y, { fs }), b = await declipAsync(y, { fs }, map)
+    ok(a.length === b.length && a.every((u, i) => Object.is(u, b[i])), `${v}: the same samples`)
+  }
+  ok(calls > 0, `${calls} batches of jobs`)
+}, { timeout: 600000 })

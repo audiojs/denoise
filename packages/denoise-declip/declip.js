@@ -59,7 +59,27 @@ const P = 24, FLOOR = 1e-7, WS = 48, LR = 0.02, BEND = 2, SLOPE = 40
 // the rebuilds the blend weighs: the AR one, and the sparse one over blocks of 93 and of 186 ms
 const REBUILDS = ['ar', 0.093, 0.186]
 
+// The rebuild as a run of jobs, each a block of a sparse rebuild ({ r: its length in s, at: its start }) or a window of the
+// AR one ({ r: 'ar', at }), each made from the sound and the mask alone: `pipeline` yields those it needs, { shared:
+// { y, mask, fs, p }, jobs }, and goes on with their results in their order (solve). declip() makes them here in turn;
+// declipAsync() hands them to `map`, which may make them anywhere at once (worker threads): the output is the same, bit
+// for bit, as each result is, and they are put together here in the one order
 export default function declip(data, params = {}) {
+  let it = pipeline(data, params), s = it.next()
+  while (!s.done) s = it.next(s.value.jobs.map(j => solve(s.value.shared, j)))
+  return s.value
+}
+export async function declipAsync(data, params = {}, map = (shared, jobs) => jobs.map(j => solve(shared, j))) {
+  let it = pipeline(data, params), s = it.next()
+  while (!s.done) s = it.next(await map(s.value.shared, s.value.jobs))
+  return s.value
+}
+// one job's result: a sparse block's rebuild (its samples, windowed), or an AR window's fill (its masked samples' values)
+export function solve({ y, mask, fs, p }, { r, at }) {
+  return r === 'ar' ? janssenWindow(y, mask, fs, p, at) : spadeBlock(y, mask, fs, r, at)
+}
+
+function* pipeline(data, params) {
   let fs = params.fs ?? 44100, p = params.order ?? 256, n = data.length, out = Float32Array.from(data)
   let cl = params.clipLevel > 0 ? params.clipLevel : 0, q = grid(data), y = data
   let { hi, lo } = cl ? { hi: cl, lo: -cl } : rails(data, q)
@@ -90,7 +110,7 @@ export default function declip(data, params = {}) {
   let rho = share(y, mask, hi, lo), C = Math.round(30 * fs), O = Math.round(2 * fs)
   for (let a = 0, b = 0; b < n; a = b - O) {
     b = n - a <= C + O ? n : a + C
-    let z = rebuild(y.subarray(a, b), mask.subarray(a, b), rho * (hi ?? 0), rho * (lo ?? 0), fs, p)
+    let z = yield* rebuild(y.subarray(a, b), mask.subarray(a, b), rho * (hi ?? 0), rho * (lo ?? 0), fs, p)
     for (let i = a; i < b; i++) if (mask[i]) {
       let w = Math.min(1, a ? (i - a + 0.5) / O : 1, b < n ? (b - i - 0.5) / O : 1)
       out[i] = (a && i < a + O ? out[i] : 0) + w * z[i - a]
@@ -100,16 +120,27 @@ export default function declip(data, params = {}) {
 }
 
 // the rebuilds of y and their blend; the validation y clipped again at h2 / l2 (0: that side left as it is)
-function rebuild(y, mask, h2, l2, fs, p) {
+function* rebuild(y, mask, h2, l2, fs, p) {
   let n = y.length, z = Float32Array.from(y)
   if (!mask.some(Boolean)) return z
   let up = v => h2 > 0 && v >= h2, dn = v => l2 < 0 && v <= l2
   let y2 = Float32Array.from(y, v => up(v) ? h2 : dn(v) ? l2 : v), m2 = Int8Array.from(y, (v, i) => mask[i] || (up(v) ? 1 : dn(v) ? -1 : 0))
-  let run = (r, y, mask, want) => r === 'ar' ? janssen(y, mask, fs, p, want) : spade(y, mask, fs, r, want)
-  let W = weights(y, mask, m2, REBUILDS.map(r => run(r, y2, m2)), fs)
-  let Z = REBUILDS.map((r, k) => run(r, y, mask, i => W[k][i] > 0))
+  let W = weights(y, mask, m2, yield* rebuilds(y2, m2, fs, p, () => () => true), fs)
+  let Z = yield* rebuilds(y, mask, fs, p, k => i => W[k][i] > 0)
   for (let i = 0; i < n; i++) if (mask[i]) { let v = 0; for (let k = 0; k < Z.length; k++) if (W[k][i] > 0) v += W[k][i] * Z[k][i]; z[i] = v }
   return z
+}
+
+// each rebuild of y, the k-th made only where `want(k)` takes a sample: the blocks and windows to make yielded as jobs,
+// each rebuild put together from their results
+function* rebuilds(y, mask, fs, p, want) {
+  let jobs = REBUILDS.flatMap((r, k) => (r === 'ar' ? janssenJobs(y, mask, fs, p, want(k)) : spadeJobs(y, mask, fs, r, want(k))).map(at => ({ r, at })))
+  let got = jobs.length ? yield { shared: { y, mask, fs, p }, jobs } : []
+  return REBUILDS.map(r => {
+    let made = new Map()
+    jobs.forEach((j, i) => { if (j.r === r) made.set(j.at, got[i]) })
+    return r === 'ar' ? janssen(y, mask, fs, p, made) : spade(y, mask, fs, r, made)
+  })
 }
 
 // ρ: the share of its side's rail at or over which as large a share of the unclipped samples lies as the clip took of
@@ -170,45 +201,67 @@ function simplex(K, g) {
 // 1 per iteration up to 50, then by 2 % (the survey: by 1 every 2): 8× fewer iterations, up to 1.7 dB less at 1 dB in,
 // 0.3 at 3, as good above (the survey's growth on a violin clipped to 1 dB: 0.3 dB more in 23× the time). Only blocks
 // holding a sample `want` takes, and 4 recorded (as janssen's order 2 needs), are rebuilt.
-function spade(y, mask, fs, sec, want = () => true) {
-  let n = y.length, w = 2 ** Math.round(Math.log2(sec * fs)), a = w >> 2, N = 2 * w, H = w + 1, nrm = Math.sqrt(N)
+// The blocks of `sec`: w samples (a power of 2), hop a = w/4, the analysis window g and the sum gs of its squares at
+// each phase of the hop
+const frames = new Map()
+function frame(fs, sec) {
+  let key = fs + ' ' + sec, f = frames.get(key)
+  if (f) return f
+  let w = 2 ** Math.round(Math.log2(sec * fs)), a = w >> 2
   let g = Float64Array.from({ length: w }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / w)), gs = new Float64Array(a)
   for (let i = 0; i < w; i++) gs[i % a] += g[i] * g[i]
-  let acc = new Float64Array(n), buf = new Float64Array(N), re = new Float64Array(H), im = new Float64Array(H), spec = [re, im]
-  let zr = new Float64Array(H), zi = new Float64Array(H), ur = new Float64Array(H), ui = new Float64Array(H)
-  let mag = new Float64Array(H), sel = new Float64Array(H), b = new Float64Array(w), x = new Float64Array(w), best = new Float64Array(w)
-  let A = () => { buf.set(x); fft(buf, spec); for (let j = 0; j < H; j++) zr[j] = re[j] / nrm, zi[j] = im[j] / nrm }
+  frames.set(key, f = { w, a, g, gs })
+  return f
+}
+// the starts of the blocks to rebuild
+function spadeJobs(y, mask, fs, sec, want) {
+  let n = y.length, { w, a } = frame(fs, sec), out = []
   for (let c = a - w; c < n; c += a) {
-    let any = false, rec = 0, e2 = 0
+    let any = false, rec = 0
+    for (let i = 0, t = c; i < w; i++, t++) if (t >= 0 && t < n) if (!mask[t]) rec++; else if (want(t)) any = true
+    if (any && rec >= 4) out.push(c)
+  }
+  return out
+}
+// the block at c rebuilt: its w samples, windowed (the ADMM's buffers kept for the next block of its length)
+const spaces = new Map()
+function spadeBlock(y, mask, fs, sec, c) {
+  let n = y.length, { w, g } = frame(fs, sec), N = 2 * w, H = w + 1, nrm = Math.sqrt(N)
+  let ws = spaces.get(w)
+  if (!ws) spaces.set(w, ws = { buf: new Float64Array(N), re: new Float64Array(H), im: new Float64Array(H), zr: new Float64Array(H), zi: new Float64Array(H), ur: new Float64Array(H), ui: new Float64Array(H), mag: new Float64Array(H), sel: new Float64Array(H), b: new Float64Array(w), x: new Float64Array(w) })
+  let { buf, re, im, zr, zi, ur, ui, mag, sel, b, x } = ws, spec = [re, im], best = new Float64Array(w), e2 = 0
+  let A = () => { buf.set(x); fft(buf, spec); for (let j = 0; j < H; j++) zr[j] = re[j] / nrm, zi[j] = im[j] / nrm }
+  for (let i = 0, t = c; i < w; i++, t++) b[i] = t >= 0 && t < n ? y[t] * g[i] : 0, e2 += b[i] * b[i]
+  best.set(b)
+  x.set(b); A(); ur.fill(0); ui.fill(0)
+  for (let k = 1, lo = Infinity; ; k += Math.max(1, Math.floor(k / 50))) {
+    // z̄ = H_k(Ax + u): the k largest kept
+    for (let j = 0; j < H; j++) { let r = zr[j] + ur[j], m = zi[j] + ui[j]; re[j] = r, im[j] = m, mag[j] = sel[j] = (r * r + m * m) / (j ? 1 : 4) }
+    let cut = k < H ? select(sel, H - k) : -1, res = 0
+    for (let j = 0; j < H; j++) {
+      if (mag[j] < cut) re[j] = im[j] = 0
+      res += (j && j < H - 1 ? 2 : 1) * ((zr[j] - re[j]) ** 2 + (zi[j] - im[j]) ** 2)
+    }
+    if (res < lo) lo = res, best.set(x)
+    if (res <= 1e-4 * e2 || k >= H) break
+    // x: the consistent set's nearest to A*(z̄ − u); then u += Ax − z̄
+    for (let j = 0; j < H; j++) ur[j] -= re[j], ui[j] -= im[j], re[j] = -ur[j], im[j] = -ui[j]
+    let v = ifft(re, im)
     for (let i = 0, t = c; i < w; i++, t++) {
-      b[i] = t >= 0 && t < n ? y[t] * g[i] : 0, e2 += b[i] * b[i]
-      if (t >= 0 && t < n) if (!mask[t]) rec++; else if (want(t)) any = true
+      let s = t >= 0 && t < n ? mask[t] : 0, u = v[i] * nrm
+      x[i] = !s ? b[i] : s > 0 ? Math.max(b[i], u) : Math.min(b[i], u)
     }
-    best.set(b)
-    if (any && rec >= 4) {
-      x.set(b); A(); ur.fill(0); ui.fill(0)
-      for (let k = 1, lo = Infinity; ; k += Math.max(1, Math.floor(k / 50))) {
-        // z̄ = H_k(Ax + u): the k largest kept
-        for (let j = 0; j < H; j++) { let r = zr[j] + ur[j], m = zi[j] + ui[j]; re[j] = r, im[j] = m, mag[j] = sel[j] = (r * r + m * m) / (j ? 1 : 4) }
-        let cut = k < H ? select(sel, H - k) : -1, res = 0
-        for (let j = 0; j < H; j++) {
-          if (mag[j] < cut) re[j] = im[j] = 0
-          res += (j && j < H - 1 ? 2 : 1) * ((zr[j] - re[j]) ** 2 + (zi[j] - im[j]) ** 2)
-        }
-        if (res < lo) lo = res, best.set(x)
-        if (res <= 1e-4 * e2 || k >= H) break
-        // x: the consistent set's nearest to A*(z̄ − u); then u += Ax − z̄
-        for (let j = 0; j < H; j++) ur[j] -= re[j], ui[j] -= im[j], re[j] = -ur[j], im[j] = -ui[j]
-        let v = ifft(re, im)
-        for (let i = 0, t = c; i < w; i++, t++) {
-          let s = t >= 0 && t < n ? mask[t] : 0, u = v[i] * nrm
-          x[i] = !s ? b[i] : s > 0 ? Math.max(b[i], u) : Math.min(b[i], u)
-        }
-        A()
-        for (let j = 0; j < H; j++) ur[j] += zr[j], ui[j] += zi[j]
-      }
-    }
-    for (let i = 0, t = c; i < w; i++, t++) if (t >= 0 && t < n) acc[t] += best[i] * g[i] / gs[i % a]
+    A()
+    for (let j = 0; j < H; j++) ur[j] += zr[j], ui[j] += zi[j]
+  }
+  return best
+}
+// the blocks added back under the window's dual: each rebuilt one as `made` has it, the others as they were
+function spade(y, mask, fs, sec, made) {
+  let n = y.length, { w, a, g, gs } = frame(fs, sec), acc = new Float64Array(n)
+  for (let c = a - w; c < n; c += a) {
+    let best = made.get(c)
+    for (let i = 0, t = c; i < w; i++, t++) if (t >= 0 && t < n) acc[t] += (best ? best[i] : y[t] * g[i]) * g[i] / gs[i % a]
   }
   return Float32Array.from(acc)
 }
@@ -231,31 +284,52 @@ function select(a, k) {
 // 0.15 dB, in half the time at 3 dB). Order 256 and the taper, measured over clipped speech, song and music:
 // untapered, 0.2–2.2 dB less SDR on average; order 512, the same in 3× the time. Only windows holding a sample `want`
 // takes are rebuilt.
-function janssen(y, mask, fs, p, want = () => true) {
-  let n = y.length, W = 2 ** Math.round(Math.log2(0.186 * fs)), H = W >> 1, out = Float32Array.from(y)
-  let acc = new Float64Array(W), wt = new Float64Array(W), seg = new Float64Array(W), f = new Float64Array(W), gap = []
-  let hann = Float64Array.from({ length: W }, (_, j) => Math.sin(Math.PI * (j + 0.5) / W) ** 2)
+// The windows: W samples (a power of 2), hop W/2, the sin² window
+const arFrames = new Map()
+function arFrame(fs) {
+  let f = arFrames.get(fs)
+  if (f) return f
+  let W = 2 ** Math.round(Math.log2(0.186 * fs))
+  arFrames.set(fs, f = { W, H: W >> 1, hann: Float64Array.from({ length: W }, (_, j) => Math.sin(Math.PI * (j + 0.5) / W) ** 2) })
+  return f
+}
+// the starts of the windows to fill
+function janssenJobs(y, mask, fs, p, want) {
+  let n = y.length, { W, H } = arFrame(fs), out = []
   for (let s = -H; s < n; s += H) {
-    let a0 = Math.max(0, s), a1 = Math.min(n, s + W), w = seg.subarray(0, a1 - a0), tp = hann.subarray(a0 - s), any = false
-    gap.length = 0
-    for (let i = a0; i < a1; i++) if (mask[i]) gap.push(i - a0), any ||= want(i)
-    let order = Math.min(p, (w.length - gap.length) >> 1)
-    if (any && order >= 2) {
-      for (let i = 0; i < w.length; i++) w[i] = y[a0 + i]
-      for (let it = 0, was = Float64Array.from(gap, g => w[g]); it < ITERS; it++) {
-        for (let i = 0; i < w.length; i++) f[i] = w[i] * tp[i]
-        let { a, e } = arFit(f.subarray(0, w.length), order)
-        if (!(e > 0) || !a.every(Number.isFinite) || !arFill(w, gap, a)) break
-        let dd = 0, nn = 0
-        for (let j = 0; j < gap.length; j++) {
-          let g = gap[j], v = y[a0 + g]
-          if (mask[a0 + g] > 0 ? w[g] < v : w[g] > v) w[g] = v
-          dd += (w[g] - was[j]) ** 2, nn += w[g] ** 2, was[j] = w[g]
-        }
-        if (it && dd <= TOL * TOL * nn) break
-      }
-      for (let g of gap) { let j = a0 + g - s; acc[j] += hann[j] * w[g], wt[j] += hann[j] }
+    let a0 = Math.max(0, s), a1 = Math.min(n, s + W), any = false, gaps = 0
+    for (let i = a0; i < a1; i++) if (mask[i]) gaps++, any ||= want(i)
+    if (any && Math.min(p, (a1 - a0 - gaps) >> 1) >= 2) out.push(s)
+  }
+  return out
+}
+// the window at s filled: its masked samples' values, in turn
+function janssenWindow(y, mask, fs, p, s) {
+  let n = y.length, { W, hann } = arFrame(fs), a0 = Math.max(0, s), a1 = Math.min(n, s + W)
+  let w = new Float64Array(a1 - a0), f = new Float64Array(a1 - a0), tp = hann.subarray(a0 - s), gap = []
+  for (let i = a0; i < a1; i++) if (mask[i]) gap.push(i - a0)
+  let order = Math.min(p, (w.length - gap.length) >> 1)
+  for (let i = 0; i < w.length; i++) w[i] = y[a0 + i]
+  for (let it = 0, was = Float64Array.from(gap, g => w[g]); it < ITERS; it++) {
+    for (let i = 0; i < w.length; i++) f[i] = w[i] * tp[i]
+    let { a, e } = arFit(f, order)
+    if (!(e > 0) || !a.every(Number.isFinite) || !arFill(w, gap, a)) break
+    let dd = 0, nn = 0
+    for (let j = 0; j < gap.length; j++) {
+      let g = gap[j], v = y[a0 + g]
+      if (mask[a0 + g] > 0 ? w[g] < v : w[g] > v) w[g] = v
+      dd += (w[g] - was[j]) ** 2, nn += w[g] ** 2, was[j] = w[g]
     }
+    if (it && dd <= TOL * TOL * nn) break
+  }
+  return Float64Array.from(gap, g => w[g])
+}
+// the windows crossfaded: each filled one's samples as `made` has them, under the window, over the weight it has there
+function janssen(y, mask, fs, p, made) {
+  let n = y.length, { W, H, hann } = arFrame(fs), out = Float32Array.from(y), acc = new Float64Array(W), wt = new Float64Array(W)
+  for (let s = -H; s < n; s += H) {
+    let fill = made.get(s)
+    if (fill) for (let i = Math.max(0, s), k = 0, e = Math.min(n, s + W); i < e; i++) if (mask[i]) { let j = i - s; acc[j] += hann[j] * fill[k++], wt[j] += hann[j] }
     for (let j = Math.max(0, -s), e = Math.min(H, n - s); j < e; j++) if (wt[j] > 0) out[s + j] = acc[j] / wt[j]
     acc.copyWithin(0, H).fill(0, H), wt.copyWithin(0, H).fill(0, H)
   }

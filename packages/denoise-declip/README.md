@@ -29,6 +29,13 @@ declip(data, { fs: 44100, clipLevel: 0.95 })                   // a known rail, 
 | `order` | `256` | AR order of the AR rebuild; `512` takes it on dense music up to 2 dB closer, in about 3× the time |
 | `fs` | `44100` | sample rate, Hz |
 
+On every core: the rebuild is a run of jobs, each sparse block and each AR window one, each made from the sound and the clip's mask alone. `declipAsync` hands each batch of them to a `map` of yours, which may make them anywhere at once; they are put back together in the one order, so the output is `declip()`'s, bit for bit. [audio](https://github.com/audiojs/audio) makes them on worker threads (its `parallel.js`; its `declip()` and `auto()`): a clipped 2 s take at 48 kHz, 38.5 s in turn, 9.2 s on 8 threads, a 14-core machine under other load all along.
+
+```js
+import { declipAsync, solve } from '@audio/denoise-declip'
+await declipAsync(data, { fs: 48000 }, (shared, jobs) => pool.map(jobs, job => solve(shared, job)))   // each job anywhere
+```
+
 `node scripts/declip.js` clips speech (audio-lena) and music ("Vibe Ace", Brahms, the trumpet loop, as `repair`), 6 s of each, peak-normalized and cut at the level that leaves the clipped sound 1–20 dB from the original (the input SDR of the declipping survey), and measures the SDR after, dB, declip (finding the rails itself) · FFmpeg `adeclip` at its defaults:
 
 | input SDR | 1 dB | 3 dB | 7 dB | 10 dB | 15 dB | 20 dB |
