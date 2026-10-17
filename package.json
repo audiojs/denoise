@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "type": "module",
   "description": "Noise reduction and restoration: gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, dewind, deplosive, deesser, debreath, dereverb, debleed, dewow, desqueak",
   "sideEffects": false,
@@ -9,17 +9,24 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./*": {
+      "types": "./members/*.d.ts",
+      "default": "./members/*.js"
+    }
   },
   "files": [
     "index.js",
-    "*.d.ts"
+    "*.d.ts",
+    "members/"
   ],
   "scripts": {
     "test": "node test.js",
     "test:all": "npm test --workspaces --if-present && npm test",
     "measure": "node scripts/measure.js",
-    "publish:all": "npm publish --workspaces && npm publish"
+    "publish:all": "npm publish --workspaces && npm publish",
+    "members": "node scripts/members.js",
+    "prepublishOnly": "node scripts/members.js --check"
   },
   "repository": {
     "type": "git",
@@ -58,7 +65,7 @@
     "@audio/denoise-dehum": "^0.7.1",
     "@audio/denoise-declick": "^0.4.0",
     "@audio/denoise-decrackle": "^0.4.0",
-    "@audio/denoise-declip": "^0.5.0",
+    "@audio/denoise-declip": "^0.5.1",
     "@audio/denoise-dewind": "^0.4.0",
     "@audio/denoise-deplosive": "^0.3.0",
     "@audio/denoise-debreath": "^0.4.0",
