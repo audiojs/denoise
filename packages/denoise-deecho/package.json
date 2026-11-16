@@ -1,0 +1,65 @@
+{
+  "name": "@audio/denoise-deecho",
+  "version": "0.1.0",
+  "description": "De-echo: a delayed copy of the sound (a slap-back, a delay left on a take, one strong reflection) found by its cepstral peak, its delay to a fraction of a sample, its gain and its repeats, and undone by its inverse filter; no echo, no change",
+  "type": "module",
+  "sideEffects": false,
+  "main": "deecho.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./deecho.js"
+    },
+    "./package.json": "./package.json",
+    "./audio": {
+      "types": "./audio.d.ts",
+      "default": "./audio.js"
+    }
+  },
+  "files": [
+    "deecho.js",
+    "audio.js",
+    "index.d.ts",
+    "audio.d.ts"
+  ],
+  "audio": "./audio.js",
+  "dependencies": {
+    "fourier-transform": "^2.4.0"
+  },
+  "devDependencies": {
+    "audio-lena": "^3.0.1",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "audio",
+    "dsp",
+    "denoise",
+    "restoration",
+    "deecho",
+    "echo-removal",
+    "cepstrum",
+    "homomorphic-deconvolution"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/denoise.git",
+    "directory": "packages/denoise-deecho"
+  },
+  "homepage": "https://github.com/audiojs/denoise/tree/main/packages/denoise-deecho",
+  "bugs": {
+    "url": "https://github.com/audiojs/denoise/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "funding": "https://github.com/sponsors/audiojs"
+}
