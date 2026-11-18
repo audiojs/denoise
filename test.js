@@ -2057,8 +2057,8 @@ test('classify — a bed holding steady tones (a fan) under a voice routes to om
   is(c.method, 'omlsa', `bed ${c.scores.snr.toFixed(1)} dB under`)
 })
 
-// Radio static under a voice, as Apollo 11's downlink carries it: white noise fading at random, ±4 dB a step every
-// 20 ms (its 46 ms frames spread twice as wide as Gaussian noise's, as Armstrong's "one small step" static's do), and a
+// Radio static under a voice, as an archival transmission carries it: white noise fading at random, ±4 dB a step every
+// 20 ms (its 46 ms frames spread twice as wide as Gaussian noise's, as that transmission's static does), and a
 // buzz held through it, harmonics 2–40 of 172 Hz carrying half its power. The fading keeps it off the floor and the
 // steady bands, Gaussian noise's spread; its pauses are flat but for the buzz, whose lines hold a second on as from frame
 // to frame: noise with its own lines. 0.7 counted them against it and found no bed.

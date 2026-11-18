@@ -236,7 +236,7 @@ function windShare(s) {
 //            lines but those it holds through the take (each band's median persistence there, less the persistence
 //            HOLD on between pause frames that far apart where that is a line too, 0.05 or more: their median under
 //            0.05, none over 0.5). A bed's own lines, in radio static, a carrier's, a fan's, hold their bins a second
-//            on as from frame to frame (Apollo 11's static, lines at 345, 517 and 861 Hz: 0.51 and 0.53 in its
+//            on as from frame to frame (an archival radio take's, lines at 345, 517 and 861 Hz: 0.51 and 0.53 in its
 //            500–707 Hz band), where a voice's or a passage's partials have moved (a dense rock mix: 0.16 and 0.01);
 //            a held note's pauses are its partials, not flat. The floor: a bed
 //            lies under the program all the time, so in every band the pauses sit where the band sinks to over the
