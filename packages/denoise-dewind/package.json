@@ -26,7 +26,7 @@
     "audio.d.ts"
   ],
   "dependencies": {
-    "@audio/stft": "^2.0.0",
+    "@audio/stft": "^2.1.0",
     "fourier-transform": "^2.4.0"
   },
   "keywords": [

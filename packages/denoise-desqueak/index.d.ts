@@ -19,3 +19,9 @@ export default function desqueak<T extends Float32Array | Float64Array>(data: T,
 
 /** The squeak part's analysis frame at a rate: the power of two nearest 23 ms (1024 at 44.1 and 48 kHz). */
 export function frame(fs: number): number
+
+/** The most samples past the take's last sample off zero that the output moves, at a rate and setting: the largest of the
+ *  parts' reaches (the amp part's frame less a sample, 5/8 of the squeak part's frame and 2 ms, the pick part's none for
+ *  an attack under about 27 ms). The take's statistics are read up to that last sample, so silence after it changes
+ *  nothing before it. */
+export function reach(fs: number, options?: Pick<DesqueakOptions, 'squeak' | 'pick' | 'amp' | 'attack'>): number

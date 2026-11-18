@@ -3,7 +3,7 @@
 // take's quietest frames. A small realtime block would see none of these. Declared streaming: false: the host hands it
 // the whole input in one block. Each channel is read and repaired on its own; nothing found, nothing changed.
 
-import desqueak_ from './desqueak.js'
+import desqueak_, { reach } from './desqueak.js'
 
 export const desqueak = (ctx) => {
 	return (inputs, outputs, params) => {
@@ -16,11 +16,11 @@ export const desqueak = (ctx) => {
 }
 desqueak.channels = 'any'
 desqueak.streaming = false
-// No tail, though each part edits on frames and, given room past a take that ends mid-sound, would move the output for up
-// to a frame past its end (46 ms at 44.1 kHz with amp on). A host renders a whole-signal processor's tail by padding its
-// input with silence, and this processor reads the take's statistics (the amp's noise print, its detectors' levels), so
-// the padding would enter what it reads and move the output inside the take.
-desqueak.tail = 0
+// Each part edits on frames, so past a take that ends mid-sound the output moves for up to the largest of the parts'
+// reaches (desqueak.js reach: 46 ms at 44.1 kHz with amp on, 16 ms with squeaks taken). A host renders that tail by
+// padding the input with silence; the take's statistics are read up to its last sample off zero, so the padding enters
+// none of them and the take comes back as it would alone.
+desqueak.tail = ({ sampleRate: fs, params }) => reach(fs, { squeak: params.squeak[0], pick: params.pick[0], amp: params.amp[0] }) / fs
 desqueak.params = {
 	squeak: { type: 'number', min: -40, max: 0, default: -30, unit: 'dB' },   // the most a squeak goes down; 0 leaves squeaks
 	pick:   { type: 'number', min: -24, max: 0, default: 0, unit: 'dB' },     // the most a pick's attack goes down; 0 off

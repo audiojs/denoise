@@ -36,10 +36,11 @@
 // found, wind is held 1 s, through the words, whose low end hides it; the gain comes in within a frame and goes out
 // over 0.2 s. With no wind the removal is zero: the output is the input, sample for sample, N − 1 samples later.
 
-import { stftBatch, stftStream } from '@audio/stft'
+import { stftBatch, stftStream, magnitude } from '@audio/stft'
 import { ifft } from 'fourier-transform'
 
-const writer = s => chunk => chunk ? s.write(chunk) : s.flush()
+// write(chunk, out, length) and write(null, out) put the samples into out and return their count: nothing allocated a call
+const writer = s => (chunk, out, length) => chunk ? s.write(chunk, out, length) : s.flush(out)
 
 // the power of two nearest 85 ms: 4096 at 44.1 and 48 kHz, 2048 at 22.05 and 32, 1024 at 16
 export const frame = fs => 2 ** Math.round(Math.log2(0.085 * fs))
@@ -62,10 +63,11 @@ function framing(opts) {
 }
 
 /** Batch: takes the wind out of `data` in place and returns it. Stream: `dewind(opts)` returns write(chunk) → the
- *  samples done so far (N − 1 behind), write() → the rest. */
+ *  samples done so far (N − 1 behind), write() → the rest; write(chunk, out) and write(null, out) put them into out and
+ *  return how many. */
 export default function dewind(dataOrOpts, opts) {
   if (dataOrOpts instanceof Float32Array || dataOrOpts instanceof Float64Array) {
-    let data = dataOrOpts, o = framing(opts || {}), r = stftBatch(data, removal(o), o)
+    let data = dataOrOpts, o = framing(opts || {}), r = stftBatch(data, complexOf(removal(o), o.frameSize >> 1), { ...o, complex: true })
     for (let i = 0; i < data.length; i++) data[i] -= r[i]
     return data
   }
@@ -77,22 +79,48 @@ export default function dewind(dataOrOpts, opts) {
  *  (`frameSize`, `hopSize` a quarter of it); the output is the input less its overlap-add. One per channel. */
 export const processor = opts => removal(framing(opts || {}))
 
-// output = input − removal, the input held until its removal is done; `cutoff`, `attenuation` read from `live` per frame
+// output = input − removal, the input held until its removal is done; `cutoff`, `attenuation` read from `live` per frame.
+// The input held is at most a frame less a sample plus a chunk: made for chunks up to `maxChunk` (frameSize by default),
+// grown once by a longer one. With `out` the removal is written there and taken from the input in place
 function stream(o, live) {
-  let s = stftStream(removal(o, live), o), buf = new Float32Array(o.frameSize * 2), len = 0
+  let s = stftStream(complexOf(removal(o, live), o.frameSize >> 1), { ...o, complex: true }), buf = new Float32Array(o.frameSize + Math.max(o.frameSize, o.maxChunk || 0)), len = 0
   let take = r => {
     let y = new Float32Array(r.length)
     for (let i = 0; i < r.length; i++) y[i] = buf[i] - r[i]
     buf.copyWithin(0, r.length, len); len -= r.length
     return y
   }
+  let into = (out, n) => {
+    for (let i = 0; i < n; i++) out[i] = buf[i] - out[i]
+    buf.copyWithin(0, n, len); len -= n
+    return n
+  }
   return {
-    write(chunk) {
-      if (len + chunk.length > buf.length) { let b = new Float32Array(2 * (len + chunk.length)); b.set(buf.subarray(0, len)); buf = b }
-      buf.set(chunk, len); len += chunk.length
-      return take(s.write(chunk))
+    write(chunk, out, length) {
+      let L = length ?? chunk.length
+      if (len + L > buf.length) { let b = new Float32Array(2 * (len + L)); b.set(buf.subarray(0, len)); buf = b }
+      if (L === chunk.length) buf.set(chunk, len)
+      else for (let i = 0; i < L; i++) buf[len + i] = chunk[i]   // a loop: a subarray to set from is an allocation
+      len += L
+      return out == null ? take(s.write(chunk, null, L)) : into(out, s.write(chunk, out, L))
     },
-    flush: () => take(s.flush())
+    flush: out => out == null ? take(s.flush()) : into(out, s.flush(out))
+  }
+}
+
+// The frame process as @audio/stft's complex one (`complex: true`): run on |X| (`magnitude`, the polar form's mag to the
+// bit), its magnitudes over |X| are a real gain per bin, applied to re and im, so the polar round trip (atan2 a bin
+// analysing, cos and sin a bin resynthesizing) is gone. A bin where |X| is 0 takes its angle as the polar form does
+function complexOf(process, half) {
+  let m = new Float64Array(half + 1), g = new Float64Array(half + 1), ph = new Float64Array(half + 1)
+  return (re, im) => {
+    magnitude(re, im, m)
+    g.set(m)
+    let r = process(g, ph).mag
+    for (let k = 0; k <= half; k++) {
+      if (m[k] > 0) { let s = r[k] / m[k]; re[k] *= s; im[k] *= s }
+      else { let a = Math.atan2(im[k], re[k]); re[k] = r[k] * Math.cos(a); im[k] = r[k] * Math.sin(a) }
+    }
   }
 }
 

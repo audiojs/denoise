@@ -12,12 +12,14 @@
 //
 // Batch:   specsub(data, { profile })  → Float32Array
 // Stream:  let write = specsub({ profile }); write(chunk1); write(chunk2); write()
+//          real time: specsub({ maxChunk }); n = write(chunk, out) each block (out the samples now final, n of them)
 
-import { stftBatch, stftStream } from '@audio/stft'
+import { stftBatch, stftStream, magnitude } from '@audio/stft'
 import { minStats, noiseProfile } from '@audio/noise-estimate'
 
-// Wrap { write, flush } into a single callable (inlined convention).
-const writer = s => chunk => chunk ? s.write(chunk) : s.flush()
+// Wrap { write, flush } into a single callable (inlined convention). write(chunk, out, length) and write(null, out) put the
+// samples into out and return their count (@audio/stft's real-time form): nothing allocated a call
+const writer = s => (chunk, out, length) => chunk ? s.write(chunk, out, length) : s.flush(out)
 
 // The analysis frame: the power of two nearest 32 ms, the frame of the minimum statistics it tracks noise with
 // (Martin 2001, as VOICEBOX's v_estnoisem frames it: 16 ms steps, two per frame): 512 at 16 and 22.05 kHz, 1024 at
@@ -35,7 +37,7 @@ export default function specsub(dataOrOpts, opts) {
     return run(dataOrOpts, framing(opts || {}))
   }
   let live = dataOrOpts || {}, o = framing(live)
-  return writer(stftStream(makeProcess(o, live), o))
+  return writer(stftStream(complexOf(makeProcess(o, live), o.frameSize >> 1), { ...o, complex: true }))
 }
 
 /** The gain as a frame process, (mag, phase) → { mag, phase }, for a host that runs its own STFT (@audio/stft's
@@ -54,7 +56,23 @@ function run(data, opts) {
       : Math.min(data.length, from + N * 4))
     profile = noiseProfile(data, { from, to, frameSize: N, hopSize: hop })
   }
-  return stftBatch(data, makeProcess({ ...opts, profile }), opts)
+  return stftBatch(data, complexOf(makeProcess({ ...opts, profile }), N >> 1), { ...opts, complex: true })
+}
+
+// The frame process as @audio/stft's complex one (`complex: true`): run on |X| (`magnitude`, the polar form's mag to the
+// bit), its magnitudes over |X| are a real gain per bin, applied to re and im, so the polar round trip (atan2 a bin
+// analysing, cos and sin a bin resynthesizing) is gone. A bin where |X| is 0 takes its angle as the polar form does
+function complexOf(process, half) {
+  let m = new Float64Array(half + 1), g = new Float64Array(half + 1), ph = new Float64Array(half + 1)
+  return (re, im) => {
+    magnitude(re, im, m)
+    g.set(m)
+    let r = process(g, ph).mag
+    for (let k = 0; k <= half; k++) {
+      if (m[k] > 0) { let s = r[k] / m[k]; re[k] *= s; im[k] *= s }
+      else { let a = Math.atan2(im[k], re[k]); re[k] = r[k] * Math.cos(a); im[k] = r[k] * Math.sin(a) }
+    }
+  }
 }
 
 // `alpha` and `beta` are read from `live` each frame: the stream's options object, so a caller changing them between

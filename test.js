@@ -2790,3 +2790,71 @@ test('specsub, wiener, omlsa, dewind: the frame process allocates nothing a fram
     ok(bytes <= 3 / 64 * hop / 8, `${name} ${JSON.stringify(set)}: ${+bytes.toPrecision(3)} bytes a frame (at most ${3 / 64 * hop / 8}, the validator's line at a hop of ${hop})`)
   }
 })
+
+test('specsub, wiener, omlsa, dewind: the stream writer\'s write(chunk, out) and write(null, out) give write(chunk)\'s and write()\'s samples, call for call, bit for bit, into a roomy out and a short one', async () => {
+  let { default: dewindKernel } = await import('@audio/denoise-dewind')
+  let x = add(lena.slice(0, 2 * fs), noise(2 * fs, 0.05)), f = Math.fround, r = 7
+  let rnd = () => (r = (r * 1664525 + 1013904223) >>> 0) / 4294967296
+  let cases = [['specsub', specsubKernel, { fs }], ['specsub', specsubKernel, { fs, alpha: 2, maxChunk: 4096 }], ['wiener', wienerKernel, { fs, rule: 'wiener' }], ['omlsa', omlsaKernel, { fs, maxChunk: 4096 }],
+    ['omlsa', omlsaKernel, { fs, threshold: 4 }], ['dewind', dewindKernel, { fs }], ['dewind', dewindKernel, { fs, cutoff: 2000, maxChunk: 4096 }]]
+  for (let [name, kernel, opts] of cases) for (let big of [1, 4096]) {
+    let cuts = [], p = 0
+    while (p < x.length) { let k = Math.min(x.length - p, 1 + Math.floor(rnd() * big)); cuts.push(k); p += k }
+    // the reference: write(chunk) and write(), each call's array; then the new form, its count and samples per call
+    let a = kernel({ ...opts }), b = kernel({ ...opts }), c = kernel({ ...opts }), N = (name === 'dewind' ? 4 : 1) * 2048, out = new Float32Array(4096 + N), q = 0, calls = 0, bad = 0
+    let shortOut = new Float32Array(97), joined = [], ref = []
+    for (let k of cuts) {
+      let y = a(x.subarray(q, q + k)), n = b(x.subarray(q, q + k), out)
+      calls++; ref.push(...y)
+      if (n !== y.length || y.some((v, i) => !Object.is(v, out[i]))) bad++
+      let m = c(x.subarray(q, q + k), shortOut); joined.push(...shortOut.subarray(0, m))
+      q += k
+    }
+    let y = a(), n = b(null, out)
+    calls++; ref.push(...y)
+    if (n !== y.length || y.some((v, i) => !Object.is(v, out[i]))) bad++
+    for (let m; (m = c(null, shortOut)) > 0; ) joined.push(...shortOut.subarray(0, m))
+    ok(bad === 0 && joined.length === ref.length && joined.every((v, i) => Object.is(v, ref[i])), `${name} ${JSON.stringify(opts)}, chunks 1 to ${big}: ${calls - bad} of ${calls} calls the same count and samples; into 97 at a time ${joined.length} of ${ref.length} samples, the same`)
+  }
+})
+
+// The manifests' process under the contract validator's readings and measure (@audio/compile tools/verify.js: allocRun,
+// `taken`): in a child Node with its flags, a manifest a child, stereo at 48 kHz, maxBlockSize 128; at rest in blocks of 8
+// frames of noise (σ 0.15), every param moving every block, blocks of 1 to 128 frames, the noise 12 dB louder, then a second
+// instance at rest and moving. Each reading warms 2^14 blocks and counts two runs of 2^15; it fails where both runs take in
+// over 6144 bytes (3/64 of a byte a block over the validator's 2^17), the young generation, the stores of typed arrays and
+// the old generation: one number a frame is 8192 bytes a run at dewind's 1024 hop
+test('specsub, wiener, omlsa, dewind allocate nothing in process: at rest, every param moving, blocks of 1 to 128, loud, a second instance', { skip: !(await import('node:v8')).default.GCProfiler && 'no v8.GCProfiler to count with (Node 18.15 and later have it)' }, async () => {
+  let { execFileSync } = await import('node:child_process')
+  let child = `
+    import v8 from 'node:v8'
+    let minor = { type: 'minor' }, sp = { young: ['new_space', 'new_large_object_space'], old: ['old_space', 'large_object_space'] }
+    let used = (g, w) => g.heapSpaceStatistics.reduce((a, s) => sp[w].includes(s.spaceName) ? a + s.spaceUsedSize : a, 0)
+    let taken = f => {
+      let p = new v8.GCProfiler(), t = 0
+      p.start(); gc(minor); f(); gc(minor)
+      let g = p.stop().statistics
+      for (let i = 1; i < g.length; i++) { let a = g[i - 1].afterGC, b = g[i].beforeGC; t += used(b, 'young') - used(a, 'young') + Math.max(0, used(b, 'old') - used(a, 'old')) + b.heapStatistics.externalMemory - a.heapStatistics.externalMemory }
+      return t
+    }
+    let [url, name] = JSON.parse(process.argv[1]), m = (await import(url))[name], sr = 48000, R = 64, s = 999
+    let given = () => Object.fromEntries(Object.entries(m.params).map(([k, p]) => [k, p.type === 'number' ? Float32Array.of(p.default) : p.default]))
+    let u = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296
+    let noise = (n, g) => Float32Array.from({ length: n }, () => 0.15 * g * Math.sqrt(-2 * Math.log(1 - u())) * Math.cos(2 * Math.PI * u()))
+    let sizes = Array.from({ length: R }, (_, k) => k === 0 ? 1 : k === 1 ? 128 : 1 + Math.floor(128 * u() ** 3))
+    let slots = (g, size) => { let src = [noise(128 * R, g), noise(128 * R, g)], outs = [new Float32Array(128), new Float32Array(128)]; return Array.from({ length: R }, (_, k) => ({ ins: [src.map(c => c.subarray(k * 128, k * 128 + size(k)))], outs: [outs.map(c => c.subarray(0, size(k)))] })) }
+    let still = Array(R).fill(given()), keys = Object.keys(m.params)
+    let moves = Array.from({ length: R }, (_, k) => Object.fromEntries(keys.map((n, i) => { let p = m.params[n]; return [n, p.type === 'number' ? Float32Array.of(p.min + (p.max - p.min) * ((0.5 + 0.618034 * k + 0.1 * i) % 1)) : p.values[k % p.values.length]] })))
+    let eight = slots(1, () => 8), varied = slots(1, k => sizes[k]), loud = slots(4, () => 8)
+    let make = () => m({ sampleRate: sr, maxBlockSize: 128, maxChannels: 8, params: given() })
+    let read = (proc, sl, live) => { let f = n => { for (let i = 0; i < n; i++) { let k = i & 63; proc(sl[k].ins, sl[k].outs, live[k]) } }; f(1 << 13); f(1 << 13); return Math.min(taken(() => f(1 << 15)), taken(() => f(1 << 15))) }
+    let a = make(), out = {}
+    out.fixed = read(a, eight, still); out.moving = read(a, eight, moves); out.sizes = read(a, varied, still); out.loud = read(a, loud, still)
+    let b = make()
+    out.second = read(b, eight, still); out['second moving'] = read(b, eight, moves)
+    console.log(JSON.stringify(out))`
+  for (let [pkg, name] of [['spectral', 'specsub'], ['wiener', 'wiener'], ['omlsa', 'omlsa'], ['dewind', 'dewind']]) {
+    let r = JSON.parse(execFileSync(process.execPath, ['--expose-gc', '--no-concurrent-recompilation', '--no-allocation-site-pretenuring', '--no-concurrent-array-buffer-sweeping', '--input-type=module', '-e', child, JSON.stringify([import.meta.resolve(`@audio/denoise-${pkg}/audio`), name])], { encoding: 'utf8' }))
+    ok(Object.values(r).every(b => b <= 6144), `${name}: ${Object.entries(r).map(([k, b]) => `${k} ${b}`).join(', ')} bytes over 2^15 blocks (at most 6144)`)
+  }
+})

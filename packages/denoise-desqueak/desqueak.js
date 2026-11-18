@@ -23,12 +23,31 @@ import dehum from '@audio/denoise-dehum'
 
 /** The squeak part's analysis frame at a rate: the power of two nearest 23 ms (1024 at 44.1 and 48 kHz). */
 export const frame = fs => 2 ** Math.max(8, Math.round(Math.log2(0.0232 * fs)))
+// the pick part's: the power of two nearest 5.8 ms (256 at 44.1 and 48 kHz)
+const pickFrame = fs => 2 ** Math.max(6, Math.round(Math.log2(0.0058 * fs)))
 
+/** The most samples past the take's last sample off zero that the output moves, at a rate and setting. The amp part's
+ * frame less a sample: its last frame starts on the take's last sample at the latest. The squeak part's region mask: it
+ * ends half a hop past its last frame's centre, 5/8 of the frame past that frame's start, and fades over 2 ms. The pick
+ * part's edit ends by `attack` and 7/8 of its frame past the click, which lies 35 ms before the last frame it reads: past
+ * the take only for an attack over about 27 ms. Each part reads the take alone, so none edits what another moved past
+ * it: the largest of the three, not their sum. */
+export function reach(fs, { squeak = -30, pick = 0, amp = 0, attack = 0.01 } = {}) {
+  let N = frame(fs), P = pickFrame(fs), fade = Math.max(1, Math.round(0.002 * fs)), ms = Math.round(0.001 * fs)
+  return Math.max(0,
+    amp < 0 ? heldFrame(fs, true) - 1 : 0,
+    squeak < 0 ? N / 2 + N / 8 + fade - 2 : 0,
+    pick < 0 ? P / 2 + 3 * P / 8 + fade + Math.round(attack * fs) - 35 * ms - 2 : 0)
+}
+
+// The take ends at its last sample off zero. What follows, silence the take ends in or a host's padding for the tail,
+// enters nothing the parts read, so a take padded comes back as it would alone; the parts' edits still ring into it
 export default function desqueak(data, opts = {}) {
-  let fs = opts.fs || 44100, squeak = opts.squeak ?? -30, pick = opts.pick ?? 0, amp = opts.amp ?? 0
-  if (amp < 0) hush(data, fs, amp)
-  if (squeak < 0) squeaks(data, fs, squeak)
-  if (pick < 0) picks(data, fs, pick, opts.attack ?? 0.01)
+  let fs = opts.fs || 44100, squeak = opts.squeak ?? -30, pick = opts.pick ?? 0, amp = opts.amp ?? 0, n = data.length
+  while (n > 0 && data[n - 1] === 0) n--
+  if (amp < 0) hush(data, fs, amp, n)
+  if (squeak < 0) squeaks(data, fs, squeak, n)
+  if (pick < 0) picks(data, fs, pick, opts.attack ?? 0.01, n)
   return data
 }
 
@@ -39,11 +58,12 @@ const band = (x, fs, lo) => { let y = Float64Array.from(x); for (let c of [highp
 
 // ---- squeak
 
-function squeaks(x, fs, squeak) {
-  let N = frame(fs), hop = N >> 2
-  if (x.length < 4 * N) return
-  let S = analyse(x, N, hop, fs), { regions, harmonic } = detect(S, fs)
-  regions = regions.filter(r => sustained(x, r, S, fs))
+// read over the take's first n samples, edited over all of x
+function squeaks(x, fs, squeak, n) {
+  let N = frame(fs), hop = N >> 2, take = x.subarray(0, n)
+  if (n < 4 * N) return
+  let S = analyse(take, N, hop, fs), { regions, harmonic } = detect(S, fs)
+  regions = regions.filter(r => sustained(take, r, S, fs))
   if (regions.length) apply(x, S, gains(S, regions, fs, squeak, harmonic), regions)
 }
 
@@ -244,13 +264,14 @@ function gains(S, regions, fs, squeak, harmonic) {
 
 // x −= m·ISTFT((1 − G)·X): m is 1 over each region's own span (half a hop before its first frame's centre to half a hop
 // after its last's) and 0 elsewhere, with 2 ms raised-cosine edges, for a frame reaches half its length past its centre,
-// into the note that often follows a squeak. Elsewhere the take stays sample for sample.
+// into the note that often follows a squeak. Elsewhere the take stays sample for sample. X is read from the take (S.x),
+// the change written over all of x, past the take's end too
 function apply(x, S, G, regions) {
-  let { w, K, N, hop, fs } = S, n = x.length, f = new Float64Array(N), corr = new Float64Array(n), R = new Float64Array(K), I = new Float64Array(K)
+  let { w, K, N, hop, fs, x: take } = S, n = x.length, f = new Float64Array(N), corr = new Float64Array(n), R = new Float64Array(K), I = new Float64Array(K)
   let ola = 0; for (let i = 0; i < N; i += hop) ola += w[i] * w[i]      // Σw² over the frames on a sample: the same everywhere at hop N/4
   for (let [t, g] of G) {
     let p = t * hop - (N - hop)
-    for (let i = 0; i < N; i++) { let j = p + i; f[i] = j >= 0 && j < n ? x[j] * w[i] : 0 }
+    for (let i = 0; i < N; i++) { let j = p + i; f[i] = j >= 0 && j < take.length ? take[j] * w[i] : 0 }
     let [re, im] = fft(f)
     for (let k = 0; k < K; k++) R[k] = re[k] * (1 - g[k]), I[k] = im[k] * (1 - g[k])
     let y = ifft(R, I)
@@ -274,8 +295,8 @@ function apply(x, S, G, regions) {
 // 20 ms, within 50 dB of the take's loudest milliseconds (99th percentile). Its attack, 2 ms before it to `attack` after,
 // is taken down on frames of 5.8 ms (the power of two nearest), each bin over 1.5 kHz to the mean level it holds 15–35 ms
 // on (the note ringing, the click gone), `pick` dB at most. A note that rings on keeps its partials.
-function picks(x, fs, pick, attack) {
-  let ms = Math.round(0.001 * fs), y = band(x, fs, 2000), m = Math.floor(x.length / ms), e = new Float64Array(m)
+function picks(x, fs, pick, attack, n) {
+  let take = x.subarray(0, n), ms = Math.round(0.001 * fs), y = band(take, fs, 2000), m = Math.floor(n / ms), e = new Float64Array(m)
   for (let i = 0; i < m; i++) for (let j = i * ms; j < i * ms + ms; j++) e[i] += y[j] * y[j]
   let top = pct(Array.from(e).filter(v => v > 0), 0.99) || 0, clicks = []
   for (let i = 40; i < m - 5; i++) {
@@ -290,7 +311,7 @@ function picks(x, fs, pick, attack) {
     clicks.push(i)
   }
   if (!clicks.length) return
-  let N = 2 ** Math.max(6, Math.round(Math.log2(0.0058 * fs))), hop = N >> 2, S = analyse(x, N, hop, fs), K = S.K, k0 = Math.round(1500 / fs * N)
+  let N = pickFrame(fs), hop = N >> 2, S = analyse(take, N, hop, fs), K = S.K, k0 = Math.round(1500 / fs * N)
   let fr = smp => Math.round((smp + N - hop - N / 2) / hop), G = new Map(), gmin = 10 ** (pick / 20), regions = []
   for (let i of clicks) {
     let c = i * ms, a = fr(c - 2 * ms), b = fr(c + Math.round(attack * fs)), r0 = fr(c + 15 * ms), r1 = fr(c + 35 * ms)
@@ -334,11 +355,14 @@ function picks(x, fs, pick, attack) {
 // tuning takes the guitar's SDR under hiss, buzz and both went 47.2, 44.3, 44.2 → 50.1, 47.6, 46.6 dB, the noise taken
 // where it is heard 14.7, 11.6, 12.6 → 13.3, 10.0, 10.7 dB. With the lines subtracted first, under buzz and both
 // 47.6, 46.6 → 54.0, 47.2 dB, the buzz taken where heard 10.0 → 23.8 dB.
-function hush(x, fs, gMin) {
-  dehum(x, { fs, steady: true })
+// The lines and the print are read from the take's first n samples, the gain run over all of x: a frame's change rings past
+// the take's end
+function hush(x, fs, gMin, n) {
+  let take = x.subarray(0, n)
+  dehum(take, { fs, steady: true })
   let N = heldFrame(fs, true), hop = N >> 2, K = (N >> 1) + 1, lo = Math.round(100 / fs * N), hi = Math.min(K - 1, Math.round(10000 / fs * N)), level = [], spec = []
-  if (x.length < 2 * N) return
-  stftAnalyse(x, mag => {
+  if (n < 2 * N) return
+  stftAnalyse(take, mag => {
     let e = 0, p = new Float32Array(K)
     for (let k = 0; k < K; k++) p[k] = mag[k] * mag[k]
     for (let k = lo; k <= hi; k++) e += p[k]

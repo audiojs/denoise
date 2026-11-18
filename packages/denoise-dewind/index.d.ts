@@ -7,16 +7,27 @@ export interface DewindOptions {
   attenuation?: number
   /** sample rate, default 44100 */
   fs?: number
+  /** the stream form: the longest chunk a write takes without growing the stream's memory, default frameSize */
+  maxChunk?: number
   /** STFT frame, default `frame(fs)`: the power of two nearest 85 ms */
   frameSize?: number
   /** OLA hop, default frameSize/4 */
   hopSize?: number
 }
 
+/** The stream form's writer: write(chunk) → the samples now final, write() → the rest. write(chunk, out, length) and
+ *  write(null, out) put them into `out` from its start, as many as it holds (the rest waits for the next call), and
+ *  return how many: with `maxChunk` the longest chunk, nothing is allocated a call. `length`: the samples taken from the
+ *  chunk's start. */
+export interface Writer {
+  (chunk?: Float32Array): Float32Array
+  (chunk: Float32Array | null | undefined, out: Float32Array, length?: number): number
+}
+
 /** Batch: takes the wind out of `data` in place and returns the same buffer. */
 export default function dewind<T extends Float32Array | Float64Array>(data: T, options?: DewindOptions): T
 /** Stream: write(chunk) returns the samples done so far, frameSize − 1 behind the input; write() returns the rest. */
-export default function dewind(options?: DewindOptions): (chunk?: Float32Array) => Float32Array
+export default function dewind(options?: DewindOptions): Writer
 
 /** The STFT frame at a rate: the power of two nearest 85 ms (4096 at 44.1 and 48 kHz). */
 export function frame(fs: number): number

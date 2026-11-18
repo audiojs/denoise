@@ -24,7 +24,7 @@ export declare const desqueak: {
   (ctx: Ctx): Process
   channels: "any"
   streaming: false
-  tail: 0
+  tail: (at: { sampleRate: number, params: Live, buffers: {} }) => number
   params: {
     /** -40..0 dB (default -30) */
     "squeak": { type: "number", default: -30 }

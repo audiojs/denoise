@@ -12,20 +12,25 @@
 // output sample j aligned to input sample j. A per-channel FIFO primed with frame − 1 zeros
 // turns the bursts into the equal-frames-in/out shape §process requires: it never runs dry,
 // so the delay is exactly frame − 1 under any block size (pinned in test.js).
+//
+// The stream (`maxChunk`), each channel's array for a write's samples and the FIFO are made in the factory for blocks of
+// up to maxBlockSize, and a write puts its samples into that array (write(chunk, out), @audio/stft ≥ 2.1): process
+// allocates nothing.
 
 import specsub_, { frame } from './specsub.js'
 
 // the frame follows the rate (specsub.js `frame`: the power of two nearest 32 ms), so the latency is declared per rate
-function makeFifo(L) { return { buf: new Float32Array(1 << 14), len: L } }   // primed with zeros
-function fifoPush(f, chunk) {
-	if (!chunk.length) return
-	let need = f.len + chunk.length
-	if (need > f.buf.length) {
-		let nb = new Float32Array(Math.max(need * 2, f.buf.length * 2))
-		nb.set(f.buf.subarray(0, f.len)); f.buf = nb
-	}
-	f.buf.set(chunk, f.len); f.len += chunk.length
+// The FIFO holds at most the frame − 1 it is primed with and a block, made for that; a block over maxBlockSize grows it
+function makeFifo(L, B) { return { buf: new Float32Array(L + B), len: L } }   // primed with zeros
+// the n samples a write put into src
+function fifoPush(f, src, n) {
+	if (f.len + n > f.buf.length) { let nb = new Float32Array(2 * (f.len + n)); nb.set(f.buf.subarray(0, f.len)); f.buf = nb }
+	for (let i = 0; i < n; i++) f.buf[f.len + i] = src[i]
+	f.len += n
 }
+// what a write makes final, at most the block and a hop less one (@audio/stft's bound): an array for it per channel, made
+// for maxBlockSize, grown by a longer block (sized short, the rest would wait and the latency shift)
+function room(ch, n, hop) { if (n + hop - 1 > ch.tmp.length) ch.tmp = new Float32Array(n + hop - 1) }
 // a loop, where out.set(f.buf.subarray(...)) made a view a call
 function fifoPull(f, out) {
 	let n = out.length, m = Math.min(n, f.len), buf = f.buf
@@ -35,10 +40,10 @@ function fifoPull(f, out) {
 }
 
 export const specsub = (ctx) => {
-	const chans = [], N = frame(ctx.sampleRate)
+	const chans = [], N = frame(ctx.sampleRate), hop = N >> 2, B = ctx.maxBlockSize
 	for (let c = 0, C = ctx.maxChannels ?? 8; c < C; c++) {
-		const opts = { alpha: ctx.params.alpha[0], beta: ctx.params.beta[0], frameSize: N, hopSize: N >> 2, fs: ctx.sampleRate }   // alpha 0: Berouti's α(SNR)
-		chans.push({ opts, write: specsub_(opts), fifo: makeFifo(N - 1) })
+		const opts = { alpha: ctx.params.alpha[0], beta: ctx.params.beta[0], frameSize: N, hopSize: hop, fs: ctx.sampleRate, maxChunk: B }   // alpha 0: Berouti's α(SNR)
+		chans.push({ opts, write: specsub_(opts), fifo: makeFifo(N - 1, B), tmp: new Float32Array(B + hop - 1) })
 	}
 	return (inputs, outputs, params) => {
 		const inp = inputs[0], out = outputs[0]
@@ -47,7 +52,8 @@ export const specsub = (ctx) => {
 			const ch = chans[c]
 			ch.opts.alpha = params.alpha[0]
 			ch.opts.beta = params.beta[0]
-			fifoPush(ch.fifo, ch.write(inp[c]))
+			room(ch, inp[c].length, hop)
+			fifoPush(ch.fifo, ch.tmp, ch.write(inp[c], ch.tmp))
 			fifoPull(ch.fifo, out[c])
 		}
 	}

@@ -24,12 +24,23 @@ export interface WienerOptions {
   hopSize?: number
   /** sample rate, default 44100 */
   fs?: number
+  /** the stream form: the longest chunk a write takes without growing the stream's memory, default frameSize */
+  maxChunk?: number
+}
+
+/** The stream form's writer: write(chunk) → the samples now final, write() → the rest. write(chunk, out, length) and
+ *  write(null, out) put them into `out` from its start, as many as it holds (the rest waits for the next call), and
+ *  return how many: with `maxChunk` the longest chunk, nothing is allocated a call. `length`: the samples taken from the
+ *  chunk's start. */
+export interface Writer {
+  (chunk?: Float32Array): Float32Array
+  (chunk: Float32Array | null | undefined, out: Float32Array, length?: number): number
 }
 
 /** Process a whole buffer. Returns a new Float32Array of the same length. */
 export default function wiener(data: Float32Array | Float64Array, options?: WienerOptions): Float32Array
 /** Streaming form: returns a writer — call with chunks, call with no argument to flush. */
-export default function wiener(options?: WienerOptions): (chunk?: Float32Array) => Float32Array
+export default function wiener(options?: WienerOptions): Writer
 /** The default frame at a rate: the power of two nearest 32 ms (512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48). */
 export function frame(fs: number): number
 /** The gain as an @audio/stft frame process, for a host that runs its own frames (Hann, hop frameSize/4). It keeps state

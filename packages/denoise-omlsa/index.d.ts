@@ -23,6 +23,8 @@ export interface OmlsaOptions {
   hopSize?: number
   /** sample rate, default 44100 */
   fs?: number
+  /** the stream form: the longest chunk a write takes without growing the stream's memory, default frameSize */
+  maxChunk?: number
   /** IMCRA options (see @audio/noise-estimate `imcra`); `partials: false` lets the tracker learn held notes as noise, as before 0.5 */
   estimator?: Record<string, number | boolean | object>
   /** dB the noise is read louder (RX's Threshold): a held profile raised by it, the tracked estimate's bias factor β
@@ -40,10 +42,19 @@ export interface OmlsaOptions {
   profileTo?: number
 }
 
+/** The stream form's writer: write(chunk) → the samples now final, write() → the rest. write(chunk, out, length) and
+ *  write(null, out) put them into `out` from its start, as many as it holds (the rest waits for the next call), and
+ *  return how many: with `maxChunk` the longest chunk, nothing is allocated a call. `length`: the samples taken from the
+ *  chunk's start. */
+export interface Writer {
+  (chunk?: Float32Array): Float32Array
+  (chunk: Float32Array | null | undefined, out: Float32Array, length?: number): number
+}
+
 /** Process a whole buffer. Returns a new Float32Array of the same length. */
 export default function omlsa(data: Float32Array | Float64Array, options?: OmlsaOptions): Float32Array
 /** Streaming form: returns a writer — call with chunks, call with no argument to flush. */
-export default function omlsa(options?: OmlsaOptions): (chunk?: Float32Array) => Float32Array
+export default function omlsa(options?: OmlsaOptions): Writer
 /** The default frame at a rate. Tracking: the power of two nearest 32 ms (512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at
  *  48). `held` (a known noise): the power of two at or above 32 ms (512 at 16 kHz, 1024 at 22.05, 2048 at 44.1 and 48). */
 export function frame(fs: number, held?: boolean): number

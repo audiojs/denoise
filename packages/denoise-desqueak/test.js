@@ -4,7 +4,7 @@
 // GuitarSet against iZotope RX 12; here, what must hold whatever the tuning.
 
 import test, { ok, is } from 'tst'
-import desqueak, { frame } from './desqueak.js'
+import desqueak, { frame, reach } from './desqueak.js'
 
 const fs = 44100
 const lcg = seed => { let s = seed >>> 0; return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296 - 0.5 }
@@ -125,7 +125,8 @@ test('desqueak: short input, digital silence, Float64Array', () => {
 
 // A host renders a whole-signal processor's tail by padding its input with silence, one call (audio does). The amp
 // part's noise print and its held buzz lines are read from the take, so a tail declared while they read the padding (a
-// frame less a sample, 2047 frames) moved 176304 of this take's 176400 samples, by up to 2.9·10⁻²
+// frame less a sample, 2047 frames) moved 176304 of this take's 176400 samples, by up to 2.9·10⁻²; read up to the
+// take's last sample off zero, they move none
 test('desqueak: a host that renders the manifest\'s tail gives the take as the kernel does', async () => {
   let { desqueak: atom } = await import('./audio.js'), x = new Float32Array(4 * fs), r = lcg(6)
   for (let [at, f0] of [[1, 110], [1.8, 165], [2.6, 220], [3.2, 147]]) pluck(x, at, f0, 0.2, r)
@@ -138,4 +139,25 @@ test('desqueak: a host that renders the manifest\'s tail gives the take as the k
   atom({ sampleRate: fs, maxBlockSize: S + T, maxChannels: 1, params })([[a]], [[o]], params)
   for (let i = 0; i < S; i++) moved += !Object.is(o[i], y[i])
   is(moved, 0, `padded by the tail, ${T} frames: the take's samples as the kernel gives them`)
+})
+
+// The tail as the contract's validator reads it: from the tail on, every 64-frame window 60 dB under the input's level (a
+// burst's RMS, a held level's, an impulse's over its window, a held tone's), and the tail within twice the longest ring
+// where that exceeds 128 frames. Past reach() the output is the input's silence, exactly
+test('desqueak: the manifest\'s tail covers what each part moves past the take\'s end, the largest of their reaches', async () => {
+  let { desqueak: atom } = await import('./audio.js'), rms = (x, a, b) => Math.sqrt(E(x, a, b) / (b - a))
+  for (let sr of [16000, 44100, 96000]) for (let set of [{ amp: -40 }, { squeak: -40 }, { squeak: 0, pick: -24 }]) {
+    let opts = { squeak: set.squeak ?? -30, pick: set.pick ?? 0, amp: set.amp ?? 0 }, params = { squeak: Float32Array.of(opts.squeak), pick: Float32Array.of(opts.pick), amp: Float32Array.of(opts.amp) }
+    let T = Math.round(atom.tail({ sampleRate: sr, params }) * sr), R = reach(sr, opts), S = Math.round(0.25 * sr), n = S + Math.max(128, T) + Math.round(0.25 * sr), ring = 0, r = lcg(9)
+    for (let [what, x, level] of [
+      ['burst', Float32Array.from({ length: n }, (_, i) => i < S ? 0.3 * r() : 0)], ['held level', Float32Array.from({ length: n }, (_, i) => i < S ? 0.5 : 0), 0.5],
+      ['impulse', Float32Array.from({ length: n }, (_, i) => i === S - 1 ? 1 : 0), 1 / 8], ['440 Hz', Float32Array.from({ length: n }, (_, i) => i < S ? 0.5 * Math.sin(2 * Math.PI * 440 * i / sr) : 0)]]) {
+      let out = new Float32Array(n), floor = 1e-3 * (level ?? rms(x, 0, S)), late = 0, last = S
+      atom({ sampleRate: sr, maxBlockSize: n, maxChannels: 1, params })([[x]], [[out]], params)
+      for (let i = S; i + 64 <= n; i += 64) if (rms(out, i, i + 64) > floor) { last = i + 64; if (i >= S + Math.max(128, T)) late++ }
+      ring = Math.max(ring, last - S)
+      ok(!late && out.subarray(S + R).every(v => v === 0), `${sr} Hz ${JSON.stringify(set)}, ${what}: rings ${last - S} frames, tail ${T}, the output silent from ${R} on`)
+    }
+    ok(ring <= 128 || T <= 2 * ring, `${sr} Hz ${JSON.stringify(set)}: tail ${T} within twice the longest ring, ${ring}`)
+  }
 })
