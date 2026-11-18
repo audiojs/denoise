@@ -57,8 +57,9 @@ const TAU = 1e-3, K = 10, ITERS = 8, TOL = 0.01, G = 10, KAPPA = 6, PROM = 4
 // its inverse at the loudest peak, the inverse's steepest slope
 const P = 24, FLOOR = 1e-7, WS = 48, LR = 0.02, BEND = 2, SLOPE = 40
 // a sparse block's spectral flatness when it is white Gaussian noise, e^(−γ) (each line's power exponential, so
-// E ln p = ln E p − γ), and its standard deviation times √(the samples the block holds), measured
-const WHITE = Math.exp(-0.5772156649015329), SPREAD = 0.64
+// E ln p = ln E p − γ), and its standard deviation times √(the samples the block holds), measured; the share of its
+// lines a white block's k starts at
+const WHITE = Math.exp(-0.5772156649015329), SPREAD = 0.64, START = 0.3
 // the rebuilds the blend weighs: the AR one, and the sparse one over blocks of 93 and of 186 ms
 const REBUILDS = ['ar', 0.093, 0.186]
 
@@ -204,25 +205,23 @@ function simplex(K, g) {
 // 1 per iteration up to 50, then by 2 % (the survey: by 1 every 2): 8× fewer iterations, up to 1.7 dB less at 1 dB in,
 // 0.3 at 3, as good above (the survey's growth on a violin clipped to 1 dB: 0.3 dB more in 23× the time). Only blocks
 // holding a sample `want` takes, and 4 recorded (as janssen's order 2 needs), are rebuilt.
-// A block that is white noise has no lines for the threshold to keep: ADMM there meets the residual only once k passes
-// every line and the threshold is the identity (the paper's Lemma 1, p. 4), after the whole growth, 300 iterations of
-// the block's transform pair; so it is left as recorded. White: the spectral flatness of its lines' power (geometric
-// over arithmetic mean) within four of a white block's standard deviations of white Gaussian noise's, e^(−γ). Measured:
-// a white block's flatness spreads by 0.64/√s about e^(−γ), s the samples it holds (2000 blocks of white noise, 2048 to
-// 16384 samples, the take's ends cutting some: none under 3.93 deviations; hard-clipped at 1–2 σ, 1024 to 16384 samples
-// at 8–96 kHz, −3.29 to +3.52, only the low side counting for the bound); clipped speech's and chords' blocks (clipped
-// to 1–30 dB SDR) lie 15 deviations or more off at 8 kHz, 21 at 16 and 22.05 kHz, 43 at 44.1 kHz and up, the take's
-// first block, a quarter of a block on it, 7.6 at 8 kHz, 11.6 at 16, 12.9 at 22.05 and 22.5 or more from 44.1 kHz, and
-// meet the residual at 12–97 % of the lines; 217 white blocks met it only past every line. What that end of the run did
-// there: it pushed a saturated white noise's few clipped peaks outward (white noise through tanh at drive 4, 0.5.1:
-// 22.3 dB, 21.3 without it; white Gaussian noise clipped at 1–2 σ to a rail given, 0.9–1.5 dB, none without it; read
-// blind as a curve, the same noise 0.6–2.4 dB more without it), in 300 iterations a block (8192 stereo frames of a
-// uniform noise: 0.5.1 40 s, 3.6 s without it, most of that the curve's fit; 0.3 s of that clipped white noise at
-// 96 kHz, 41–66 s and 0.3–2.8 s; the seconds depend on the machine's load). The take's last block holds 1 to a quarter
-// of its samples and can read as white though it holds speech or a chord (with under 21, a flatness of 0 is within four
-// deviations); it is then left as recorded, its share of those samples, in its window's first quarter, under a sixth
-// (clipped speech and a chord at 24 lengths of 0.5–3 s: 21 of 125 last blocks at 8 kHz in blocks of 93 ms, 11 of 111
-// at 22.05 kHz in blocks of 186 ms, 0 to 5 of 111–128 at the other rates and lengths; the cost not measured)
+// A block that is white noise has no lines for the threshold to keep. Run from k = 1, its least residual stays the
+// recorded block's own until k passes 0.39–0.46 of its lines, and ADMM meets the residual only as k nears every line,
+// where the threshold is the identity (the paper's Lemma 1, p. 4); what the run gives there, a saturated white noise's
+// clipped peaks pushed outward, it makes above that. So a white block's k starts at START, 0.3 of its lines, where the
+// paper's starts at s (Algorithm 2, p. 4; s = 1 in its §5), from the block as recorded and u = 0: 62–65 passes of its
+// transform pair where k from 1 makes 230–371 (1024 to 16384 samples).
+// Its iterate is not the run from k = 1's, as a white block's depends on the run's whole path, but its SNR lands near
+// it, on either side: hard-clipped white and uniform noise at 16–96 kHz, the rail given or found, and white noise
+// through tanh, 0.07 dB under it to 0.03 over (25 takes); 300 random takes of white or uniform noise, clipped or through
+// a curve, 1.45 under to 1.21 over, 11 of them more than 0.1 under and 10 more than 0.1 over, 0.004 over on average
+// (scripts/white.js, --random 300).
+// White: the spectral flatness of its lines' power (geometric over arithmetic mean) within four of a white block's
+// standard deviations of white Gaussian noise's, e^(−γ); a white block's spreads by 0.62–0.70/√s, s the samples it
+// holds (--flatness). Clipped speech's and chords' blocks read otherwise at 8–96 kHz (test.js) and run from k = 1. The
+// take's last block holds 1 to a quarter of its samples and can read white whatever it holds (with under 21, a
+// flatness of 0 is within four deviations); it then starts at 0.3 of its lines too, its samples in its window's first
+// quarter
 // The blocks of `sec`: w samples (a power of 2), hop a = w/4, the analysis window g and the sum gs of its squares at
 // each phase of the hop
 const frames = new Map()
@@ -258,8 +257,8 @@ function spadeBlock(y, mask, fs, sec, c) {
   x.set(b); A(); ur.fill(0); ui.fill(0)
   let lg = 0, ar = 0, s = Math.min(n, c + w) - Math.max(0, c)
   for (let j = 0; j < H; j++) { let p = zr[j] * zr[j] + zi[j] * zi[j]; lg += Math.log(p), ar += p }
-  if ((Math.exp(lg / H) / (ar / H) - WHITE) * Math.sqrt(s) > -4 * SPREAD) return best
-  for (let k = 1, lo = Infinity; ; k += Math.max(1, Math.floor(k / 50))) {
+  let white = (Math.exp(lg / H) / (ar / H) - WHITE) * Math.sqrt(s) > -4 * SPREAD
+  for (let k = white ? Math.ceil(START * H) : 1, lo = Infinity; ; k += Math.max(1, Math.floor(k / 50))) {
     // z̄ = H_k(Ax + u): the k largest kept
     for (let j = 0; j < H; j++) { let r = zr[j] + ur[j], m = zi[j] + ui[j]; re[j] = r, im[j] = m, mag[j] = sel[j] = (r * r + m * m) / (j ? 1 : 4) }
     let cut = k < H ? select(sel, H - k) : -1, res = 0

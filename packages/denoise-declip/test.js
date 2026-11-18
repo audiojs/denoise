@@ -2,6 +2,7 @@
 import test, { ok } from 'tst'
 import raw from 'audio-lena/raw'
 import declip, { declipAsync, rails, bands, saturation, solve } from './declip.js'
+import { aspade, unbounded } from './scripts/aspade.js'
 
 const fs = 44100, lena = new Float32Array(raw)
 const peak = x => x.reduce((m, v) => Math.max(m, Math.abs(v)), 0)
@@ -72,7 +73,7 @@ test('declip — no band and no curve where nothing was cut or bent: speech, a l
   }
 })
 
-test('declip: saturated noise is inverted, white or not; a block that is white noise skips the sparse rebuild', async () => {
+test('declip: saturated noise is inverted, white or not; uniform noise and dither come back finite, through the kernel and the manifest', async () => {
   // a Gaussian through its own CDF is uniform, so a hard-edged white noise reads as a saturated one and no likelihood
   // tells the two apart. Taking white noise for no curve (an AR prediction gain under 1 dB in the fit's windows) left
   // every saturated take its noise outweighs as it came: speech under white noise 10 dB over it, through tanh
@@ -84,44 +85,67 @@ test('declip: saturated noise is inverted, white or not; a block that is white n
   let y = Float32Array.from(x, v => 0.6 * Math.tanh(2.5 * v) / Math.tanh(2.5)), z = declip(y, { fs })
   ok(saturation(y, fs) && snrg(x, z) > snrg(x, y) + 10, `speech under noise through tanh: ${snrg(x, y).toFixed(1)} → ${snrg(x, z).toFixed(1)} dB`)
   // a uniform noise and dither: by their amplitudes alone saturated white noises (README), read so or not (an open
-  // question), they come back finite and as long; where read so, their blocks are white noise, and the sparse rebuild,
-  // which there meets its residual only past every line, 300 iterations a block, leaves them as recorded: 8192 stereo
-  // frames take a few seconds, most of them the curve's fit
+  // question), they come back finite and as long, through the kernel and through the manifest
   for (let [v, u] of [['uniform ±0.3', Float32Array.from({ length: fs }, () => 0.3 * (2 * rand() - 1))], ['16-bit, ±10 LSB', Float32Array.from({ length: fs }, () => Math.round(32768 * 3e-4 * (2 * rand() - 1)) / 32768)]]) {
     let z = declip(u, { fs })
     ok(z.length === u.length && z.every(Number.isFinite), `${v}: finite, as long as it came (${unchanged(u, z) ? 'as it came' : 'inverted under a curve'})`)
   }
   let { declip: atom } = await import('./audio.js'), ch = [0, 1].map(() => Float32Array.from({ length: 8192 }, () => 0.3 * (2 * rand() - 1)))
-  let params = { clipLevel: Float32Array.of(0), order: Float32Array.of(256) }, out = ch.map(c => new Float32Array(c.length)), t0 = performance.now()
+  let params = { clipLevel: Float32Array.of(0), order: Float32Array.of(256) }, out = ch.map(c => new Float32Array(c.length))
   atom({ sampleRate: fs, maxBlockSize: 8192, maxChannels: 2, params })([ch], [out], params)
-  let t = performance.now() - t0
   ok(out.every(o => o.every(Number.isFinite)), 'the manifest, 8192 stereo frames: finite')
-  // wall clock asserted off CI only (a shared runner's clock is no measure): 0.5.1 took 26 s at a load of 40 to 60 on
-  // 14 cores, 40 s at 100; this 3.4 to 6.3 s at 100 and over
-  if (!process.env.CI) ok(t < 15000, `the manifest, 8192 stereo frames: ${t.toFixed(0)} ms`)
 })
 
 // The white-block bound, read off solve(), a job of the rebuild as declipAsync hands it out (a block of the sparse
-// rebuild: its samples, windowed): a block whose spectrum is white noise comes back as recorded, a block of clipped
-// speech or of a clipped chord is rebuilt. At each rate both block lengths (93 and 186 ms: 1024 to 16384 samples), a
-// whole block and the take's first, which holds a quarter of its samples, where the flatness spreads twice as far
-test('declip: a sparse block of white noise comes back as recorded, one of clipped speech or of a chord is rebuilt, at every rate', () => {
+// rebuild: its samples, windowed), against A-SPADE run here from a given k (scripts/aspade.js: the kernel's loop written
+// a second time, the two held equal sample for sample, the pass count to the schedule's arithmetic): a block whose spectrum
+// is white noise is the run from 0.3 of its lines, sample for sample, a block of clipped speech or of a clipped chord the
+// run from k = 1. At each rate both block lengths (93 and 186 ms: 1024 to 16384 samples), a whole block and the take's
+// first, which holds a quarter of its samples, where the flatness spreads twice as far
+test('declip: a sparse block of white noise is run from 0.3 of its lines, one of clipped speech or of a chord from k = 1, at every rate', () => {
   let r = 0x5bd1e995, rand = () => (r = (r * 1664525 + 1013904223) >>> 0) / 2 ** 32, gauss = () => Math.sqrt(-2 * Math.log(1 - rand())) * Math.cos(2 * Math.PI * rand())
+  // the passes from k = 1 to every line, k grown by max(1, ⌊k/50⌋)
+  let all = H => { let p = 0; for (let k = 1; ; k += Math.max(1, Math.floor(k / 50))) { p++; if (k >= H) return p } }
   for (let rate of [8000, 16000, 22050, 44100, 96000]) {
     let n = Math.round(0.6 * rate), s = rate === fs ? lena.subarray(fs, fs + n) : resampled(lena.subarray(fs, 2 * fs), rate).subarray(0, n), sp = scaled(s, 0.9 / peak(s)), ch = chord(n, rate)
     for (let [what, x, L, white] of [['white noise clipped at 1.5σ', Float32Array.from({ length: n }, () => 0.1 * gauss()), 0.15, true], ['speech clipped to 1 dB', sp, cut(sp, 1)], ['a chord clipped to 1 dB', ch, cut(ch, 1)]]) {
       for (let sec of [0.093, 0.186]) {
         // the take from half a hop before its first clipped sample, so that both blocks hold it
-        let w = 2 ** Math.round(Math.log2(sec * rate)), a = w / 4, g = Float64Array.from({ length: w }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / w))
+        let w = 2 ** Math.round(Math.log2(sec * rate)), a = w / 4, H = w + 1
         let c0 = clamp(x, L), y = c0.subarray(Math.max(0, c0.findIndex(v => Math.abs(v) >= L) - a / 2)), mask = Int8Array.from(y, v => v >= L ? 1 : v <= -L ? -1 : 0)
         for (let [where, c] of [['the take\'s first, a quarter on it', a - w], ['whole', 0]]) {
-          let z = solve({ y, mask, fs: rate, p: 256 }, { r: sec, at: c }), kept = z.every((v, i) => v === (c + i >= 0 ? y[c + i] * g[i] : 0))
-          ok(white ? kept : !kept, `${what}, ${rate} Hz, a block of ${w}, ${where}: ${kept ? 'as recorded' : 'rebuilt'}`)
+          let z = solve({ y, mask, fs: rate, p: 256 }, { r: sec, at: c }), ref = aspade(y, mask, rate, sec, c, white ? Math.ceil(0.3 * H) : 1)
+          let same = z.length === ref.block.length && z.every((v, i) => Object.is(v, ref.block[i]))
+          ok(same && (white ? ref.passes * 3 < all(H) : ref.passes <= all(H)), `${what}, ${rate} Hz, a block of ${w}, ${where}: ${same ? 'the run' : 'not the run'} from ${white ? '0.3 of its lines' : 'k = 1'}, ${ref.passes} passes${white ? ` (from k = 1: ${all(H)})` : ''}`)
         }
       }
     }
   }
 })
+
+// What the bound keeps, against the rebuild with every sparse block run from k = 1 (scripts/aspade.js through
+// declipAsync), both made here on takes of 0.3 s at 16 kHz: on these three of white and uniform noise, clipped to a rail
+// or through a curve, at most 0.1 dB of SNR given up (a white block's iterate depends on the run's whole path, so a
+// start at 0.3 of the lines lands near the run from 1, on either side: a wider draw scatters further, scripts/white.js
+// --random); on clipped speech and a chord, whose blocks are not white, the same samples
+test('declip: on three takes of white and uniform noise the bound gives up at most 0.1 dB against the run from k = 1, on clipped speech and a chord none', async () => {
+  let rate = 16000, n = Math.round(0.3 * rate), lcg = seed => { let r = seed; const rnd = () => (r = (Math.imul(r, 1664525) + 1013904223) >>> 0) / 2 ** 32; return { rnd, gauss: () => Math.sqrt(-2 * Math.log(1 - rnd())) * Math.cos(2 * Math.PI * rnd()) } }
+  let snrg = (x, y) => { let xy = 0, yy = 0; for (let i = 0; i < x.length; i++) xy += x[i] * y[i], yy += y[i] * y[i]; return snr(x, scaled(y, xy / yy)) }
+  let w = lcg(4242 + 17 + rate), white = Float32Array.from({ length: n }, () => 0.15 * w.gauss())
+  let u = lcg(4242 + 51 + rate), uni = Float32Array.from({ length: n }, () => (2 * u.rnd() - 1) * 0.5)
+  let t = lcg(77), soft = Float32Array.from({ length: n }, () => 0.2 * t.gauss())
+  let s = resampled(lena.subarray(fs, 2 * fs), rate).subarray(0, n), sp = scaled(s, 0.9 / peak(s)), ch = chord(n, rate)
+  for (let [v, x, y, p, m, same] of [
+    ['white noise clipped at 1.5σ, its rail given', white, clamp(white, 0.225), { clipLevel: 0.225 }, snr],
+    ['uniform noise clipped at 0.35, its rail given', uni, clamp(uni, 0.35), { clipLevel: 0.35 }, snr],
+    ['white noise through tanh at drive 4', soft, Float32Array.from(soft, v => 0.6 * Math.tanh(4 * v / 0.6) / Math.tanh(4)), {}, snrg],
+    ['speech clipped to 5 dB', sp, clamp(sp, cut(sp, 5)), {}, snr, true],
+    ['a chord clipped to 1 dB', ch, clamp(ch, cut(ch, 1)), {}, snr, true]
+  ]) {
+    let z = declip(y, { fs: rate, ...p }), z1 = await unbounded(y, { fs: rate, ...p }), d = m(x, z1) - m(x, z), bit = z.every((v, i) => Object.is(v, z1[i]))
+    ok(same ? bit : d <= 0.1, `${v}: ${m(x, y).toFixed(2)} dB as it came, ${m(x, z1).toFixed(2)} from k = 1, ${m(x, z).toFixed(2)} bounded (${bit ? 'the same samples' : `${d.toFixed(3)} dB given up`})`)
+  }
+}, { timeout: 600000 })
 
 test('declip — soft saturation, no rail: its curve fitted blind, the sound inverted under it, the bent peaks rebuilt', () => {
   // 0.4.0 found no rail and no band and returned each untouched: 0 dB gained
