@@ -102,8 +102,8 @@ export default function omlsa(dataOrOpts, opts) {
     }
     return stftBatch(dataOrOpts, makeProcess(o), o)
   }
-  let o = framing(dataOrOpts || {})
-  return writer(stftStream(makeProcess(o), o))
+  let live = dataOrOpts || {}, o = framing(live)
+  return writer(stftStream(makeProcess(o, live), o))
 }
 
 /** The gain as a frame process, (mag, phase) → { mag, phase }, for a host that runs its own STFT (@audio/stft's
@@ -120,7 +120,7 @@ export const processor = opts => makeProcess(framing(opts || {}))
 // 70–300 Hz: the peak of the cepstrum convolved with a fs/2000-tap Hamming window (8), voiced where it reaches Λ_thr 0.2
 // and the spectrum tilts down (c₁ > 0) (10); its ±2 bins (at 16 kHz) smoothed at α_pitch 0.2, relaxing back by β 0.96 (6), (7).
 const KAPPA = 0.5 * 0.5772156649, XI_ML_MIN = 10 ** (-27 / 10)
-function cepstral(N, fs, hop, xiMin) {
+function cepstral(N, fs, hop, lim) {          // lim[0]: ξ_min, read each frame
   let K = N / 2 + 1, H = N / 2, r = hop / fs / 0.016, qs = q => Math.round(q * fs / 16000)
   let q1 = qs(3), q2 = qs(20), aPitch = 0.2 ** r, beta = 0.96 ** r
   let aConst = Float64Array.from({ length: H + 1 }, (_, q) => q < q1 ? 0 : (q < q2 ? 0.2 : 0.9) ** r)
@@ -140,14 +140,18 @@ function cepstral(N, fs, hop, xiMin) {
     }
     let voiced = best >= 0.2 && c[1] > 0
     for (let q = 0; q <= H; q++) {
-      let a = alpha[q] = voiced && Math.abs(q - qp) <= dq ? aPitch : beta * alpha[q] + (1 - beta) * aConst[q]
+      // each arm into alpha[q], then read back: with an instance per channel V8 does not fold the closure's aPitch, and a
+      // conditional joining it with the computed value would hold that value as a number allocated a quefrency
+      if (voiced && Math.abs(q - qp) <= dq) alpha[q] = aPitch
+      else alpha[q] = beta * alpha[q] + (1 - beta) * aConst[q]
+      let a = alpha[q]
       cs[q] = first ? c[q] : a * cs[q] + (1 - a) * c[q]
     }
     first = false
     for (let q = 0; q <= H; q++) ext[q] = cs[q]
     for (let q = 1; q < H; q++) ext[N - q] = cs[q]
-    let [re] = fft(ext)
-    for (let k = 0; k < K; k++) xi[k] = Math.max(Math.exp(KAPPA + re[k]) / Math.max(lam[k], 1e-30), xiMin)
+    let re = fft(ext)[0]                            // fft's own view: destructuring it is an iterator a frame
+    for (let k = 0, xiMin = lim[0]; k < K; k++) xi[k] = Math.max(Math.exp(KAPPA + re[k]) / Math.max(lam[k], 1e-30), xiMin)
     return xi
   }
 }
@@ -223,26 +227,33 @@ function hanning(w) {
   return h
 }
 
-function makeProcess(opts) {
+// `alphaDD` (`alpha`), `xiMin`, `gMin` (`gMinDb`), `qPrior` and `threshold` are read from `live` each frame: the stream's
+// options object, so a caller changing them between writes changes them from the next frame (the noise estimator retuned)
+function makeProcess(opts, live = opts) {
   let N = opts.frameSize, half = N >> 1, K = half + 1, hop = opts.hopSize, fs = opts.fs
   let held = !!opts.profile                         // a known noise: held, not tracked
   // defaults chosen on VoiceBank+DEMAND training speech (scripts/speech.mjs, scripts/broadband.mjs): G_min −15 dB, and
   // α per 8 ms (noise-estimate rescales it to the frame step) 0.97 tracked, 0.95 on a known noise (see the header)
   let alphaDD = opts.alphaDD ?? opts.alpha ?? (held ? 0.95 : 0.97) // `alpha` = documented alias
   let xiMin = opts.xiMin ?? 10 ** (-25 / 10)
-  let gMin = db2lin(opts.gMinDb ?? opts.gMin ?? -15) // `gMinDb` = documented name
-  let qFixed = opts.qPrior || null                  // a fixed a priori speech absence; omitted (or 0): estimated
+  // G_min, and a fixed a priori speech absence with whether one is given (omitted, or 0: estimated), in typed arrays: as
+  // closure variables, doubles written as they change are numbers allocated a frame
+  let gMin = Float64Array.of(db2lin(opts.gMinDb ?? opts.gMin ?? -15)) // `gMinDb` = documented name
+  let qFixed = Float64Array.of(opts.qPrior, opts.qPrior ? 1 : 0)
   if (held && opts.profile.length !== K) throw new RangeError(`omlsa: profile has ${opts.profile.length} bins, a ${N} frame has ${K}`)
   // `threshold` dB: the noise read that much louder (RX's Threshold), more of what is quiet counted as noise: a held
   // profile raised by it, the tracked estimate's bias factor β (IMCRA's 1.47, Cohen 2003 eq. 12) multiplied by it.
   // Tracking, +4 dB was the best PESQ on the VoiceBank+DEMAND training speech (2 to 10 dB; 1.823 → 1.858, STOI 0.834 →
   // 0.822) and on the test set took PESQ 2.361 → 2.472, OVRL 2.854 → 2.905; it stays 0: clean music tracked lost
   // 60 % of its time-frequency energy by more than 3 dB, not 42 %.
-  let thr = 10 ** ((opts.threshold ?? 0) / 10)
-  let est = held ? known(thr === 1 ? opts.profile : Float64Array.from(opts.profile, v => v * thr), { fs, hop, alphaDD, xiMin })
-    : imcra(half, { fs, hop, alphaDD, xiMin, partials: true, ...opts.estimator, ...thr !== 1 && { beta: (opts.estimator?.beta ?? 1.47) * thr } })
+  let thr = 10 ** ((opts.threshold ?? 0) / 10), beta = opts.estimator?.beta ?? 1.47
+  let est = held ? known(opts.profile, { fs, hop, alphaDD, xiMin })
+    : imcra(half, { fs, hop, alphaDD, xiMin, partials: true, ...opts.estimator, ...thr !== 1 && { beta: beta * thr } })
+  if (held && thr !== 1) est.tune(alphaDD, xiMin, thr)
+  // the values the estimator was last tuned to: α per 8 ms, ξ_min, threshold dB; G_min in dB; ξ_min for `cepstral`
+  let tuned = Float64Array.of(alphaDD, xiMin, opts.threshold ?? 0, opts.gMinDb ?? opts.gMin ?? -15), lim = Float64Array.of(xiMin)
   // q from the cepstro-temporally smoothed a priori SNR, or (qFrom 'dd') from the decision-directed one, as the paper
-  let snr = opts.qFrom === 'dd' ? null : cepstral(N, fs, hop, xiMin)
+  let snr = opts.qFrom === 'dd' ? null : cepstral(N, fs, hop, lim)
   let spp = held ? presence(N, fs) : null
 
   // a priori speech absence (2001 §4): ζ = β ζ + (1−β) ξ (23), β = 0.7 per 8 ms frame
@@ -251,11 +262,17 @@ function makeProcess(opts) {
   let hl = hanning(1), hg = hanning(Math.max(1, Math.round(15 * 31.25 / (fs / N))))
   let kl = Math.round(50 / fs * N), ku = Math.min(Math.round(10000 / fs * N), half)
   let k2 = Math.round(500 / fs * N), k3 = Math.round(3500 / fs * N)
-  let zeta = new Float64Array(K), q = new Float64Array(K), pl = new Float64Array(K), zf = 0, zPeak = 0
+  // ζ_frame, its peak and P_frame in a typed array: as closure variables, doubles written each frame are numbers allocated
+  // a frame
+  let zeta = new Float64Array(K), q = new Float64Array(K), pl = new Float64Array(K), zs = new Float64Array(3)
 
-  let P = z => {                                    // (25) on dB values, floored at P_min
+  // (25) on dB values, floored at P_min, into out[k]. Each arm is stored: with an instance per channel V8 does not fold the
+  // closure's pMin, and a conditional joining it with the computed value would hold that value as a number allocated a bin
+  let P = (out, k, z) => {
     let d = z > 0 ? 10 * Math.log10(z) : -100
-    return d <= lo ? pMin : d >= hi ? 1 : pMin + (d - lo) / (hi - lo) * (1 - pMin)
+    if (d <= lo) out[k] = pMin
+    else if (d >= hi) out[k] = 1
+    else out[k] = pMin + (d - lo) / (hi - lo) * (1 - pMin)
   }
   let avg = (h, k) => {                             // (24): Σ h(i) ζ(k−i), zero past the edges
     let w = h.length >> 1, s = 0
@@ -264,38 +281,57 @@ function makeProcess(opts) {
   }
 
   function absence(xi) {
-    if (qFixed != null) return q.fill(qFixed)
+    // a fixed q, by a loop: q.fill(qFixed[0]) passes the double to a builtin, a number allocated a frame
+    if (qFixed[1]) { for (let k = 0, v = qFixed[0]; k < K; k++) q[k] = v; return q }
     for (let k = 0; k < K; k++) zeta[k] = bz * zeta[k] + (1 - bz) * xi[k]
-    let prev = zf; zf = 0
+    let prev = zs[0], zf = 0
     for (let k = kl; k <= ku; k++) zf += zeta[k]
     zf /= ku - kl + 1                               // (26)
-    let d = zf > 0 ? 10 * Math.log10(zf) : -100, pf
-    if (d <= lo) pf = pMin                          // (27), Fig. 3: speech assumed while ζ_frame rises,
-    else if (zf >= prev) { zPeak = Math.min(Math.max(d, peakLo), peakHi); pf = 1 }   // then let go as it falls
-    else pf = d >= zPeak + hi ? 1 : d <= zPeak + lo ? pMin : pMin + (d - zPeak - lo) / (hi - lo) * (1 - pMin)
+    zs[0] = zf
+    let d = zf > 0 ? 10 * Math.log10(zf) : -100, zPeak = zs[1]
+    if (d <= lo) zs[2] = pMin                       // (27), Fig. 3: speech assumed while ζ_frame rises,
+    else if (zf >= prev) { zs[1] = Math.min(Math.max(d, peakLo), peakHi); zs[2] = 1 }   // then let go as it falls
+    else if (d >= zPeak + hi) zs[2] = 1
+    else if (d <= zPeak + lo) zs[2] = pMin
+    else zs[2] = pMin + (d - zPeak - lo) / (hi - lo) * (1 - pMin)
+    let pf = zs[2]
     // omlsa.m: where speech is unlikely below 4 kHz as a whole, 500 Hz–3.5 kHz is taken as absent
     let m = 0
-    for (let k = 0; k < K; k++) { pl[k] = P(avg(hl, k)); if (k >= 2 && k <= k2 + k3 - 2) m += pl[k] }
+    for (let k = 0; k < K; k++) { P(pl, k, avg(hl, k)); if (k >= 2 && k <= k2 + k3 - 2) m += pl[k] }
     if (m / (k2 + k3 - 3) < 0.25) for (let k = k2; k <= k3; k++) pl[k] = pMin
-    for (let k = 0; k < K; k++) q[k] = 1 - pl[k] * P(avg(hg, k)) * pf                   // (28)
+    for (let k = 0; k < K; k++) { P(q, k, avg(hg, k)); q[k] = 1 - pl[k] * q[k] * pf }  // (28)
     return q
   }
 
+  // the arrays given back, in one object made here: an object a frame is an allocation a frame
+  let res = { mag: null, phase: null }
+
   return function (mag, phase) {
+    res.mag = mag; res.phase = phase
+    let a = live.alphaDD ?? live.alpha ?? (held ? 0.95 : 0.97), x = live.xiMin ?? 10 ** (-25 / 10), t = live.threshold ?? 0
+    if (a !== tuned[0] || x !== tuned[1] || t !== tuned[2]) {
+      tuned[0] = a; tuned[1] = x; tuned[2] = t; lim[0] = x
+      let th = 10 ** (t / 10)
+      est.tune(a, x, held ? th : beta * th)
+    }
+    let g = live.gMinDb ?? live.gMin ?? -15
+    if (g !== tuned[3]) { tuned[3] = g; gMin[0] = db2lin(g) }
+    let qp = live.qPrior
+    qFixed[0] = qp; qFixed[1] = qp ? 1 : 0
     let n = est.frames
     est.update(mag)
-    if (est.frames === n) return { mag, phase }     // digital silence: nothing learned, nothing to attenuate
+    if (est.frames === n) return res                // digital silence: nothing learned, nothing to attenuate
     let xi = est.xi, v = est.v, gH1 = est.gain
     // the a priori SNR for q: smoothed in the cepstrum on this frame's noise estimate, or this frame's decision-directed
     // one on the previous estimate (omlsa.m)
     absence(snr ? snr(mag, est.psd) : est.xi0)
-    let P = spp && spp(est.gamma)
+    let P = spp && spp(est.gamma), gm = gMin[0]
     for (let k = 0; k <= half; k++) {
       // (9); omlsa.m takes speech as absent where q ≥ 0.9: a noise bin that happens to peak keeps G_min, no musical tone.
       // A held noise: the observation averaged over neighbouring bins, at fixed priors (Gerkmann et al. 2008)
       let qk = q[k], p = qk >= 0.9 ? 0 : held ? P[k] : 1 / (1 + qk / (1 - qk) * (1 + xi[k]) * Math.exp(-v[k]))
-      mag[k] *= Math.pow(Math.max(gH1[k], gMin), p) * Math.pow(gMin, 1 - p)              // (16), G_H1 floored at G_min
+      mag[k] *= Math.pow(Math.max(gH1[k], gm), p) * Math.pow(gm, 1 - p)                  // (16), G_H1 floored at G_min
     }
-    return { mag, phase }
+    return res
   }
 }

@@ -22,5 +22,6 @@ export default function dewind(options?: DewindOptions): (chunk?: Float32Array) 
 export function frame(fs: number): number
 
 /** The part taken away, as a frame process for a host running @audio/stft's framing: (mag, phase) → { mag, phase };
- *  the output is the input less its overlap-add. One per channel. */
+ *  the output is the input less its overlap-add. One per channel. The object returned, and its `mag`, are the process's
+ *  own, the same every frame: nothing is allocated a frame. */
 export function processor(options?: DewindOptions): (mag: Float64Array, phase: Float64Array) => { mag: Float64Array, phase: Float64Array }

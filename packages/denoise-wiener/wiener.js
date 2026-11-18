@@ -38,8 +38,8 @@ export default function wiener(dataOrOpts, opts) {
   if (dataOrOpts instanceof Float32Array || dataOrOpts instanceof Float64Array) {
     return run(dataOrOpts, framing(opts || {}))
   }
-  let o = framing(dataOrOpts || {})
-  return writer(stftStream(makeProcess(o), o))
+  let live = dataOrOpts || {}, o = framing(live)
+  return writer(stftStream(makeProcess(o, live), o))
 }
 
 /** The gain as a frame process, (mag, phase) → { mag, phase }, for a host that runs its own STFT (@audio/stft's
@@ -61,27 +61,32 @@ function run(data, opts) {
   return stftBatch(data, makeProcess({ ...opts, profile }), opts)
 }
 
-// Approximate exponential integral E1(ν) for ν > 0 (Abramowitz 5.1.53/5.1.56).
+// Approximate exponential integral E1(ν) for ν > 0 (Abramowitz 5.1.53/5.1.56). The coefficients are made once: an array
+// literal in the function is an array a call, and it runs per bin per frame
+const E1_LO = [-.57721566, .99999193, -.24991055, .05519968, -.00976004, .00107857]
+const E1_NUM = [.2677737343, 8.6347608925, 18.0590169730, 8.5733287401]
+const E1_DEN = [3.9584969228, 21.0996530827, 25.6329561486, 9.5733223454]
 function exp1(v) {
   if (v <= 0) return 30
   if (v < 1) {
-    let a = [-.57721566, .99999193, -.24991055, .05519968, -.00976004, .00107857]
+    let a = E1_LO
     let s = 0
     for (let i = a.length - 1; i >= 0; i--) s = s * v + a[i]
     return s - Math.log(v)
   }
-  let a = [.2677737343, 8.6347608925, 18.0590169730, 8.5733287401]
-  let b = [3.9584969228, 21.0996530827, 25.6329561486, 9.5733223454]
+  let a = E1_NUM, b = E1_DEN
   let num = a[0] + v * (a[1] + v * (a[2] + v * (a[3] + v)))
   let den = b[0] + v * (b[1] + v * (b[2] + v * (b[3] + v)))
   return Math.exp(-v) / v * num / den
 }
 
-function makeProcess(opts) {
-  let rule = opts.rule || 'mmse-lsa'
+// `rule`, `alphaDD` (`alpha`) and `xiMin` are read from `live` each frame: the stream's options object, so a caller
+// changing them between writes changes them from the next frame
+function makeProcess(opts, live = opts) {
   let N = opts.frameSize, hop = opts.hopSize, fs = opts.fs
-  let alphaDD = (opts.alphaDD ?? opts.alpha ?? 0.98) ** (hop / fs / REF_DT)   // per 8 ms; `alpha` = documented alias
-  let xiMin = opts.xiMin ?? 10 ** (-15 / 10)       // −15 dB, as the manifest's xiFloor
+  // α per 8 ms as last read, and per frame step: in a typed array, as a closure variable a double is a number allocated
+  // at each write
+  let dd = Float64Array.of(NaN, 0)
   let auto = !opts.profile
   let half = N >> 1
   // Martin's 1.5 s; a program's held partials kept out (noise-estimate's `partials`)
@@ -90,9 +95,18 @@ function makeProcess(opts) {
   // Â²(l−1)/λ(l−1), the decision-directed memory: 1 before the first frame (Cohen's omlsa.m, Loizou's logmmse.m)
   let eta2 = new Float64Array(half + 1).fill(1)
 
+  // the arrays given back, in one object made here: an object a frame is an allocation a frame
+  let res = { mag: null, phase: null }
+
   return function (mag, phase) {
-    if (!mag.some(Boolean)) return { mag, phase }            // digital silence: nothing to learn or attenuate
+    res.mag = mag; res.phase = phase
+    if (silent(mag)) return res                              // digital silence: nothing to learn or attenuate
     if (auto) { est.update(mag); profile = est.psd }
+    let rule = live.rule || 'mmse-lsa'
+    let xiMin = live.xiMin ?? 10 ** (-15 / 10)                // −15 dB, as the manifest's xiFloor
+    let a = live.alphaDD ?? live.alpha ?? 0.98                // per 8 ms; `alpha` = documented alias
+    if (a !== dd[0]) { dd[0] = a; dd[1] = a ** (hop / fs / REF_DT) }
+    let alphaDD = dd[1]
 
     for (let k = 0; k <= half; k++) {
       let n = Math.max(profile[k], 1e-30)
@@ -103,6 +117,12 @@ function makeProcess(opts) {
       eta2[k] = G * G * gamma
       mag[k] *= G
     }
-    return { mag, phase }
+    return res
   }
+}
+
+// no bin holds anything (mag.some(Boolean), as a loop: no callback a frame)
+function silent(mag) {
+  for (let k = 0; k < mag.length; k++) if (mag[k]) return false
+  return true
 }

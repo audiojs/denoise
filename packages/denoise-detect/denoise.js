@@ -80,6 +80,7 @@ export const HUM_LEVEL = -50
 
 const WIND_SHARE = 0.1                             // share of 0.15 s blocks
 const FLOOR_SLACK = 3                              // dB a bed's pauses may wander over its floor, past Gaussian spread
+const HOLD = 1                                     // s: a line held through the pauses holds its bins this far on
 const MAX_FRAMES = 1 << 15                         // ≈ 6 min at 48 kHz; longer, 16 spans of it spread across
 
 export function classify(data, fs = 44100) {
@@ -101,9 +102,11 @@ export function classify(data, fs = 44100) {
 // One STFT sweep, N ≈ 46 ms (2048 at 44.1/48 kHz), hop N/4. Per frame: each half-octave band's power (from 62.5 Hz,
 // mean over its bins), its spectral flatness (geometric over arithmetic mean) and, for the bands from 300 Hz with 8
 // bins or more, its persistence: the correlation of the fine structure (log power less its ±4-bin mean) with the
-// frame N back, which shares no sample. A partial holds its bins from frame to frame; noise draws them anew, 0. The
-// low end, 40–300 Hz less its least-squares line, gets its own persistence for wind. Per frame too: the power under
-// 200 Hz and at 300–2000 Hz; for the whole: 5–9 kHz, and the A-weighted share of the power, for hum.
+// frame N back, which shares no sample, and with the frame HOLD back. A partial holds its bins from frame to frame;
+// noise draws them anew, 0; a line held through the take (an engine's, a carrier's) holds them as far on, a note's or a
+// voice's partials have moved by then. The low end, 40–300 Hz less its least-squares line, gets its own persistence
+// for wind. Per frame too: the power under 200 Hz and at 300–2000 Hz; for the whole: 5–9 kHz, and the A-weighted share
+// of the power, for hum.
 function sweep(data, fs) {
   let N = 2 ** Math.round(Math.log2(0.046 * fs)), half = N >> 1, hop = N >> 2
   let total = data.length >= N ? Math.floor((data.length - N) / hop) + 1 : 0
@@ -125,17 +128,18 @@ function sweep(data, fs) {
     aw[k] = aWeight(f); zone[k] = f < 200 ? 1 : f >= 300 && f < 2000 ? 2 : f >= 5000 && f < 9000 ? 3 : 0
     if (band[k] >= 0 && test[band[k]] && k >= 4 && k <= half - 4) tb[k] = band[k]
   }
-  let L = new Float32Array(T * B), F = new Float32Array(T * B), C = new Float32Array(T * B).fill(NaN)
+  let L = new Float32Array(T * B), F = new Float32Array(T * B), C = new Float32Array(T * B).fill(NaN), H = new Float32Array(T * B).fill(NaN)
   let tot = new Float64Array(T), lf = new Float64Array(T), mf = new Float64Array(T), lfC = new Float32Array(T).fill(NaN), valid = new Uint8Array(T)
-  let ring = Array.from({ length: 5 }, () => new Float64Array(half + 1)), lring = Array.from({ length: 5 }, () => new Float64Array(m))
+  let D = Math.round(HOLD * fs / hop), R = D + 1, ring = new Float64Array(R * (half + 1)), lring = Array.from({ length: 5 }, () => new Float64Array(m))
   let p = new Float64Array(B), lg = new Float64Array(B), lp = new Float64Array(half + 1)
-  let xy = new Float64Array(B), xx = new Float64Array(B), yy = new Float64Array(B)
+  let xy = new Float64Array(B), xx = new Float64Array(B), yy = new Float64Array(B), hy = new Float64Array(B), hh = new Float64Array(B)
   let hi = 0, mid = 0, all = 0, aw2 = 0, t = 0
   for (let [a, b] of spans) {
-    let u = 0                                      // frame within the span: persistence looks 4 back in it
+    let u = 0                                      // frame within the span: persistence looks 4 and D back in it
     stftAnalyse(data.subarray(a, b), mag => {
-      let d = ring[u % 5], pr = ring[(u + 1) % 5], ld = lring[u % 5], lq = lring[(u + 1) % 5], back = u >= 4
-      p.fill(0); lg.fill(0); xy.fill(0); xx.fill(0); yy.fill(0)
+      let row = j => ring.subarray((j % R) * (half + 1)), d = row(u), pr = row(u + R - 4), ph = row(u + 1), back = u >= 4, held = u >= D
+      let ld = lring[u % 5], lq = lring[(u + 1) % 5]
+      p.fill(0); lg.fill(0); xy.fill(0); xx.fill(0); yy.fill(0); hy.fill(0); hh.fill(0)
       lp[0] = Math.log(mag[0] * mag[0] + 1e-30)
       for (let k = 1; k <= half; k++) {
         let v = mag[k] * mag[k], z = zone[k], c = band[k]
@@ -150,12 +154,14 @@ function sweep(data, fs) {
         let v = d[k] = lp[k] - run / 9, c = tb[k]
         if (k + 5 <= half) run += lp[k + 5] - lp[k - 4]
         if (back && c >= 0) { xy[c] += v * pr[k]; xx[c] += v * v; yy[c] += pr[k] * pr[k] }
+        if (held && c >= 0) { hy[c] += v * ph[k]; hh[c] += ph[k] * ph[k] }
       }
       for (let c = 0; c < B; c++) {
         let i = t * B + c, mean = p[c] / nb[c]
         L[i] = 10 * Math.log10(mean + 1e-30); F[i] = mean > 0 ? Math.exp(lg[c] / nb[c]) / mean : 0
         tot[t] += p[c]
         if (back && xx[c] > 0 && yy[c] > 0) C[i] = xy[c] / Math.sqrt(xx[c] * yy[c])
+        if (held && xx[c] > 0 && hh[c] > 0) H[i] = hy[c] / Math.sqrt(xx[c] * hh[c])
       }
       let sx = 0, sy = 0, sxx = 0, sxy = 0
       for (let j = 0; j < m; j++) { ld[j] = lp[k0 + j]; sx += j; sy += ld[j]; sxx += j * j; sxy += j * ld[j] }
@@ -171,7 +177,7 @@ function sweep(data, fs) {
   if (!(peak > 0)) return null
   let act = 0, na = 0
   for (let i = 0; i < T; i++) if (tot[i] >= peak * 1e-4) { act += tot[i]; na++ }
-  return { fs, hop, T, B, nb, test, L, F, C, tot, lf, mf, lfC, valid, peak, act: act / na, hi, mid, aShare: aw2 / all }
+  return { fs, hop, T, B, nb, test, L, F, C, H, D, tot, lf, mf, lfC, valid, peak, act: act / na, hi, mid, aShare: aw2 / all }
 }
 
 // Hum, by dehum's own measurement over the first 90 s, and how loud: the lines it finds (Goertzel power over the
@@ -226,8 +232,13 @@ function windShare(s) {
 // The noise bed and the program's level over it, dB; the program: its frames within 40 dB of the loudest. Frames
 // within 80 dB of the loudest count: digital silence is no bed. Two kinds of evidence:
 //   pauses — runs of 0.15 s or more within 6 dB of the 10th percentile of the frame level that hold noise or hold
-//            the floor. Noise: no lines (each band's median persistence there: their median under 0.05, none over
-//            0.5) and flat (the bands' median flatness over 0.4; Gaussian noise reads e^−γ ≈ 0.56). The floor: a bed
+//            the floor. Noise: flat (the bands' median flatness over 0.4; Gaussian noise reads e^−γ ≈ 0.56) and no
+//            lines but those it holds through the take (each band's median persistence there, less the persistence
+//            HOLD on between pause frames that far apart where that is a line too, 0.05 or more: their median under
+//            0.05, none over 0.5). A bed's own lines, in radio static, a carrier's, a fan's, hold their bins a second
+//            on as from frame to frame (Apollo 11's static, lines at 345, 517 and 861 Hz: 0.51 and 0.53 in its
+//            500–707 Hz band), where a voice's or a passage's partials have moved (a dense rock mix: 0.16 and 0.01);
+//            a held note's pauses are its partials, not flat. The floor: a bed
 //            lies under the program all the time, so in every band the pauses sit where the band sinks to over the
 //            whole take (its 5th percentile) and no further over it than Gaussian noise's own spread puts them
 //            (1.645 · 4.34/√(n/1.5) dB) plus FLOOR_SLACK for the bed's slow wander (the bands' median), with no
@@ -241,7 +252,7 @@ function windShare(s) {
 //            (median persistence under 0.05): stationary noise where the program doesn't reach. The bed: those
 //            frames' mean power, summed over such bands.
 // The SNR is the lower of the two; steady when the steady bands alone put the bed within BED_SNR.
-function noiseBed({ T, B, nb, test, L, F, C, tot, valid, peak, act, hop, fs }) {
+function noiseBed({ T, B, nb, test, L, F, C, H, D, tot, valid, peak, act, hop, fs }) {
   let keep = []
   for (let t = 0; t < T; t++) if (valid[t] && tot[t] > peak * 1e-8) keep.push(t)
   if (keep.length < 8) return { snr: Infinity, steady: false }
@@ -253,12 +264,13 @@ function noiseBed({ T, B, nb, test, L, F, C, tot, valid, peak, act, hop, fs }) {
   let at = (A, ts, b) => median(ts.map(t => A[t * B + b]).filter(v => v === v))
   let snrP = Infinity
   if (pause.length) {
-    let c = [], f = [], over = []
+    let c = [], f = [], over = [], gone = [], ps = new Set(pause), far = pause.filter(t => ps.has(t - D))
     for (let b = 0; b < B; b++) if (test[b]) {
-      c.push(at(C, pause, b)); f.push(at(F, pause, b))
+      let cb = at(C, pause, b), hb = at(H, far, b)
+      c.push(cb); f.push(at(F, pause, b)); gone.push(hb >= 0.05 ? Math.max(0, cb - hb) : cb)
       over.push(at(L, pause, b) - quantile(keep.map(t => L[t * B + b]), 0.05) - 1.645 * 4.343 / Math.sqrt(nb[b] / 1.5))
     }
-    let noise = median(c) < 0.05 && Math.max(...c) < 0.5 && median(f) > 0.4, floor = median(over) <= FLOOR_SLACK && median(c) < 0.1
+    let noise = median(gone) < 0.05 && Math.max(...gone) < 0.5 && median(f) > 0.4, floor = median(over) <= FLOOR_SLACK && median(c) < 0.1
     if (noise || floor) snrP = 10 * Math.log10(act / median(pause.map(t => tot[t])))
   }
   let bed = 0

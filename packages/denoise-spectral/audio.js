@@ -3,9 +3,9 @@
 // function) that auto-tracks the noise PSD online via Minimum Statistics whenever no
 // manual `profile` is supplied — that auto path is what this manifest uses (a Float64Array
 // profile can't be a contract param anyway, and minStats is exactly the "auto-profiling
-// default" the kernel already supports). alpha/beta are baked into the kernel's per-frame
-// gain closure at construction (makeProcess reads opts.alpha/opts.beta once, not per call),
-// so both carry flags:['restart'].
+// default" the kernel already supports). alpha/beta are read by the kernel's frame process on
+// every frame from the options object, which this manifest updates each block, so both are
+// live (a change applies from the next frame).
 //
 // stftStream.write(chunk) returns a variable-length burst: a sample leaves once no later
 // frame covers it, at most frame − 1 samples after it arrived (@audio/stft ≥ 1.0.7), with
@@ -26,28 +26,27 @@ function fifoPush(f, chunk) {
 	}
 	f.buf.set(chunk, f.len); f.len += chunk.length
 }
+// a loop, where out.set(f.buf.subarray(...)) made a view a call
 function fifoPull(f, out) {
-	let n = out.length
-	if (f.len >= n) { out.set(f.buf.subarray(0, n)); f.buf.copyWithin(0, n, f.len); f.len -= n }
-	else { out.set(f.buf.subarray(0, f.len)); out.fill(0, f.len); f.len = 0 }
+	let n = out.length, m = Math.min(n, f.len), buf = f.buf
+	for (let i = 0; i < m; i++) out[i] = buf[i]
+	if (m < n) out.fill(0, m)
+	buf.copyWithin(0, m, f.len); f.len -= m
 }
 
 export const specsub = (ctx) => {
 	const chans = [], N = frame(ctx.sampleRate)
 	for (let c = 0, C = ctx.maxChannels ?? 8; c < C; c++) {
-		chans.push({
-			write: specsub_({
-				alpha: ctx.params.alpha[0], beta: ctx.params.beta[0],   // alpha 0: Berouti's α(SNR)
-				frameSize: N, hopSize: N >> 2, fs: ctx.sampleRate
-			}),
-			fifo: makeFifo(N - 1)
-		})
+		const opts = { alpha: ctx.params.alpha[0], beta: ctx.params.beta[0], frameSize: N, hopSize: N >> 2, fs: ctx.sampleRate }   // alpha 0: Berouti's α(SNR)
+		chans.push({ opts, write: specsub_(opts), fifo: makeFifo(N - 1) })
 	}
-	return (inputs, outputs) => {
+	return (inputs, outputs, params) => {
 		const inp = inputs[0], out = outputs[0]
 		if (!inp || !inp.length) return
 		for (let c = 0; c < inp.length; c++) {
 			const ch = chans[c]
+			ch.opts.alpha = params.alpha[0]
+			ch.opts.beta = params.beta[0]
 			fifoPush(ch.fifo, ch.write(inp[c]))
 			fifoPull(ch.fifo, out[c])
 		}
@@ -55,8 +54,10 @@ export const specsub = (ctx) => {
 }
 specsub.channels = 'any'
 specsub.latency = ({ sampleRate }) => frame(sampleRate) - 1
-specsub.tail = 0
+// a frame that read the input's last sample spreads its gain over all its N samples, and the frames after read silence
+// and give silence: the output ends N − 1 samples past the latency
+specsub.tail = ({ sampleRate }) => (frame(sampleRate) - 1) / sampleRate
 specsub.params = {
-	alpha: { type: 'number', min: 0, max: 6, default: 0, flags: ['restart'] },         // over-subtraction; 0: α(SNR), 4.75..1
-	beta:  { type: 'number', min: 0, max: 0.5, default: 0.05, unit: '', flags: ['restart'] }, // spectral floor, × noise
+	alpha: { type: 'number', min: 0, max: 6, default: 0 },         // over-subtraction; 0: α(SNR), 4.75..1
+	beta:  { type: 'number', min: 0, max: 0.5, default: 0.05 },    // spectral floor, × noise
 }

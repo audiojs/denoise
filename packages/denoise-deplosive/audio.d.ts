@@ -27,8 +27,8 @@ export interface DeplosiveOptions {
 export declare const deplosive: {
   (ctx: Ctx): Process
   channels: "any"
-  latency: (ctx: { sampleRate: number, params: Live }) => number
-  tail: 0
+  latency: (at: { sampleRate: number, params: Live, buffers: {} }) => number
+  tail: (at: { sampleRate: number, params: Live, buffers: {} }) => number
   params: {
     /** 0.25..20 (default 1) */
     "triggerRatio": { type: "number", default: 1 }
@@ -38,7 +38,7 @@ export declare const deplosive: {
     "attack": { type: "number", default: 0.0005 }
     /** 0.005..1 s (default 0.03) */
     "release": { type: "number", default: 0.03 }
-    /** 50..300 Hz (default 120) [restart] */
+    /** 50..300 Hz (default 120) */
     "crossover": { type: "number", default: 120 }
   }
 }

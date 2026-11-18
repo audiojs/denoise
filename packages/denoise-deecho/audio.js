@@ -4,16 +4,23 @@
 // channels echo apart (a ping-pong delay, a wall nearer one microphone) comes back with each channel's own undone.
 // delay 0: found; gain 0: measured at the delay (with its feedback); a gain given takes its feedback as given (0: one
 // copy). Zero latency, no tail: the inverse filter reads only the past.
+// A setting the kernel cannot undo, which it refuses, is held to the nearest it can (the declared ranges admit them,
+// and a processor never throws inside its ranges): a delay under one sample to one sample; a feedback at 0.95 or over
+// a millionth under it, and a gain whose inverse with that feedback would not die away (|gain − feedback| at 0.95 or
+// over: a copy that loud has no stable inverse) a millionth inside that bound. Every other setting is passed as it is.
 
-import deecho_ from './deecho.js'
+import deecho_, { STABLE } from './deecho.js'
 
+const IN = 1e-6
 export const deecho = (ctx) => {
 	return (inputs, outputs, params) => {
 		const inp = inputs[0], out = outputs[0]
 		if (!inp || !inp.length) return
-		const delay = params.delay[0], gain = params.gain[0], feedback = params.feedback[0]
+		const fs = ctx.sampleRate, delay = params.delay[0], gain = params.gain[0]
+		const feedback = params.feedback[0] < STABLE ? params.feedback[0] : STABLE - IN
+		const g = gain <= feedback - STABLE ? feedback - STABLE + IN : gain >= feedback + STABLE ? feedback + STABLE - IN : gain
 		for (let c = 0; c < inp.length; c++) out[c].set(deecho_(inp[c], {
-			fs: ctx.sampleRate, delay: delay || undefined, gain: gain || undefined, feedback: gain ? feedback : undefined,
+			fs, delay: delay ? Math.max(delay, 1 / fs) : undefined, gain: gain ? g : undefined, feedback: gain ? feedback : undefined,
 		}))
 	}
 }

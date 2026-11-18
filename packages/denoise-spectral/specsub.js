@@ -34,8 +34,8 @@ export default function specsub(dataOrOpts, opts) {
   if (dataOrOpts instanceof Float32Array || dataOrOpts instanceof Float64Array) {
     return run(dataOrOpts, framing(opts || {}))
   }
-  let o = framing(dataOrOpts || {})
-  return writer(stftStream(makeProcess(o), o))
+  let live = dataOrOpts || {}, o = framing(live)
+  return writer(stftStream(makeProcess(o, live), o))
 }
 
 /** The gain as a frame process, (mag, phase) → { mag, phase }, for a host that runs its own STFT (@audio/stft's
@@ -57,23 +57,28 @@ function run(data, opts) {
   return stftBatch(data, makeProcess({ ...opts, profile }), opts)
 }
 
-function makeProcess(opts) {
-  let alphaFixed = opts.alpha || null              // a fixed over-subtraction; omitted (or 0): Berouti's α(SNR)
-  let beta = opts.beta ?? 0.05                     // spectral floor, a fraction of the noise estimate
+// `alpha` and `beta` are read from `live` each frame: the stream's options object, so a caller changing them between
+// writes changes them from the next frame
+function makeProcess(opts, live = opts) {
   let auto = !opts.profile
   let N = opts.frameSize, hop = opts.hopSize, fs = opts.fs
   let half = N >> 1
   // Martin's 1.5 s; a program's held partials kept out (noise-estimate's `partials`)
   let est = auto ? minStats(half, { D: Math.round(1.5 * fs / hop), fs, hop, partials: true, ...opts.estimator }) : null
   let profile = opts.profile
+  // the arrays given back, in one object made here: an object a frame is an allocation a frame
+  let res = { mag: null, phase: null }
 
   return function (mag, phase) {
-    if (!mag.some(Boolean)) return { mag, phase }            // digital silence: nothing to learn or attenuate
+    res.mag = mag; res.phase = phase
+    if (silent(mag)) return res                              // digital silence: nothing to learn or attenuate
     if (auto) { est.update(mag); profile = est.psd }
+    let beta = live.beta ?? 0.05                             // spectral floor, a fraction of the noise estimate
 
-    // Berouti α(SNR): over-subtract hardest at low SNR (4.75 at −5 dB), easing to 1 at 20 dB
-    let alpha = alphaFixed
-    if (alpha == null) {
+    // Berouti α(SNR): over-subtract hardest at low SNR (4.75 at −5 dB), easing to 1 at 20 dB; a fixed one where given
+    // (`live.alpha || null`, tested without a variable that holds null: one joining null and a double boxes it a frame)
+    let alpha = live.alpha
+    if (!alpha) {
       let sigP = 0, noiP = 0
       for (let k = 0; k <= half; k++) { sigP += mag[k] * mag[k]; noiP += profile[k] }
       let snrDb = 10 * Math.log10(sigP / Math.max(noiP, 1e-30))
@@ -86,6 +91,12 @@ function makeProcess(opts) {
       let cleaned = p - alpha * n
       mag[k] = Math.sqrt(cleaned > beta * n ? cleaned : beta * n)
     }
-    return { mag, phase }
+    return res
   }
+}
+
+// no bin holds anything (mag.some(Boolean), as a loop: no callback a frame)
+function silent(mag) {
+  for (let k = 0; k < mag.length; k++) if (mag[k]) return false
+  return true
 }

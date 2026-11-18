@@ -97,6 +97,9 @@ export interface ImcraEstimator {
   partials?: Partials | null
   /** `sppOverride` (number or per-bin array) replaces the speech presence probability. */
   update(mag: Float64Array, sppOverride?: number | ArrayLike<number>): ImcraEstimator
+  /** From the next frame: the decision-directed α (per 8 ms, rescaled as given), ξ_min, and imcra's β (12), or for
+   *  `known` the profile's scale (1: as given). */
+  tune(alphaDD: number, xiMin: number, betaOrScale?: number): void
 }
 
 /** Improved Minima Controlled Recursive Averaging (Cohen 2003) — speech-presence-gated noise PSD tracker. */

@@ -224,6 +224,23 @@ test('deecho: the manifest undoes each channel on its own: a stereo take whose c
   ok(err(one[0], a) < -60, `delay and gain given: ${err(one[0], a).toFixed(1)} dB left`)
 })
 
+test('deecho: the manifest runs at every corner of its ranges: a setting the kernel refuses held to the nearest it undoes, the rest as given (was: threw at gain 1.9, feedback 0)', () => {
+  let a = lena.subarray(0, fs), x = Float32Array.from(lines(a, [{ delay: 0.05, gain: 0.5, feedback: 0 }])), f32 = Math.fround
+  let run = (delay, gain, feedback) => {
+    let params = { delay: Float32Array.of(delay), gain: Float32Array.of(gain), feedback: Float32Array.of(feedback) }, out = [new Float32Array(x.length)]
+    atom({ sampleRate: fs, maxBlockSize: x.length, maxChannels: 1, params })([[x]], [out], params)
+    return out[0]
+  }
+  // the kernel's bound (deecho.js STABLE): |feedback| and |gain − feedback| under 0.95; held a millionth inside it
+  for (let delay of [1e-6, 0.05, 4]) for (let gain of [-0.95, 0.5, 1.9]) for (let feedback of [0, 0.5, 0.95]) {
+    let f = f32(feedback) < 0.95 ? f32(feedback) : 0.95 - 1e-6, g = f32(gain), held = g <= f - 0.95 ? f - 0.95 + 1e-6 : g >= f + 0.95 ? f + 0.95 - 1e-6 : g
+    let y = run(delay, gain, feedback), want = deecho(x, { fs, delay: Math.max(f32(delay), 1 / fs), gain: held, feedback: f })
+    ok(y.every(Number.isFinite) && same(y, want), `delay ${delay}, gain ${gain}, feedback ${feedback}: as the kernel at gain ${held.toFixed(6)}, feedback ${f.toFixed(6)}`)
+  }
+  ok(same(run(0.05, 0.5, 0), deecho(x, { fs, delay: f32(0.05), gain: 0.5, feedback: 0 })), 'a setting it undoes: as given')
+  ok(run(1e-6, 0, 0).every(Number.isFinite), 'a delay under one sample, its gain measured: runs')
+})
+
 // MUSDB18 previews (Rafii et al. 2017), mono at 44.1 kHz, where the data set is installed (scripts in @audio/denoise)
 const MUS = `${homedir()}/.cache/audiojs/data/musdb/test-mono`
 test('deecho: music: no echo found in MUSDB18\'s 50 test previews; one added to a preview found and undone', { skip: !existsSync(MUS) }, () => {

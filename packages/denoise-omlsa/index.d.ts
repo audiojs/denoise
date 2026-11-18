@@ -48,5 +48,6 @@ export default function omlsa(options?: OmlsaOptions): (chunk?: Float32Array) =>
  *  48). `held` (a known noise): the power of two at or above 32 ms (512 at 16 kHz, 1024 at 22.05, 2048 at 44.1 and 48). */
 export function frame(fs: number, held?: boolean): number
 /** The gain as an @audio/stft frame process, for a host that runs its own frames (Hann, hop frameSize/4). It keeps state
- *  across frames: one per channel. */
+ *  across frames: one per channel. It gains `mag` in place and returns one object, the same every frame, holding the
+ *  arrays it was given: nothing is allocated a frame. */
 export function processor(options?: OmlsaOptions): (mag: Float64Array, phase: Float64Array) => { mag: Float64Array, phase: Float64Array }

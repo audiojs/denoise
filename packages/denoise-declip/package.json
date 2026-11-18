@@ -27,7 +27,8 @@
     "fourier-transform": "^2.4.0"
   },
   "scripts": {
-    "test": "node test.js"
+    "test": "node test.js",
+    "prepublishOnly": "node ../../../compile/tools/tested.js"
   },
   "keywords": [
     "audio",

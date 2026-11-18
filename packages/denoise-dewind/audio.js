@@ -19,10 +19,12 @@ function fifoPush(f, chunk) {
 	}
 	f.buf.set(chunk, f.len); f.len += chunk.length
 }
+// a loop, where out.set(f.buf.subarray(...)) made a view a call
 function fifoPull(f, out) {
-	let n = out.length
-	if (f.len >= n) { out.set(f.buf.subarray(0, n)); f.buf.copyWithin(0, n, f.len); f.len -= n }
-	else { out.set(f.buf.subarray(0, f.len)); out.fill(0, f.len); f.len = 0 }
+	let n = out.length, m = Math.min(n, f.len), buf = f.buf
+	for (let i = 0; i < m; i++) out[i] = buf[i]
+	if (m < n) out.fill(0, m)
+	buf.copyWithin(0, m, f.len); f.len -= m
 }
 
 export const dewind = (ctx) => {
@@ -45,7 +47,9 @@ export const dewind = (ctx) => {
 }
 dewind.channels = 'any'
 dewind.latency = ({ sampleRate }) => frame(sampleRate) - 1
-dewind.tail = 0
+// a frame that read the input's last sample spreads its removal over all its N samples, and the frames after read
+// silence and give silence: the output ends N − 1 samples past the latency
+dewind.tail = ({ sampleRate }) => (frame(sampleRate) - 1) / sampleRate
 dewind.params = {
 	cutoff:      { type: 'number', min: 200, max: 16000, default: 8000, unit: 'Hz' },  // the band wind is taken from
 	attenuation: { type: 'number', min: -40, max: 0, default: -20, unit: 'dB' },      // the most a bin is turned down

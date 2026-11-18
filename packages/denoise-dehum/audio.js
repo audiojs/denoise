@@ -21,6 +21,9 @@ export const dehum = (ctx) => {
 }
 dehum.channels = 'any'
 dehum.streaming = false
+// No tail, and true: nothing is subtracted in a run of exact zeros a period of a line long, so the silence after a take
+// stays silent (0.7.1 bridged a line's estimate into it and wrote it there inverted, past this tail at 197 of 200 random
+// settings, up to the whole silence)
 dehum.tail = 0
 dehum.params = {
 	freq:      { type: 'number', min: 0, max: 400, default: 0, unit: 'Hz' },   // 0: measured, 50 or 60 Hz series

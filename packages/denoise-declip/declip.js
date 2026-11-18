@@ -56,6 +56,9 @@ const TAU = 1e-3, K = 10, ITERS = 8, TOL = 0.01, G = 10, KAPPA = 6, PROM = 4
 // a curve: its likelihood's AR order and floor, the windows read, the nats a sample it must gain, the least slope of
 // its inverse at the loudest peak, the inverse's steepest slope
 const P = 24, FLOOR = 1e-7, WS = 48, LR = 0.02, BEND = 2, SLOPE = 40
+// a sparse block's spectral flatness when it is white Gaussian noise, e^(−γ) (each line's power exponential, so
+// E ln p = ln E p − γ), and its standard deviation times √(the samples the block holds), measured
+const WHITE = Math.exp(-0.5772156649015329), SPREAD = 0.64
 // the rebuilds the blend weighs: the AR one, and the sparse one over blocks of 93 and of 186 ms
 const REBUILDS = ['ar', 0.093, 0.186]
 
@@ -201,6 +204,25 @@ function simplex(K, g) {
 // 1 per iteration up to 50, then by 2 % (the survey: by 1 every 2): 8× fewer iterations, up to 1.7 dB less at 1 dB in,
 // 0.3 at 3, as good above (the survey's growth on a violin clipped to 1 dB: 0.3 dB more in 23× the time). Only blocks
 // holding a sample `want` takes, and 4 recorded (as janssen's order 2 needs), are rebuilt.
+// A block that is white noise has no lines for the threshold to keep: ADMM there meets the residual only once k passes
+// every line and the threshold is the identity (the paper's Lemma 1, p. 4), after the whole growth, 300 iterations of
+// the block's transform pair; so it is left as recorded. White: the spectral flatness of its lines' power (geometric
+// over arithmetic mean) within four of a white block's standard deviations of white Gaussian noise's, e^(−γ). Measured:
+// a white block's flatness spreads by 0.64/√s about e^(−γ), s the samples it holds (2000 blocks of white noise, 2048 to
+// 16384 samples, the take's ends cutting some: none under 3.93 deviations; hard-clipped at 1–2 σ, 1024 to 16384 samples
+// at 8–96 kHz, −3.29 to +3.52, only the low side counting for the bound); clipped speech's and chords' blocks (clipped
+// to 1–30 dB SDR) lie 15 deviations or more off at 8 kHz, 21 at 16 and 22.05 kHz, 43 at 44.1 kHz and up, the take's
+// first block, a quarter of a block on it, 7.6 at 8 kHz, 11.6 at 16, 12.9 at 22.05 and 22.5 or more from 44.1 kHz, and
+// meet the residual at 12–97 % of the lines; 217 white blocks met it only past every line. What that end of the run did
+// there: it pushed a saturated white noise's few clipped peaks outward (white noise through tanh at drive 4, 0.5.1:
+// 22.3 dB, 21.3 without it; white Gaussian noise clipped at 1–2 σ to a rail given, 0.9–1.5 dB, none without it; read
+// blind as a curve, the same noise 0.6–2.4 dB more without it), in 300 iterations a block (8192 stereo frames of a
+// uniform noise: 0.5.1 40 s, 3.6 s without it, most of that the curve's fit; 0.3 s of that clipped white noise at
+// 96 kHz, 41–66 s and 0.3–2.8 s; the seconds depend on the machine's load). The take's last block holds 1 to a quarter
+// of its samples and can read as white though it holds speech or a chord (with under 21, a flatness of 0 is within four
+// deviations); it is then left as recorded, its share of those samples, in its window's first quarter, under a sixth
+// (clipped speech and a chord at 24 lengths of 0.5–3 s: 21 of 125 last blocks at 8 kHz in blocks of 93 ms, 11 of 111
+// at 22.05 kHz in blocks of 186 ms, 0 to 5 of 111–128 at the other rates and lengths; the cost not measured)
 // The blocks of `sec`: w samples (a power of 2), hop a = w/4, the analysis window g and the sum gs of its squares at
 // each phase of the hop
 const frames = new Map()
@@ -234,6 +256,9 @@ function spadeBlock(y, mask, fs, sec, c) {
   for (let i = 0, t = c; i < w; i++, t++) b[i] = t >= 0 && t < n ? y[t] * g[i] : 0, e2 += b[i] * b[i]
   best.set(b)
   x.set(b); A(); ur.fill(0); ui.fill(0)
+  let lg = 0, ar = 0, s = Math.min(n, c + w) - Math.max(0, c)
+  for (let j = 0; j < H; j++) { let p = zr[j] * zr[j] + zi[j] * zi[j]; lg += Math.log(p), ar += p }
+  if ((Math.exp(lg / H) / (ar / H) - WHITE) * Math.sqrt(s) > -4 * SPREAD) return best
   for (let k = 1, lo = Infinity; ; k += Math.max(1, Math.floor(k / 50))) {
     // z̄ = H_k(Ax + u): the k largest kept
     for (let j = 0; j < H; j++) { let r = zr[j] + ur[j], m = zi[j] + ui[j]; re[j] = r, im[j] = m, mag[j] = sel[j] = (r * r + m * m) / (j ? 1 : 4) }
@@ -426,7 +451,8 @@ function likelihood(x, ws, W, curve, cp, cn, k) {
 // (both curves at k = 1, a ceiling shared, c = M·(1 + e^u), u from ln 10⁻⁴ to ln 10 by 2: under a quarter of LR,
 // none), then the ceiling and the knee by golden sections in turn, then each side's ceiling with the knee, kept if
 // that gains over ½ ln N (Schwarz 1978). Taken if it gains over LR and bends the loudest peak to 1/BEND of its slope
-// or less
+// or less. A hard-edged white noise is taken too: a Gaussian through its own CDF is uniform, so by its amplitudes alone
+// it is a saturated white noise (tanh, 0.15–0.18 nats a sample), and no likelihood tells the two apart
 export function saturation(x, fs = 44100) {
   let W = 2 ** Math.round(Math.log2(0.046 * fs)), H = W >> 1, n = x.length, Mp = 0, Mn = 0, all = []
   for (let v of x) if (v > Mp) Mp = v; else if (-v > Mn) Mn = -v

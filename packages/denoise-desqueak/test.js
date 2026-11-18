@@ -99,12 +99,15 @@ test('desqueak: amp takes steady hiss down between notes, the notes kept', () =>
 // 0.2 took a buzz down by gain alone, as it does hiss, and a gain can't part a buzz line from a partial in its bin: under
 // a 60 Hz buzz to 8 kHz, 30 dB under four notes, its frequency wandering ±0.02 Hz, 4.8 dB of the buzz went and the
 // notes came out at 46.3 dB SDR. The lines are subtracted now, each held through the take.
+const buzz = n => {
+  let b = new Float32Array(n), ph = 0
+  for (let i = 0; i < n; i++) { ph += 2 * Math.PI * (60 + 0.02 * Math.sin(2 * Math.PI * i / fs / 5)) / fs; for (let h = 1; h * 60 <= 8000; h++) b[i] += (h % 2 ? 1 : 0.3) / Math.sqrt(h) / Math.hypot(1, h * 60 / 3000) * Math.sin(h * ph + h * h) }
+  return b
+}
 test('desqueak: amp subtracts a steady buzz, the notes kept', () => {
   let x = new Float32Array(4 * fs), r = lcg(6)
   for (let [at, f0] of [[1, 110], [1.8, 165], [2.6, 220], [3.2, 147]]) pluck(x, at, f0, 0.2, r)
-  let b = new Float32Array(x.length), ph = 0
-  for (let i = 0; i < b.length; i++) { ph += 2 * Math.PI * (60 + 0.02 * Math.sin(2 * Math.PI * i / fs / 5)) / fs; for (let h = 1; h * 60 <= 8000; h++) b[i] += (h % 2 ? 1 : 0.3) / Math.sqrt(h) / Math.hypot(1, h * 60 / 3000) * Math.sin(h * ph + h * h) }
-  let g = Math.sqrt(E(x) / E(b)) * 10 ** (-30 / 20), n = b.map(v => g * v)
+  let b = buzz(x.length), g = Math.sqrt(E(x) / E(b)) * 10 ** (-30 / 20), n = b.map(v => g * v)
   let yp = desqueak(x.map((v, i) => v + n[i]), { fs, squeak: 0, amp: -20 }), ym = desqueak(x.map((v, i) => v - n[i]), { fs, squeak: 0, amp: -20 })
   let res = yp.map((v, i) => (v - ym[i]) / 2), gtr = yp.map((v, i) => (v + ym[i]) / 2)
   ok(db(E(n) / E(res)) > 15, `${db(E(n) / E(res)).toFixed(1)} dB of the buzz gone`)
@@ -118,4 +121,21 @@ test('desqueak: short input, digital silence, Float64Array', () => {
   ok(desqueak(z, { fs, pick: -9, amp: -20 }).every(v => v === 0), 'silence stays silence')
   let x = Float64Array.from(guitar(1)), y = desqueak(x.slice(), { fs })
   ok(y instanceof Float64Array && y.every((v, i) => v === x[i]))
+})
+
+// A host renders a whole-signal processor's tail by padding its input with silence, one call (audio does). The amp
+// part's noise print and its held buzz lines are read from the take, so a tail declared while they read the padding (a
+// frame less a sample, 2047 frames) moved 176304 of this take's 176400 samples, by up to 2.9·10⁻²
+test('desqueak: a host that renders the manifest\'s tail gives the take as the kernel does', async () => {
+  let { desqueak: atom } = await import('./audio.js'), x = new Float32Array(4 * fs), r = lcg(6)
+  for (let [at, f0] of [[1, 110], [1.8, 165], [2.6, 220], [3.2, 147]]) pluck(x, at, f0, 0.2, r)
+  let b = buzz(x.length), g = Math.sqrt(E(x) / E(b)) * 10 ** (-30 / 20), S = x.length
+  x = x.map((v, i) => v + g * b[i])
+  let params = { squeak: Float32Array.of(-30), pick: Float32Array.of(0), amp: Float32Array.of(-20) }
+  let T = Math.round((typeof atom.tail === 'function' ? atom.tail({ sampleRate: fs, params }) : atom.tail) * fs)
+  let a = new Float32Array(S + T), o = new Float32Array(S + T), y = desqueak(x.slice(), { fs, amp: -20 }), moved = 0
+  a.set(x)
+  atom({ sampleRate: fs, maxBlockSize: S + T, maxChannels: 1, params })([[a]], [[o]], params)
+  for (let i = 0; i < S; i++) moved += !Object.is(o[i], y[i])
+  is(moved, 0, `padded by the tail, ${T} frames: the take's samples as the kernel gives them`)
 })

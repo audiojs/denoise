@@ -31,7 +31,7 @@ desqueak(data, { fs: 44100, squeak: 0, amp: -20 })    // the amp's noise alone
 | `attack` | `0.01` | s, the pick's attack taken, from 2 ms before its click |
 | `amp` | `0` | dB, how far the amp's hiss goes down, and what the subtraction leaves of its hum and buzz; `0` off; `-20` typical |
 
-The whole take is read at once (streaming: false); about 20× real time at 44.1 kHz on one core.
+The whole take is read at once (streaming: false); about 20× real time at 44.1 kHz on one core. The manifest declares no tail, so a host renders nothing past the input: a host renders a tail by padding the input with silence, and the padding would enter the take's statistics (the amp's noise print, the detectors' levels) and move the take itself.
 
 Measured against iZotope RX 12 Guitar De-noise (`node bench/rx/guitar.mjs test` in [audio](https://github.com/audiojs/audio), 2026-10): GuitarSet's mic takes (Xi et al., ISMIR 2018, CC BY 4.0), a solo acoustic guitar; every setting, ours and RX's, chosen on players 00–02 (30 takes), test on players 03–05 (30 takes, 12.1 min). RX through its plugin, at its defaults (Squeak on, sensitivity 3, reduction 4) and each part tuned by SNR on the tuning takes, the others bypassed. The takes hold squeaks of their own, so harm is read on the notes: per annotated note, its partials up to 10 kHz where they stand 10 dB clear, in its first 40 ms (attack) and after (sustain), the share changed by over 1 dB.
 

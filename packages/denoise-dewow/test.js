@@ -322,5 +322,6 @@ t('speed — 60s stereo', () => {
 	dewow([long, long], { fs })
 	let ms = Date.now() - t0
 	console.log(`  60s stereo dewow(): ${ms}ms`)
-	ok(ms < 15000, `${ms}ms`)
+	// the bound by the clock where the clock is the machine's own: a shared runner's is not
+	if (!process.env.CI) ok(ms < 15000, `${ms}ms`)
 })

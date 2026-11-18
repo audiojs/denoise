@@ -57,6 +57,7 @@
   "audio": "./audio.js",
   "funding": "https://github.com/sponsors/audiojs",
   "scripts": {
-    "test": "node test.js"
+    "test": "node test.js",
+    "prepublishOnly": "node ../../../compile/tools/tested.js"
   }
 }

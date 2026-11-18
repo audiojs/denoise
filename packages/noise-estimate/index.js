@@ -168,13 +168,18 @@ function lsa(s, next) {
 // A known noise: a profile learned where the noise plays alone (noiseProfile), held rather than tracked. Per frame the
 // outputs imcra gives, on it (ξ, γ, v, G_H1), so a gain written for imcra runs on a learned noise unchanged. `xi0` is
 // `xi` (a held noise does not move within the frame); nothing estimates speech presence, `p` stays 0. `alphaDD` is
-// quoted per 8 ms frame and, given `fs` and `hop`, rescaled to the frame step as imcra's.
+// quoted per 8 ms frame and, given `fs` and `hop`, rescaled to the frame step as imcra's. `tune(alphaDD, xiMin, scale)`
+// sets them anew from the next frame, the noise held as the profile × `scale` (1 as given).
 export function known(profile, opts = {}) {
   let K = profile.length, psd = Float64Array.from(profile), y2 = new Float64Array(K), eta2 = new Float64Array(K).fill(1)
   let xi = new Float64Array(K), gamma = new Float64Array(K), v = new Float64Array(K), gain = new Float64Array(K)
-  let r = opts.fs && opts.hop ? opts.hop / opts.fs / REF_DT : 1
+  let r = opts.fs && opts.hop ? opts.hop / opts.fs / REF_DT : 1, kept = Float64Array.from(profile)
   let s = { y2, psd, eta2, xi, gamma, v, gain, aDD: (opts.alphaDD ?? 0.92) ** r, xiMin: opts.xiMin ?? 10 ** (-25 / 10) }
-  let est = { psd, xi, xi0: xi, gamma, v, gain, p: new Float64Array(K), frames: 0, update }
+  let est = { psd, xi, xi0: xi, gamma, v, gain, p: new Float64Array(K), frames: 0, update, tune }
+  function tune(alphaDD, xiMin, scale = 1) {
+    s.aDD = alphaDD ** r; s.xiMin = xiMin
+    for (let k = 0; k < K; k++) psd[k] = kept[k] * scale
+  }
   function update(mag) {
     let silent = true
     for (let k = 0; k < K; k++) { y2[k] = mag[k] * mag[k]; if (y2[k]) silent = false }
@@ -191,7 +196,8 @@ export function imcra(half, opts = {}) {
   let r = opts.fs && opts.hop ? opts.hop / opts.fs / REF_DT : 1
   let as = (opts.alpha ?? 0.9) ** r              // α_s, (15)
   let ad = (opts.alphaD ?? 0.85) ** r            // α_d, (11)
-  let beta = opts.beta ?? 1.47                   // (12)
+  // β (12), in a typed array: `tune` writes it, and a closure variable holding a double is a number allocated at each write
+  let bt = Float64Array.of(opts.beta ?? 1.47)
   let bMin = opts.bMin ?? 1.66                   // minimum's bias, (18)
   let g0 = opts.gamma0 ?? 4.6, g1 = opts.gamma1 ?? 3, z0 = opts.zeta0 ?? 1.67   // (21), (29)
   let U = opts.U ?? 8, V = opts.V ?? Math.max(1, Math.round(15 / r))
@@ -208,7 +214,9 @@ export function imcra(half, opts = {}) {
   let xi0 = new Float64Array(K)
   let n = 0, ri = 0
   let guard = guarded(K, opts)
-  let est = { psd, xi, xi0, gamma, v, gain, p, partials: guard, frames: 0, update }
+  // `tune(alphaDD, xiMin, beta)`: the decision-directed α (per 8 ms, as given), ξ_min and β (12) anew from the next frame
+  let est = { psd, xi, xi0, gamma, v, gain, p, partials: guard, frames: 0, update, tune }
+  function tune(alphaDD, xiMin, b) { s.aDD = alphaDD ** r; s.xiMin = xiMin; bt[0] = b }
 
   // b ∗ x at bin k, zero past the edges (MATLAB conv, central part)
   function smooth(x, k) {
@@ -251,12 +259,14 @@ export function imcra(half, opts = {}) {
         if (St[k] < Smint[k]) Smint[k] = St[k]
         if (St[k] < SMactt[k]) SMactt[k] = St[k]
       }
-      let m = Math.max(Smint[k], 1e-30), gm = y2[k] / bMin / m, zt = S[k] / bMin / m, pk
-      if (sppOverride !== undefined) pk = typeof sppOverride === 'number' ? sppOverride : sppOverride[k]
-      else if (gm >= g1 || zt >= z0) pk = 1
-      else if (gm > 1) { let q = (g1 - gm) / (g1 - 1); pk = 1 / (1 + q / (1 - q) * (1 + xi[k]) * Math.exp(-v[k])) }
-      else pk = 0
-      p[k] = pk
+      // p into its array, then read back: a variable joining the caller's sppOverride (any value) with the probabilities
+      // computed here would hold each of them as a number allocated a bin
+      let m = Math.max(Smint[k], 1e-30), gm = y2[k] / bMin / m, zt = S[k] / bMin / m
+      if (sppOverride !== undefined) p[k] = typeof sppOverride === 'number' ? sppOverride : sppOverride[k]
+      else if (gm >= g1 || zt >= z0) p[k] = 1
+      else if (gm > 1) { let q = (g1 - gm) / (g1 - 1); p[k] = 1 / (1 + q / (1 - q) * (1 + xi[k]) * Math.exp(-v[k])) }
+      else p[k] = 0
+      let pk = p[k]
       let a = ad + (1 - ad) * pk
       lav[k] = a * lav[k] + (1 - a) * y2[k]
     }
@@ -272,7 +282,7 @@ export function imcra(half, opts = {}) {
         SMact.set(S); SMactt.set(St)
       }
     }
-    for (let k = 0; k < K; k++) psd[k] = beta * lav[k]
+    for (let k = 0, beta = bt[0]; k < K; k++) psd[k] = beta * lav[k]
     if (guard) guard.update(y2, psd)
     snr(true)                                     // on the updated estimate: this frame's gain, the next frame's ξ
     est.frames = n
@@ -326,7 +336,9 @@ export function partials(K, opts = {}) {
       flag[k] = t || flag[k] && psd[k] > KAPPA * mem[k] ? 1 : 0
       if (!flag[k] && !run[k]) { sum[k] += psd[k]; cnt[k]++ }
       let m = cnt[k] ? sum[k] / cnt[k] : Infinity
-      for (let j = k; j < U * K; j += K) if (SW[j] < m) m = SW[j]
+      // each value read into s, then compared: a load first run when the first sub-window closes (T/8 in) would stop the
+      // optimized code there, and on Node 20 frames ran unoptimized, allocating, for seconds after
+      for (let j = k; j < U * K; j += K) { let s = SW[j]; if (s < m) m = s }
       mem[k] = m
       lines[k] = m === Infinity && run[k] >= V ? 1 : 0
       if (flag[k] && m < psd[k]) psd[k] = m

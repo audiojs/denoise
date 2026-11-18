@@ -39,3 +39,6 @@ export default deecho
 
 /** The echoes in a take, strongest first; [] for none. With `delay` and `gain` given, those. */
 export function estimate(data: ArrayLike<number>, options?: DeechoOptions): Echo[]
+
+/** The bound an echo's inverse needs: |feedback| and |gain − feedback| under it (0.95). */
+export const STABLE: number

@@ -36,7 +36,7 @@ const SPAN = 2 ** 22                  // the most of a take the estimate reads, 
 const TAPER = 0.05                    // s, a segment's ends
 const Z = 8                           // a peak's height over its neighbourhood's spread
 const FAINT = 0.06                    // the faintest first copy taken (−24 dB)
-const STABLE = 0.95                   // |f| and |g − f| under it: the echo dies away and so does its inverse
+export const STABLE = 0.95            // |f| and |g − f| under it: the echo dies away and so does its inverse
 const SNAP = 0.1                      // a delay this near a whole sample is whole: a digital delay's
 const ITER = 3, TRY = 3, TAPS = 3     // refits, candidates per copy, copies
 const KEEP = 0.01, FOLLOW = 0.3, RANGE = 1e-6  // a band kept: its pauses 20 dB under its mean, or its quiet frames

@@ -27,18 +27,18 @@ export interface OmlsaOptions {
 export declare const omlsa: {
   (ctx: Ctx): Process
   channels: "any"
-  latency: (ctx: { sampleRate: number, params: Live }) => number
-  tail: 0
+  latency: (at: { sampleRate: number, params: Live, buffers: {} }) => number
+  tail: (at: { sampleRate: number, params: Live, buffers: {} }) => number
   params: {
-    /** 0.8..0.999 (default 0.97) [restart] */
+    /** 0.8..0.999 (default 0.97) */
     "alphaDD": { type: "number", default: 0.97 }
-    /** 0..0.95 (default 0) [restart] */
+    /** 0..0.95 (default 0) */
     "qPrior": { type: "number", default: 0 }
-    /** -40..0 dB (default -15) [restart] */
+    /** -40..0 dB (default -15) */
     "gMin": { type: "number", default: -15 }
-    /** -30..0 dB (default -25) [restart] */
+    /** -30..0 dB (default -25) */
     "xiFloor": { type: "number", default: -25 }
-    /** -10..20 dB (default 0) [restart] */
+    /** -10..20 dB (default 0) */
     "threshold": { type: "number", default: 0 }
   }
 }

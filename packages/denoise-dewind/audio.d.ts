@@ -21,8 +21,8 @@ export interface DewindOptions {
 export declare const dewind: {
   (ctx: Ctx): Process
   channels: "any"
-  latency: (ctx: { sampleRate: number, params: Live }) => number
-  tail: 0
+  latency: (at: { sampleRate: number, params: Live, buffers: {} }) => number
+  tail: (at: { sampleRate: number, params: Live, buffers: {} }) => number
   params: {
     /** 200..16000 Hz (default 8000) */
     "cutoff": { type: "number", default: 8000 }

@@ -23,14 +23,14 @@ export interface WienerOptions {
 export declare const wiener: {
   (ctx: Ctx): Process
   channels: "any"
-  latency: (ctx: { sampleRate: number, params: Live }) => number
-  tail: 0
+  latency: (at: { sampleRate: number, params: Live, buffers: {} }) => number
+  tail: (at: { sampleRate: number, params: Live, buffers: {} }) => number
   params: {
-    /** default "mmse-lsa" [restart] */
+    /** default "mmse-lsa" */
     "rule": { type: "enum", values: ["wiener","mmse-lsa"], default: "mmse-lsa" }
-    /** 0.8..0.999 (default 0.98) [restart] */
+    /** 0.8..0.999 (default 0.98) */
     "alphaDD": { type: "number", default: 0.98 }
-    /** -30..0 dB (default -15) [restart] */
+    /** -30..0 dB (default -15) */
     "xiFloor": { type: "number", default: -15 }
   }
 }

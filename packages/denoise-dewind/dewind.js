@@ -101,10 +101,17 @@ function removal(o, live = o) {
   let k20 = Math.min(half, Math.ceil(SUB / bin)), kA = Math.round(LEVEL / bin), kL = Math.min(half, Math.round(LOW / bin)), kM = Math.min(half, Math.round(MID / bin))
   let Pb = new Float64Array(K), fl = new Float64Array(K), lam = new Float64Array(K), e = new Float64Array(K)
   let q = new Float64Array(K), Gp = new Float64Array(K).fill(1), gp = new Float64Array(K), out = new Float64Array(K)
-  let rb = new Float64Array(K), cur = new Float64Array(K).fill(Infinity), subs = [], V = Math.max(1, Math.round(SPAN * fs / hop / SUBS)), t = 0
+  // the last SUBS sub-windows' minima, a ring of arrays made here (oldest first from `sub[0]`, `sub[1]` of them): an array
+  // every V frames is an allocation
+  let rb = new Float64Array(K), cur = new Float64Array(K).fill(Infinity), V = Math.max(1, Math.round(SPAN * fs / hop / SUBS)), t = 0
+  let ring = Array.from({ length: SUBS }, () => new Float64Array(K)), sub = new Int32Array(2)
   let ar = new Float64Array(K), ai = new Float64Array(K), tLo = Math.round(0.0025 * fs), tHi = Math.min(half - 1, Math.round(0.025 * fs)), rw = winAc(N, tHi)
   let aPk = Math.exp(-hop / (DECAY * fs)), up = Math.exp(-hop / (UP * fs)), down = Math.exp(-hop / (DOWN * fs)), hold = Math.round(HOLD * fs / hop)
-  let peak = 0, run = 0, left = 0, w = 0
+  // the mid band's decaying peak, the gain's weight and the low band's periodicity, in a typed array: as closure
+  // variables, or a call's result, doubles are numbers allocated a frame
+  let lv = new Float64Array(3), run = 0, left = 0
+  // the arrays given back, in one object made here: an object a frame is an allocation a frame
+  let res = { mag: out, phase: null }
 
   return (mag, phase) => {
     let kHi = Math.min(half, Math.round((live.cutoff ?? CUTOFF) / bin)), n = Math.min(K, kHi + H + 1)
@@ -119,23 +126,29 @@ function removal(o, live = o) {
     for (let k = k20; k <= kA && k < n; k++) a += lam[k]
     if (a > 0) {
       for (let k = kA + 1; k < n; k++) { let r = lam[k] / a; rb[k] = t ? AR * rb[k] + (1 - AR) * r : r; if (rb[k] < cur[k]) cur[k] = rb[k] }
-      for (let k = kA + 1; k < n; k++) { let m = cur[k]; for (let u of subs) if (u[k] < m) m = u[k]; if (CAP * a * m < lam[k]) lam[k] = CAP * a * m }
+      for (let k = kA + 1; k < n; k++) { let m = cur[k]; for (let j = 0, i = sub[0]; j < sub[1]; j++, i = i + 1 === SUBS ? 0 : i + 1) if (ring[i][k] < m) m = ring[i][k]; if (CAP * a * m < lam[k]) lam[k] = CAP * a * m }
     }
-    if (++t % V === 0) { subs.push(Float64Array.from(cur)); if (subs.length > SUBS) subs.shift(); cur.fill(Infinity) }
+    if (++t % V === 0) {                            // a sub-window ends: its minima join the last SUBS, the oldest leaving
+      let i = sub[0] + sub[1]
+      if (sub[1] < SUBS) sub[1]++
+      else sub[0] = sub[0] + 1 === SUBS ? 0 : sub[0] + 1
+      ring[i % SUBS].set(cur); cur.fill(Infinity)
+    }
     bridge(Pb, lam, k20, kHi, n)
 
     // is it wind: the low band aperiodic and over the mid band, for ARM frames in a row; then held
     let El = 0, Em = 0
     for (let k = k20; k <= kL; k++) El += mag[k] * mag[k]
     for (let k = kL + 1; k <= kM; k++) Em += mag[k] * mag[k]
-    peak = Math.max(Em, aPk * peak)
-    let r = periodicity(mag, k20, kL, ar, ai, rw, tLo, tHi)
+    let peak = lv[0] = Math.max(Em, aPk * lv[0])
+    periodicity(mag, k20, kL, ar, ai, rw, tLo, tHi, lv)
+    let r = lv[2]
     run = r < R_MAX && (1 - r) * El > Math.max(Em, FLOOR * peak) ? run + 1 : 0
     if (run >= ARM) left = hold
     else if (left > 0) left--
-    let T = left > 0 ? 1 : 0, c = T > w ? up : down
-    w = c * w + (1 - c) * T
-    if (!T && w < 1e-3) w = 0
+    let T = left > 0 ? 1 : 0, c = T > lv[1] ? up : down
+    let w = lv[1] = c * lv[1] + (1 - c) * T
+    if (!T && w < 1e-3) w = lv[1] = 0
 
     // the gain
     q.fill(Q_ELSE, 0, kHi + 1)
@@ -150,7 +163,8 @@ function removal(o, live = o) {
       let p = 1 / (1 + q[k] / (1 - q[k]) * (1 + XI_H1) * Math.exp(-g * XI_H1 / (1 + XI_H1)))
       if (w) out[k] = w * (1 - G ** p * gMin ** (1 - p)) * mag[k]
     }
-    return { mag: out, phase }
+    res.phase = phase
+    return res
   }
 }
 
@@ -179,18 +193,19 @@ function opening(P, lo, n, e, d) {
 }
 
 // the band's normalized autocorrelation from the frame's power spectrum over the window's, its peak at lags tLo..tHi past
-// the first lag where it turns negative: a smooth noise stays correlated at short lags, only a periodic sound comes back
-function periodicity(mag, lo, hi, ar, ai, rw, tLo, tHi) {
+// the first lag where it turns negative: a smooth noise stays correlated at short lags, only a periodic sound comes back.
+// Into out[2]: V8 does not inline this call, and a double it returned would be a number allocated a frame
+function periodicity(mag, lo, hi, ar, ai, rw, tLo, tHi, out) {
   ar.fill(0); ai.fill(0)
   for (let k = lo; k <= hi; k++) ar[k] = mag[k] * mag[k]
   let c = ifft(ar, ai), c0 = c[0], best = 0, dipped = false
-  if (!(c0 > 1e-30)) return 0
+  if (!(c0 > 1e-30)) { out[2] = 0; return }
   for (let t = 1; t <= tHi; t++) {
     let v = c[t] / c0 / rw[t]
     if (v < 0) dipped = true
     else if (dipped && t >= tLo && v > best) best = v
   }
-  return Math.min(1, best)
+  out[2] = Math.min(1, best)
 }
 
 // the Hann window's circular autocorrelation, normalized: what a white noise's would read

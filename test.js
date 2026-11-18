@@ -479,6 +479,44 @@ test('dehum – a chord held under percussion is no tone, at any tilt: untouched
   }
 })
 
+test('dehum – nothing is taken away in a run of exact zeros: the silence after a take, an edit\'s gap', () => {
+  // a hum of one line switching off moves that line alone and reads as no jump, so its estimate was bridged into the
+  // silence from the sound around and written there inverted: 1.7·10⁻² RMS in the silence's first 0.1 s after 1.5 s of
+  // noise over a 50 Hz hum at 0.05 (3.5·10⁻² RMS)
+  let r = 999, u = () => (r = (r * 1664525 + 1013904223) >>> 0) / 4294967296, g = () => Math.sqrt(-2 * Math.log(1 - u())) * Math.cos(2 * Math.PI * u())
+  let B = Math.round(1.5 * fs), hum = i => 0.05 * Math.sin(2 * Math.PI * 50 * i / fs), n = Float32Array.from({ length: B }, () => 0.15 * g())
+  let y = dehum(Float32Array.from({ length: B + fs }, (_, i) => i < B ? n[i] + hum(i) : 0), { fs }), e = 0, h = 0
+  ok(y.subarray(B).every(v => v === 0), 'the second of silence after the take: zeros, as they came')
+  for (let i = Math.round(0.2 * fs); i < Math.round(1.3 * fs); i++) e += (y[i] - n[i]) ** 2, h += hum(i) ** 2
+  ok(10 * Math.log10(h / e) > 12, `the hum where it plays: ${(10 * Math.log10(h / e)).toFixed(1)} dB of it gone`)
+  let s = lena.subarray(0, 3 * fs), a = Math.round(fs), b = Math.round(1.3 * fs)
+  let z = dehum(Float32Array.from(s, (v, i) => i >= a && i < b ? 0 : v + 0.02 * Math.sin(2 * Math.PI * 60 * i / fs + 1)), { fs })
+  ok(z.subarray(a, b).every(v => v === 0), 'speech over a 60 Hz hum, an edit\'s gap of 0.3 s: zeros')
+  let w = dehum(Float32Array.from({ length: s.length + fs / 10 }, (_, i) => i < s.length ? s[i] + 0.02 * Math.sin(2 * Math.PI * 50 * i / fs) : 0), { fs, steady: true })
+  ok(w.subarray(s.length).every(v => v === 0), 'steady, 0.1 s of silence after the take: zeros')
+})
+
+// The tone path and a run's length. A tone off the series is bridged into a run of zeros as a line is: 0.7.1 wrote a
+// 7 kHz tone at 0.3, found under speech and a bed, into the 0.1 s of silence after the take inverted at its full level
+// (0.21 RMS), and told, into an edit's gap of 0.3 s alike. A run is skipped from a period of its line on (a line a period
+// long puts a sample off zero): under a 50 Hz hum a run of half a period is subtracted as 0.7.1 subtracts it, the hum's
+// estimate written there inverted, and a run of a period and a half stays zeros
+test('dehum – a tone off the series is not subtracted in a run of exact zeros either; a run shorter than a period still is', async () => {
+  let { tones } = await import('@audio/denoise-dehum')
+  let n = 4 * fs, m = n + fs / 10, speech = lena.subarray(0, n), bed = gauss(m, 0.01), tone = sine(7000, m, 0.3)
+  let x = Float32Array.from({ length: m }, (_, i) => i < n ? speech[i] + tone[i] + bed[i] : 0), t = tones(x, fs), y = dehum(copy(x), { fs })
+  ok(t.length === 1 && Math.abs(t[0].freq - 7000) < 0.01, `a tone found: ${t.map(v => v.freq.toFixed(2)).join(', ')} Hz`)
+  ok(y.subarray(n).every(v => v === 0), 'found, the 0.1 s of silence after the take: zeros')
+  let a = Math.round(1.5 * fs), b = a + Math.round(0.3 * fs)
+  let z = dehum(Float32Array.from({ length: n }, (_, i) => i >= a && i < b ? 0 : x[i]), { fs, tones: [7000] })
+  ok(z.subarray(a, b).every(v => v === 0), 'told, an edit\'s gap of 0.3 s: zeros')
+  let hum = i => 0.05 * Math.sin(2 * Math.PI * 50 * i / fs), s1 = fs, e1 = s1 + 441, s2 = 2 * fs, e2 = s2 + 1323, e = 0, p = 0
+  let h = Float32Array.from(gauss(3 * fs, 0.15, 11), (v, i) => (i >= s1 && i < e1) || (i >= s2 && i < e2) ? 0 : v + hum(i)), w = dehum(copy(h), { fs })
+  for (let i = s1; i < e1; i++) e += (w[i] + hum(i)) ** 2, p += hum(i) ** 2
+  ok(10 * Math.log10(p / e) > 10, `half a period of zeros (441 samples): the hum's estimate written there inverted, ${(10 * Math.log10(p / e)).toFixed(1)} dB from it`)
+  ok(w.subarray(s2, e2).every(v => v === 0), 'a period and a half (1323 samples): zeros')
+})
+
 // =================== specsub ===================
 
 test('specsub — improves SNR on white-noisy speech', () => {
@@ -1345,6 +1383,21 @@ test('dewind — stream ≡ batch under any chunking; the manifest delays it by 
   ok(L === 4095 && m === 0, `manifest: latency ${L}, max deviation ${m}`)
 })
 
+test('dewind – the manifest\'s tail covers the frame its removal spreads over, N − 1 past the latency (was 0)', async () => {
+  // wind, then silence: 60 dB under the wind's RMS in every 64-frame window from latency + tail on, as the contract's
+  // validator measures a tail (its Gaussian noise has no wind to take, so it heard none)
+  let { dewind: atom } = await import('@audio/denoise-dewind/audio')
+  for (let sr of [44100, 48000]) {
+    let n = 3 * sr, S = 2 * sr, x = add(sine(440, n, 0.05), lfNoise(n, 6)); x.fill(0, S)
+    let params = Object.fromEntries(Object.entries(atom.params).map(([k, p]) => [k, Float32Array.of(p.default)]))
+    let process = atom({ sampleRate: sr, maxBlockSize: 512, maxChannels: 1, params }), out = new Float32Array(n)
+    for (let i = 0; i < n; i += 512) { let o = new Float32Array(Math.min(512, n - i)); process([[x.subarray(i, i + o.length)]], [[o]], params); out.set(o, i) }
+    let L = atom.latency({ sampleRate: sr }), T = atom.tail({ sampleRate: sr, params }), floor = 1e-3 * Math.sqrt(x.subarray(0, S).reduce((s, v) => s + v * v, 0) / S), loud = 0
+    for (let i = S + L + Math.max(128, Math.ceil(T * sr)); i + 64 <= n; i += 64) { let e = 0; for (let j = i; j < i + 64; j++) e += out[j] * out[j]; if (Math.sqrt(e / 64) > floor) loud++ }
+    ok(loud === 0 && Math.round(T * sr) === L, `${sr} Hz: tail ${Math.round(T * sr)} frames, ${loud} loud windows past it`)
+  }
+})
+
 test('dewind — improves SNR on intermittent gusts', () => {
   let speech = lena.subarray(0, fs * 4)
   let gust = new Float32Array(speech.length)
@@ -2004,6 +2057,23 @@ test('classify — a bed holding steady tones (a fan) under a voice routes to om
   is(c.method, 'omlsa', `bed ${c.scores.snr.toFixed(1)} dB under`)
 })
 
+// Radio static under a voice, as Apollo 11's downlink carries it: white noise fading at random, ±4 dB a step every
+// 20 ms (its 46 ms frames spread twice as wide as Gaussian noise's, as Armstrong's "one small step" static's do), and a
+// buzz held through it, harmonics 2–40 of 172 Hz carrying half its power. The fading keeps it off the floor and the
+// steady bands, Gaussian noise's spread; its pauses are flat but for the buzz, whose lines hold a second on as from frame
+// to frame: noise with its own lines. 0.7 counted them against it and found no bed.
+test('classify — radio static with a held buzz under a voice routes to omlsa', () => {
+  let v = syllables(fs * 4), a = rms(v), r = lcg(9), q = lcg(4), x = new Float32Array(v.length), g = 1, step = Math.round(0.02 * fs)
+  for (let i = 0; i < x.length; i++) {
+    if (i % step === 0) g = 10 ** ((q() * 2 - 1) * 4 / 20)
+    let s = 0
+    for (let h = 2; h <= 40; h++) s += Math.sin(2 * Math.PI * 172 * h * i / fs + h)
+    x[i] = v[i] + 0.25 * a * (g * (r() * 2 - 1) * Math.sqrt(3) + s / Math.sqrt(39))
+  }
+  let c = classify(x, fs)
+  is(c.method, 'omlsa', `bed ${c.scores.snr.toFixed(1)} dB under`)
+})
+
 // Every bed goes to omlsa: it kept STOI over wiener's on each class of noise measured, at equal PESQ (denoise.js)
 test('classify — broadband noise routes to omlsa', () => {
   is(classify(noise(fs, 0.1), fs).method, 'omlsa')
@@ -2570,4 +2640,153 @@ test('STFT manifests — output is the kernel stream delayed by exactly the decl
 test('specsub, omlsa, wiener: frame of the power of two nearest 32 ms at each rate, latency declared to match', () => {
   for (let atom of [specsubAtom, omlsaAtom, wienerAtom])
     is([16000, 22050, 44100, 48000].map(sampleRate => atom.latency({ sampleRate }) + 1).join(), '512,512,1024,2048', atom.name)
+})
+
+test('specsub, omlsa, wiener: every param is live: changed between blocks, the kernel stream with that change between its writes, delayed by the latency; the change is heard (were restart: ignored)', () => {
+  // speech in noise, the change at 1 s: a steady tone or noise alone keeps every a priori SNR on its floor, where the
+  // decision-directed α has nothing to weigh
+  let x = add(lena.slice(0, 2 * fs), noise(2 * fs, 0.02)), f = Math.fround, B = 128, at = Math.round(fs / B) * B
+  let cases = [
+    [specsubAtom, { alpha: 3 }, o => { o.alpha = 3 }, () => ({ alpha: 0, beta: f(0.05), fs })],
+    [specsubAtom, { beta: 0.3 }, o => { o.beta = f(0.3) }, () => ({ alpha: 0, beta: f(0.05), fs })],
+    [wienerAtom, { rule: 'wiener' }, o => { o.rule = 'wiener' }, () => ({ rule: 'mmse-lsa', alphaDD: f(0.98), xiMin: 10 ** (-15 / 10), fs })],
+    [wienerAtom, { alphaDD: 0.85 }, o => { o.alphaDD = f(0.85) }, () => ({ rule: 'mmse-lsa', alphaDD: f(0.98), xiMin: 10 ** (-15 / 10), fs })],
+    [wienerAtom, { xiFloor: -5 }, o => { o.xiMin = 10 ** (f(-5) / 10) }, () => ({ rule: 'mmse-lsa', alphaDD: f(0.98), xiMin: 10 ** (-15 / 10), fs })],
+    ...[[{ alphaDD: 0.85 }, o => { o.alphaDD = f(0.85) }], [{ qPrior: 0.5 }, o => { o.qPrior = f(0.5) }], [{ gMin: -30 }, o => { o.gMin = -30 }],
+      [{ xiFloor: -10 }, o => { o.xiMin = 10 ** (-10 / 10) }], [{ threshold: 6 }, o => { o.threshold = 6 }]]
+      .map(([set, move]) => [omlsaAtom, set, move, () => ({ alphaDD: f(0.97), xiMin: 10 ** (-25 / 10), qPrior: 0, gMin: -15, threshold: 0, fs })]),
+  ]
+  let kernels = new Map([[specsubAtom, specsubKernel], [wienerAtom, wienerKernel], [omlsaAtom, omlsaKernel]])
+  for (let [atom, set, move, opts] of cases) {
+    let L = atom.latency({ sampleRate: fs }), params = defaults(atom), changed = defaults(atom)
+    for (let k in set) changed[k] = typeof set[k] === 'number' ? Float32Array.of(set[k]) : set[k]
+    let run = change => {
+      let process = atom({ sampleRate: fs, maxBlockSize: B, maxChannels: 1, params }), out = new Float32Array(x.length)
+      for (let i = 0; i < x.length; i += B) { let o = new Float32Array(Math.min(B, x.length - i)); process([[x.subarray(i, i + o.length)]], [[o]], change && i >= at ? changed : params); out.set(o, i) }
+      return out
+    }
+    let o = opts(), write = kernels.get(atom)(o), ref = new Float32Array(x.length), p = 0
+    for (let i = 0; i < x.length; i += B) { if (i === at) move(o); let y = write(x.subarray(i, i + B)); ref.set(y.subarray(0, x.length - p), p); p += y.length }
+    let out = run(true), still = run(false), err = 0, heard = 0
+    for (let i = L; i < x.length; i++) err = Math.max(err, Math.abs(out[i] - ref[i - L])), heard = Math.max(heard, Math.abs(out[i] - still[i]))
+    ok(err === 0 && heard > 1e-3, `${atom.name} ${JSON.stringify(set)}: as the kernel with the change (deviation ${err}), heard (${heard.toFixed(4)} from the render without it)`)
+  }
+})
+
+test('specsub, omlsa, wiener: the tail covers the frame a gain spreads over, N − 1 past the latency (were 0)', () => {
+  // a burst, then silence; 60 dB under the burst's RMS in every 64-frame window from latency + tail on, as the contract's
+  // validator measures a tail: the noise the trackers learn, and a tone they keep
+  for (let atom of [specsubAtom, omlsaAtom, wienerAtom]) for (let sr of [44100, 48000]) for (let tone of [0, 1]) {
+    let n = sr, S = sr / 2, x = add(noise(n, 0.1), tone ? sine(1000, n, 0.3) : new Float32Array(n)); x.fill(0, S)
+    let params = defaults(atom), process = atom({ sampleRate: sr, maxBlockSize: 512, maxChannels: 1, params }), out = new Float32Array(n)
+    for (let i = 0; i < n; i += 512) { let o = new Float32Array(Math.min(512, n - i)); process([[x.subarray(i, i + o.length)]], [[o]], params); out.set(o, i) }
+    let L = atom.latency({ sampleRate: sr }), T = atom.tail({ sampleRate: sr, params }), floor = 1e-3 * Math.sqrt(x.subarray(0, S).reduce((s, v) => s + v * v, 0) / S), loud = 0
+    for (let i = S + L + Math.max(128, Math.ceil(T * sr)); i + 64 <= n; i += 64) { let e = 0; for (let j = i; j < i + 64; j++) e += out[j] * out[j]; if (Math.sqrt(e / 64) > floor) loud++ }
+    ok(loud === 0 && Math.round(T * sr) === L, `${atom.name} at ${sr} Hz${tone ? ', a tone' : ''}: tail ${Math.round(T * sr)} frames, ${loud} loud windows past it`)
+  }
+})
+
+test('deplosive: crossover is live: changed between blocks, the kernel stream with that change between its writes; heard (was restart: ignored)', async () => {
+  let { default: kernel } = await import('@audio/denoise-deplosive'), { deplosive: atom } = await import('@audio/denoise-deplosive/audio')
+  let B = 128, n = Math.floor(2 * fs / B) * B, x = add(sine(1500, n, 0.05), sine(110, n, 0.1)), at = Math.round(fs / B) * B
+  for (let p = 0; p < 6; p++) x.set(add(x.subarray(Math.floor((0.2 + 0.3 * p) * fs), Math.floor((0.2 + 0.3 * p) * fs) + 1500), pulse(1500, 0, 30, 0.6)), Math.floor((0.2 + 0.3 * p) * fs))
+  let run = change => {
+    let params = defaults(atom), moved = { ...defaults(atom), crossover: Float32Array.of(250) }
+    let process = atom({ sampleRate: fs, maxBlockSize: B, maxChannels: 1, params }), out = new Float32Array(n)
+    for (let i = 0; i < n; i += B) { let o = new Float32Array(B); process([[x.subarray(i, i + B)]], [[o]], change && i >= at ? moved : params); out.set(o, i) }
+    return out
+  }
+  let f = Math.fround, opts = { fs, crossover: 120, attack: f(0.0005), release: f(0.03) }, write = kernel(opts), ref = new Float32Array(n)   // a host's values are Float32
+  for (let i = 0; i < n; i += B) { if (i === at) opts.crossover = 250; ref.set(write(x.subarray(i, i + B)), i) }
+  let out = run(true), still = run(false), err = 0, heard = 0
+  for (let i = 0; i < n; i++) err = Math.max(err, Math.abs(out[i] - ref[i])), heard = Math.max(heard, Math.abs(out[i] - still[i]))
+  ok(err === 0 && heard > 1e-3, `as the kernel with the change (deviation ${err}), heard (${heard.toFixed(4)} from the render without it)`)
+})
+
+test('deplosive: the tail covers a duck held as the input stops, its low band\'s other half: latency past the latency (was 0)', async () => {
+  // a tone with pops, then silence, a long release keeping the duck on; 60 dB under the input's RMS in every 64-frame
+  // window from latency + tail on, as the contract's validator measures a tail (its setting 1 found 20.3 ms against 0)
+  let { deplosive: atom } = await import('@audio/denoise-deplosive/audio')
+  for (let sr of [44100, 48000]) for (let set of [{}, { triggerRatio: 0.25, attenuation: -60, attack: 0.09686, release: 0.7671, crossover: 50 }]) {
+    let n = 2 * sr, S = sr, P = Math.round(0.15 * sr), W = Math.round(0.025 * sr)
+    let x = Float32Array.from({ length: n }, (_, i) => i < S ? 0.2 * Math.sin(2 * Math.PI * 248 * i / sr) + (i % P < W ? 0.6 * Math.sin(Math.PI * (i % P) / W) : 0) : 0)
+    let params = defaults(atom)
+    for (let k in set) params[k] = Float32Array.of(set[k])
+    let process = atom({ sampleRate: sr, maxBlockSize: 512, maxChannels: 1, params }), out = new Float32Array(n)
+    for (let i = 0; i < n; i += 512) { let o = new Float32Array(Math.min(512, n - i)); process([[x.subarray(i, i + o.length)]], [[o]], params); out.set(o, i) }
+    let L = atom.latency({ sampleRate: sr }), T = atom.tail({ sampleRate: sr, params }), floor = 1e-3 * Math.sqrt(x.subarray(0, S).reduce((s, v) => s + v * v, 0) / S), loud = 0
+    for (let i = S + L + Math.max(128, Math.ceil(T * sr)); i + 64 <= n; i += 64) { let e = 0; for (let j = i; j < i + 64; j++) e += out[j] * out[j]; if (Math.sqrt(e / 64) > floor) loud++ }
+    ok(loud === 0, `${sr} Hz ${JSON.stringify(set)}: tail ${Math.round(T * sr)} frames, ${loud} loud windows past it`)
+  }
+})
+
+// CONTRACT 1.0, process: "Allocate nothing". A warm process() in a child Node with a 1 MB young generation, counted over
+// 2^16 blocks of 8 frames (a collection is 1 MB, so 16 bytes a block show), under the contract validator's flags, at
+// the defaults and with each param moving every block, one case after another in one process. Where V8 boxes a number
+// moves with its version: measured on Node 20, 22 and 25
+test('deplosive allocates nothing in process, at its defaults and as its params move', { skip: +process.versions.node.split('.')[0] < 20 && 'measured on Node 20 and later' }, async () => {
+  let { execFileSync } = await import('node:child_process')
+  let cases = [['deplosive'], ['deplosive', 'crossover', 50, 300], ['deplosive', 'attack', 0.0001, 0.2], ['deplosive', 'release', 0.005, 1], ['deplosive', 'triggerRatio', 0.25, 20], ['deplosive', 'attenuation', -60, 0]]
+    .map(([name, key, a, b]) => [import.meta.resolve(`@audio/denoise-${name}/audio`), name, key, a, b])
+  let child = `
+    import { PerformanceObserver } from 'node:perf_hooks'
+    let counts = []
+    for (let [url, name, key, a, b] of JSON.parse(process.argv[1])) {
+      let m = (await import(url))[name], given = () => Object.fromEntries(Object.entries(m.params).map(([k, s]) => [k, s.type === 'number' ? Float32Array.of(s.default) : s.default]))
+      let params = given(), proc = m({ sampleRate: 48000, maxBlockSize: 128, maxChannels: 2, params: given() })
+      let src = [0, 1].map(c => Float32Array.from({ length: 512 }, (_, i) => 0.5 * Math.sin(i * 0.01 + c) + 0.1 * Math.sin(i * 1.7) + (i % 256 < 20 ? 0.5 : 0)))
+      let ins = Array.from({ length: 64 }, (_, k) => [src.map(c => c.subarray(k * 8, k * 8 + 8))]), outs = [[new Float32Array(8), new Float32Array(8)]]
+      let v = typeof a === 'number' ? params[key] : null, to = Float32Array.of(a ?? 0, b ?? 0)
+      let move = !key ? i => {} : v ? i => { v[0] = to[i & 1] } : i => { params[key] = i & 1 ? b : a }
+      let run = n => { for (let i = 0; i < n; i++) { move(i); proc(ins[i & 63], outs, params) } }
+      run(1 << 15); globalThis.gc()
+      let gcs = 0, seen = new PerformanceObserver(list => { gcs += list.getEntries().length }); seen.observe({ entryTypes: ['gc'] })
+      run(1 << 16); await new Promise(done => setTimeout(done, 20)); seen.disconnect()
+      counts.push(gcs)
+    }
+    console.log(JSON.stringify(counts))`
+  let counts = JSON.parse(execFileSync(process.execPath, ['--max-semi-space-size=1', '--expose-gc', '--no-concurrent-recompilation', '--input-type=module', '-e', child, JSON.stringify(cases)], { encoding: 'utf8' }))
+  cases.forEach(([, name, key, a, b], k) => is(counts[k], 0, `${name}${key ? `, ${key} ${a} ↔ ${b} each block` : ''}: ${counts[k]} collections in 2^16 blocks`))
+})
+
+// The frame processes (`processor`) under the contract validator's measure (@audio/compile tools/verify.js `taken`): in a
+// child Node with its flags, a case a child, the bytes the young generation, the stores of typed arrays and the old
+// generation take in over 2^12 warm frames, read in two forced minor collections, the lesser of two runs; three instances
+// a case, as a manifest keeps one a channel (with more than one, V8 no longer folds a closure's constants). The frames are
+// a signal's that takes every path: digital silence, a held tone, wind, voiced bursts, a stretch 12 dB louder. The line is
+// the validator's, 3/64 of a byte a block of 8 frames at 48 kHz: 3 bytes a frame at a 512 hop
+test('specsub, wiener, omlsa, dewind: the frame process allocates nothing a frame, tracked or held, quiet or loud', { skip: !(await import('node:v8')).default.GCProfiler && 'no v8.GCProfiler to count with (Node 18.15 and later have it)' }, async () => {
+  let { execFileSync } = await import('node:child_process')
+  let child = `
+    import v8 from 'node:v8'
+    let minor = { type: 'minor' }, sp = { young: ['new_space', 'new_large_object_space'], old: ['old_space', 'large_object_space'] }
+    let used = (g, w) => g.heapSpaceStatistics.reduce((a, s) => sp[w].includes(s.spaceName) ? a + s.spaceUsedSize : a, 0)
+    let taken = f => {
+      let p = new v8.GCProfiler(), t = 0
+      p.start(); gc(minor); f(); gc(minor)
+      let g = p.stop().statistics
+      for (let i = 1; i < g.length; i++) { let a = g[i - 1].afterGC, b = g[i].beforeGC; t += used(b, 'young') - used(a, 'young') + Math.max(0, used(b, 'old') - used(a, 'old')) + b.heapStatistics.externalMemory - a.heapStatistics.externalMemory }
+      return t
+    }
+    let [url, set] = JSON.parse(process.argv[1]), { stftAnalyse } = await import(${JSON.stringify(import.meta.resolve('@audio/stft'))})
+    let mod = await import(url), fs = 48000, N = mod.frame(fs), hop = N >> 2, half = N >> 1, n = 8 * fs, x = new Float32Array(n), r = 12345, lp = 0
+    let rnd = () => (r = (r * 1664525 + 1013904223) >>> 0) / 4294967296 - 0.5
+    for (let i = 0; i < n; i++) {
+      let t = i / fs, voice = t % 1.3 < 0.4 ? 0.3 * Math.sin(2 * Math.PI * 180 * t) * (1 + Math.sin(2 * Math.PI * 3 * t)) + 0.1 * Math.sin(2 * Math.PI * 900 * t) : 0
+      lp = 0.995 * lp + 0.2 * rnd()
+      x[i] = t % 3.1 > 2.9 ? 0 : (lp * (t < 4 ? 1 : 0.2) + 0.02 * rnd() + 0.05 * Math.sin(2 * Math.PI * 1000 * t) + voice) * (t > 6 ? 4 : 1)
+    }
+    let mags = [], phases = []
+    stftAnalyse(x, (m, p) => { mags.push(Float64Array.from(m)); phases.push(Float64Array.from(p)) }, { frameSize: N, hopSize: hop })
+    let opts = { ...set, fs, frameSize: N, hopSize: hop }
+    if (set.held) { delete opts.held; opts.profile = mags[3].map(v => v * v) }
+    let procs = [0, 1, 2].map(() => mod.processor(opts)), mag = new Float64Array(half + 1), phase = new Float64Array(half + 1), F = mags.length
+    let drive = k => { for (let i = 0; i < k; i++) for (let j = 0; j < 3; j++) { mag.set(mags[i % F]); phase.set(phases[i % F]); procs[j](mag, phase) } }
+    drive(2 * F); drive(2 * F)
+    console.log(JSON.stringify({ hop, bytes: Math.min(taken(() => drive(1 << 12)), taken(() => drive(1 << 12))) / (3 << 12) }))`
+  let cases = [['spectral', {}], ['wiener', {}], ['wiener', { rule: 'wiener' }], ['omlsa', {}], ['omlsa', { held: true }], ['omlsa', { qFrom: 'dd' }], ['omlsa', { threshold: 4, qPrior: 0.3 }], ['dewind', {}], ['dewind', { cutoff: 2000 }]]
+  for (let [name, set] of cases) {
+    let { hop, bytes } = JSON.parse(execFileSync(process.execPath, ['--expose-gc', '--no-concurrent-recompilation', '--no-allocation-site-pretenuring', '--no-concurrent-array-buffer-sweeping', '--input-type=module', '-e', child, JSON.stringify([import.meta.resolve(`@audio/denoise-${name}`), set])], { encoding: 'utf8' }))
+    ok(bytes <= 3 / 64 * hop / 8, `${name} ${JSON.stringify(set)}: ${+bytes.toPrecision(3)} bytes a frame (at most ${3 / 64 * hop / 8}, the validator's line at a hop of ${hop})`)
+  }
 })

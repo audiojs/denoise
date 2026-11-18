@@ -29,5 +29,6 @@ export default function specsub(options?: SpecsubOptions): (chunk?: Float32Array
 /** The default frame at a rate: the power of two nearest 32 ms (512 at 16 and 22.05 kHz, 1024 at 44.1, 2048 at 48). */
 export function frame(fs: number): number
 /** The gain as an @audio/stft frame process, for a host that runs its own frames (Hann, hop frameSize/4). It keeps state
- *  across frames: one per channel. */
+ *  across frames: one per channel. It gains `mag` in place and returns one object, the same every frame, holding the
+ *  arrays it was given: nothing is allocated a frame. */
 export function processor(options?: SpecsubOptions): (mag: Float64Array, phase: Float64Array) => { mag: Float64Array, phase: Float64Array }

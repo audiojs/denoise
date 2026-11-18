@@ -219,11 +219,11 @@ function subtract(x, fs, f) {
   for (let it = 0; it < 6; it++) { let e = estimate(x, fs, f, [1], H); if (!e) return; f += e.df; if (Math.abs(e.df) < 1e-4) break }
   let w0 = 2 * Math.PI * f / fs, { c, full } = phasors(x, H, M, w0, [1]), fr = fs / H, g = hann(T * fr), lin = M >= g.length
   let w = weighFit(c[0], full, g, hann(TR * fr), lin).w, [ar, ai] = bridge(untone(c[0], full, fr), w, full, TRHO)
-  let o = H >> 1, c0 = H - o - 0.5
+  let o = H >> 1, c0 = H - o - 0.5, gap = gaps(x, fs / f)
   for (let n = 0; n < x.length; n++) {
     let u = (n - c0) / H, m = Math.max(0, Math.min(M - 2, Math.floor(u))), lam = Math.max(0, Math.min(1, u - m))
     let r = ar[m] + lam * (ar[m + 1] - ar[m]), i = ai[m] + lam * (ai[m + 1] - ai[m])
-    if (Number.isFinite(x[n])) x[n] -= r * Math.cos(w0 * n) - i * Math.sin(w0 * n)
+    if (Number.isFinite(x[n]) && !gap[n]) x[n] -= r * Math.cos(w0 * n) - i * Math.sin(w0 * n)
   }
 }
 
@@ -303,7 +303,8 @@ function trace(x, fs, f0, hmax, from) {
 function remove(x, fs, f0, hmax, told, from, still) {
   let t = trace(x, fs, f0, hmax, from)
   if (!t) return
-  if (still) return steady(x, t, f0, told)
+  let gap = gaps(x, fs / f0)
+  if (still) return steady(x, t, f0, told, gap)
   let { xs, an, w, P, fr, hm, tk, th } = t, all = an.c.map(() => true), pick = ls => ls.map((l, i) => (i + 1) * f0 <= FMAX || l.snr >= LINE)
   let held = told ? all : persists(an, fr) || all, on = told ? all : pick(lines(an, fr, [])).map((v, i) => v && held[i])
   if (!on.some(Boolean)) return
@@ -314,7 +315,22 @@ function remove(x, fs, f0, hmax, told, from, still) {
     if (!told) on = pick(lines(an, fr, cut)).map((v, i) => v && held[i])
   }
   let y = humOf(xs, an, w.k, P, fr, on, cut)
-  for (let n = 0; n < x.length; n++) if (Number.isFinite(x[n])) x[n] -= y[n]
+  for (let n = 0; n < x.length; n++) if (Number.isFinite(x[n]) && !gap[n]) x[n] -= y[n]
+}
+
+// The samples in runs of exact zeros `len` long or more (a period of the line: the take's end, an edit's gap, a gate's).
+// A line a period long puts a sample off zero, so none was there and nothing is taken away; the estimate, bridged into
+// them from the sound around (the program's absence reads as masking program), would write the line in, inverted
+function gaps(x, len) {
+  let g = new Uint8Array(x.length)
+  for (let i = 0, n = x.length; i < n; i++) {
+    if (x[i] !== 0) continue
+    let j = i
+    while (j < n && x[j] === 0) j++
+    if (j - i >= len) g.fill(1, i, j)
+    i = j
+  }
+  return g
 }
 
 // the frames each segment holds between the hum's jumps (cut: the first of the two frames each jump straddles), and a
@@ -436,7 +452,7 @@ function humOf(xs, an, k, P, fr, on, cut, held = null) {
 // HELD times the line's power where the program falls silent (a note on a line rings into its held phasor, the take's
 // silence does not hold it); each frame's by its expected coherence, e^(−h²σ²/2), σ² the phase's variance there (the
 // smoother's): where the program masked the hum and the phase is bridged, the upper lines go less, never added.
-function steady(x, { xs, an, w, P, fr, hm }, f0, told) {
+function steady(x, { xs, an, w, P, fr, hm }, f0, told, gap) {
   let ht = Math.min(hm, Math.max(1, Math.floor(TMAX / f0))), gr = hann(TR * fr), vr = null
   let comb = an => an.c.map((ck, i) => i < ht ? hold(ck, an.full, gr) : null), C = comb(an)
   for (let H of [...[2, 4, 8, 16, 32, 64].filter(h => h < ht), ht, ht]) {
@@ -448,7 +464,7 @@ function steady(x, { xs, an, w, P, fr, hm }, f0, told) {
   let { M } = an, s2 = m => Math.min(vr[Math.min(m, vr.length - 1)], 1e3)
   let a = C.map((q, i) => on[i] ? [0, 1].map(j => Float64Array.from({ length: M }, (_, m) => q.a[j] * Math.exp(-0.5 * (i + 1) ** 2 * s2(m)))) : null)
   let y = humOf(xs, an, w.k, P, fr, on, [], a)
-  for (let n = 0; n < x.length; n++) if (Number.isFinite(x[n])) x[n] -= y[n]
+  for (let n = 0; n < x.length; n++) if (Number.isFinite(x[n]) && !gap[n]) x[n] -= y[n]
 }
 
 // the frames where the program falls silent around the first 20 lines (their held residual, 1/w less KAPPA of the

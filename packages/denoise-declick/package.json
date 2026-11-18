@@ -23,7 +23,8 @@
     "audio.d.ts"
   ],
   "scripts": {
-    "test": "node test.js"
+    "test": "node test.js",
+    "prepublishOnly": "node ../../../compile/tools/tested.js"
   },
   "dependencies": {
     "@audio/lpc": "^1.2.0"

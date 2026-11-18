@@ -21,12 +21,12 @@ export interface SpecsubOptions {
 export declare const specsub: {
   (ctx: Ctx): Process
   channels: "any"
-  latency: (ctx: { sampleRate: number, params: Live }) => number
-  tail: 0
+  latency: (at: { sampleRate: number, params: Live, buffers: {} }) => number
+  tail: (at: { sampleRate: number, params: Live, buffers: {} }) => number
   params: {
-    /** 0..6 (default 0) [restart] */
+    /** 0..6 (default 0) */
     "alpha": { type: "number", default: 0 }
-    /** 0..0.5 (default 0.05) [restart] */
+    /** 0..0.5 (default 0.05) */
     "beta": { type: "number", default: 0.05 }
   }
 }

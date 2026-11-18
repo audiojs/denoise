@@ -16,6 +16,10 @@ export const desqueak = (ctx) => {
 }
 desqueak.channels = 'any'
 desqueak.streaming = false
+// No tail, though each part edits on frames and, given room past a take that ends mid-sound, would move the output for up
+// to a frame past its end (46 ms at 44.1 kHz with amp on). A host renders a whole-signal processor's tail by padding its
+// input with silence, and this processor reads the take's statistics (the amp's noise print, its detectors' levels), so
+// the padding would enter what it reads and move the output inside the take.
 desqueak.tail = 0
 desqueak.params = {
 	squeak: { type: 'number', min: -40, max: 0, default: -30, unit: 'dB' },   // the most a squeak goes down; 0 leaves squeaks
