@@ -42,6 +42,21 @@ omlsa(data, { fs, profileFrom: 0, profileTo: fs / 2, gMin: -12 })   // the noise
 
 Against iZotope RX 12's Voice De-noise and Spectral De-noise on the same speech, narrations and music: [Speech](https://github.com/audiojs/denoise#speech).
 
+**Allocation in a process's first stream**: until V8 has compiled the code a stream runs each frame, that code runs interpreted and allocates as it goes, and a path the stream first takes later stops the compiled code once (the noise tracker's guard of held partials closing its first window, 7.5 s in; later ones the sound decides). The `audio.js` processor, stereo at 44.1 kHz in blocks of 128 frames at its defaults, on noise and on speech in noise, what V8's heap and the typed arrays' stores take each second of sound, under the flags of @audio/compile's validator (compilation on the main thread) and under Node's own ([how](https://github.com/audiojs/denoise#allocation-in-a-first-stream); `node scripts/firststream.js`; Node 18, 20 and 22 on Linux, 20, 22 and 25 on macOS):
+
+| Node | 0–1 s | 1–3 s | 7–8 s | 3–16 s, the most a second | 16–90 s, the most a second | a second instance: 0–1 s, then the most a second |
+|---|---|---|---|---|---|---|
+| 18 | 21.5–21.6 MB | 798 KB | 416 KB | 108 KB | 1.2 KB | 1.2 MB, 177 KB |
+| 18, own flags | 84.3–92.8 MB | 6.1 MB | 6.0 MB | 216 B | 776 B | 1.1–5.1 MB, 108 KB |
+| 20 | 24.6–25.6 MB | 1.7 MB | 416 KB | 108 KB | 248 B | 1.2 MB, 202 KB |
+| 20, own flags | 86.8–94.4 MB | 5.6 MB | 10.4 MB | 108 KB | 392 B | 1.2–2.9 MB, 170 KB |
+| 22 | 43.0–46.2 MB | 3.6 MB | 1.2 MB | 89 KB | 1.5 KB | 584 KB to 2.3 MB, 11 KB |
+| 22, own flags | 82.9–121.0 MB | 11.2 MB | 5.2 MB | 98 KB | 1.3 KB | 2.9–7.0 MB, 8.8 KB |
+| 25 | 63.1–86.7 MB | 31.8 MB | 1.2 MB | 104 B | 2.1 KB | 510–511 KB, 120 B |
+| 25, own flags | 72.6–80.7 MB | 21.4 MB | 4.9 MB | 120 B | 1.3 KB | 966 KB to 2.5 MB, 272 B |
+
+A processor that copies its input reads up to 1.7 KB a second through the same harness after 16 s. On Node 20 under its own flags the stream went on allocating, to its end, in 1 of 20 runs (`--runs=5`, noise and speech, Linux and macOS; 379 KB in seconds 20 to 30): V8 11.3, compiling on the compiler's thread, can leave the noise tracker's update (noise-estimate's minimum statistics, or its guard of held partials) entering its on-stack-replacement code from the interpreter every frame, its own compiled code never taking over. With `--no-concurrent-recompilation`, as the validator runs, it did not in 10 runs on Linux (`--own --flags=--no-concurrent-recompilation --runs=5`), at most 1.2 KB in seconds 20 to 30. Node 18, 22 and 25 took at most 5.7 KB in seconds 20 to 30 in every run, the copying processor 1.0 KB. So a first stream allocates for its first 16 s, most of it in its first second, and a second instance in the same process up to 2.3 MB in its first second (7.0 MB under Node 22's own flags), then up to 202 KB.
+
 **Use when:** speech in non-stationary noise (street, café, car); generally the highest-quality choice for noisy speech. A steady noise with a stretch of it alone (hiss, hum, a fan, room tone): learn it, `profile`.
 
 ---

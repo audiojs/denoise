@@ -2821,9 +2821,14 @@ test('specsub, wiener, omlsa, dewind: the stream writer\'s write(chunk, out) and
 // The manifests' process under the contract validator's readings and measure (@audio/compile tools/verify.js: allocRun,
 // `taken`): in a child Node with its flags, a manifest a child, stereo at 48 kHz, maxBlockSize 128; at rest in blocks of 8
 // frames of noise (σ 0.15), every param moving every block, blocks of 1 to 128 frames, the noise 12 dB louder, then a second
-// instance at rest and moving. Each reading warms 2^14 blocks and counts two runs of 2^15; it fails where both runs take in
-// over 6144 bytes (3/64 of a byte a block over the validator's 2^17), the young generation, the stores of typed arrays and
-// the old generation: one number a frame is 8192 bytes a run at dewind's 1024 hop
+// instance at rest and moving. Each reading warms 2^20 frames, whatever its blocks, and counts two runs of 2^15 blocks; it
+// fails where both runs take in over 6144 bytes (3/64 of a byte a block over the validator's 2^17), the young generation,
+// the stores of typed arrays and the old generation: one number a frame is 8192 bytes a run at dewind's 1024 hop.
+// The warm-up is counted in hops, as the code a manifest runs once a hop is: 2^20 frames are 2048 hops at the 512 hop
+// (1024 at dewind's), and with the first run's 512 (256) the second starts 2560 hops in (1280), where the validator's
+// fixed reading starts its second (2^15 blocks of 8 warmed, 2^17 counted). Before that V8 is still compiling such code
+// and taking paths a stream reaches late for the first time (a tracker's window closing, its ring wrapping), each up to
+// about 1 MB as it is interpreted: the engine's one-off work, which the lesser of two runs keeps out only where it lands in one
 test('specsub, wiener, omlsa, dewind allocate nothing in process: at rest, every param moving, blocks of 1 to 128, loud, a second instance', { skip: !(await import('node:v8')).default.GCProfiler && 'no v8.GCProfiler to count with (Node 18.15 and later have it)' }, async () => {
   let { execFileSync } = await import('node:child_process')
   let child = `
@@ -2847,7 +2852,8 @@ test('specsub, wiener, omlsa, dewind allocate nothing in process: at rest, every
     let moves = Array.from({ length: R }, (_, k) => Object.fromEntries(keys.map((n, i) => { let p = m.params[n]; return [n, p.type === 'number' ? Float32Array.of(p.min + (p.max - p.min) * ((0.5 + 0.618034 * k + 0.1 * i) % 1)) : p.values[k % p.values.length]] })))
     let eight = slots(1, () => 8), varied = slots(1, k => sizes[k]), loud = slots(4, () => 8)
     let make = () => m({ sampleRate: sr, maxBlockSize: 128, maxChannels: 8, params: given() })
-    let read = (proc, sl, live) => { let f = n => { for (let i = 0; i < n; i++) { let k = i & 63; proc(sl[k].ins, sl[k].outs, live[k]) } }; f(1 << 13); f(1 << 13); return Math.min(taken(() => f(1 << 15)), taken(() => f(1 << 15))) }
+    let warm = sl => Math.ceil((1 << 20) * R / sl.reduce((n, s) => n + s.outs[0][0].length, 0))   // blocks of these slots in 2^20 frames
+    let read = (proc, sl, live) => { let f = n => { for (let i = 0; i < n; i++) { let k = i & 63; proc(sl[k].ins, sl[k].outs, live[k]) } }, w = warm(sl); f(w >> 1); f(w - (w >> 1)); return Math.min(taken(() => f(1 << 15)), taken(() => f(1 << 15))) }
     let a = make(), out = {}
     out.fixed = read(a, eight, still); out.moving = read(a, eight, moves); out.sizes = read(a, varied, still); out.loud = read(a, loud, still)
     let b = make()

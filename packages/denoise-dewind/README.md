@@ -80,6 +80,21 @@ STOI barely moves: its bands begin at 150 Hz, above most of the wind. Wind on a 
 
 The wind goes under the words too, between and under the harmonics; what a voice loses is mostly the harmonics the wind buries (its low end at −10 dB), and onsets.
 
+**Allocation in a process's first stream**: until V8 has compiled the code a stream runs each frame, that code runs interpreted and allocates as it goes, and a path the stream first takes later stops the compiled code once. The `audio.js` processor, stereo at 44.1 kHz in blocks of 128 frames at its defaults, on noise and on speech in noise, what V8's heap and the typed arrays' stores take each second of sound, under the flags of @audio/compile's validator (compilation on the main thread) and under Node's own ([how](https://github.com/audiojs/denoise#allocation-in-a-first-stream); `node scripts/firststream.js`; Node 18, 20 and 22 on Linux, 20, 22 and 25 on macOS):
+
+| Node | 0–1 s | 1–3 s | 7–8 s | 3–16 s, the most a second | 16–90 s, the most a second | a second instance: 0–1 s, then the most a second |
+|---|---|---|---|---|---|---|
+| 18 | 28.6–28.7 MB | 1.5 MB | 104 B | 269 KB | 104 B | 47–99 KB, 209 KB |
+| 18, own flags | 67.2–97.3 MB | 17.8 MB | 104 B | 305 KB | 272 B | 3.8 MB, 22 KB |
+| 20 | 28.8–28.9 MB | 2.6 MB | 104 B | 41 KB | 536 B | 1.3 MB, 104 KB |
+| 20, own flags | 57.5–82.0 MB | 11.7 MB | 104 B | 1.8 MB | 536 B | 62 KB to 2.6 MB, 5.0 MB |
+| 22 | 33.9–40.1 MB | 5.1 MB | 104 B | 65 KB | 1008 B | 2.5–3.2 MB, 27 KB |
+| 22, own flags | 76.2–81.1 MB | 17.8 MB | 104 B | 71 KB | 776 B | 3.2–5.1 MB, 22 KB |
+| 25 | 90.3–90.4 MB | 4.7 MB | 104 B | 104 B | 2.3 KB | 2.0 MB, 336 B |
+| 25, own flags | 36.4–40.1 MB | 7.3 MB | 104 B | 104 B | 2.7 KB | 17 KB to 11.9 MB, 672 B |
+
+A processor that copies its input reads up to 1.7 KB a second through the same harness after 16 s. `dewind` runs no tracker of noise-estimate's: in 20 runs on Node 20 under its own flags (`--runs=5`) it took at most 1.2 KB in seconds 20 to 30, and on Node 18, 22 and 25 at most 4.0 KB, the copying processor 1.0 KB. So a first stream allocates for its first 16 s, most of it in its first second, and a second instance in the same process up to 3.2 MB in its first second (11.9 MB under Node 25's own flags), then up to 209 KB (5.0 MB under Node 20's own).
+
 **Use when:** wind on a microphone under a voice or an instrument, gusting or steady; a recording's low rumble (traffic, a fan) where it outweighs the mid band in the pauses.<br>
 **Not for:** a lone thump (`deplosive`), a steady low tone or hum, which has a period (`dehum`, `highpass`), or broadband noise (`omlsa`, `wiener`). Air rushing over the whole band is taken only under `cutoff`. A neural model (`@audio/neural-denoise`'s DeepFilterNet3) takes more of the wind and keeps more of the voice; dewind leaves a sound with no aperiodic low end as it is (music, a voice with no rumble under it), streams at a frame's delay, and needs no model.
 

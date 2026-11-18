@@ -329,6 +329,21 @@ STOI barely moves: its bands begin at 150 Hz, above most of the wind. Wind on a 
 
 The wind goes under the words too, between and under the harmonics; what a voice loses is mostly the harmonics the wind buries (its low end at −10 dB), and onsets.
 
+**Allocation in a process's first stream**: until V8 has compiled the code a stream runs each frame, that code runs interpreted and allocates as it goes, and a path the stream first takes later stops the compiled code once. The `audio.js` processor, stereo at 44.1 kHz in blocks of 128 frames at its defaults, on noise and on speech in noise, what V8's heap and the typed arrays' stores take each second of sound, under the flags of @audio/compile's validator (compilation on the main thread) and under Node's own ([how](#allocation-in-a-first-stream); `node scripts/firststream.js`; Node 18, 20 and 22 on Linux, 20, 22 and 25 on macOS):
+
+| Node | 0–1 s | 1–3 s | 7–8 s | 3–16 s, the most a second | 16–90 s, the most a second | a second instance: 0–1 s, then the most a second |
+|---|---|---|---|---|---|---|
+| 18 | 28.6–28.7 MB | 1.5 MB | 104 B | 269 KB | 104 B | 47–99 KB, 209 KB |
+| 18, own flags | 67.2–97.3 MB | 17.8 MB | 104 B | 305 KB | 272 B | 3.8 MB, 22 KB |
+| 20 | 28.8–28.9 MB | 2.6 MB | 104 B | 41 KB | 536 B | 1.3 MB, 104 KB |
+| 20, own flags | 57.5–82.0 MB | 11.7 MB | 104 B | 1.8 MB | 536 B | 62 KB to 2.6 MB, 5.0 MB |
+| 22 | 33.9–40.1 MB | 5.1 MB | 104 B | 65 KB | 1008 B | 2.5–3.2 MB, 27 KB |
+| 22, own flags | 76.2–81.1 MB | 17.8 MB | 104 B | 71 KB | 776 B | 3.2–5.1 MB, 22 KB |
+| 25 | 90.3–90.4 MB | 4.7 MB | 104 B | 104 B | 2.3 KB | 2.0 MB, 336 B |
+| 25, own flags | 36.4–40.1 MB | 7.3 MB | 104 B | 104 B | 2.7 KB | 17 KB to 11.9 MB, 672 B |
+
+A processor that copies its input reads up to 1.7 KB a second through the same harness after 16 s. `dewind` runs no tracker of noise-estimate's: in 20 runs on Node 20 under its own flags (`--runs=5`) it took at most 1.2 KB in seconds 20 to 30, and on Node 18, 22 and 25 at most 4.0 KB, the copying processor 1.0 KB. So a first stream allocates for its first 16 s, most of it in its first second, and a second instance in the same process up to 3.2 MB in its first second (11.9 MB under Node 25's own flags), then up to 209 KB (5.0 MB under Node 20's own).
+
 **Use when:** wind on a microphone under a voice or an instrument, gusting or steady; a recording's low rumble (traffic, a fan) where it outweighs the mid band in the pauses.<br>
 **Not for:** a lone thump (`deplosive`), a steady low tone or hum, which has a period (`dehum`, `highpass`), or broadband noise (`omlsa`, `wiener`). Air rushing over the whole band is taken only under `cutoff`. A neural model (`@audio/neural-denoise`'s DeepFilterNet3) takes more of the wind and keeps more of the voice; dewind leaves a sound with no aperiodic low end as it is (music, a voice with no rumble under it), streams at a frame's delay, and needs no model.
 
@@ -431,6 +446,21 @@ specsub(data, { fs, noiseFrames: 6 })                          // noise from the
 | `estimator` | | Minimum statistics options (@audio/noise-estimate `minStats`); `{ partials: false }`: held notes learned as noise, as before |
 | `noiseFrames` / `profileFrom` / `profileTo` | | A noise-only stretch to average for the profile |
 
+**Allocation in a process's first stream**: until V8 has compiled the code a stream runs each frame, that code runs interpreted and allocates as it goes, and a path the stream first takes later stops the compiled code once (the noise tracker's guard of held partials closing its first window, 7.5 s in; later ones the sound decides). The `audio.js` processor, stereo at 44.1 kHz in blocks of 128 frames at its defaults, on noise and on speech in noise, what V8's heap and the typed arrays' stores take each second of sound, under the flags of @audio/compile's validator (compilation on the main thread) and under Node's own ([how](#allocation-in-a-first-stream); `node scripts/firststream.js`; Node 18, 20 and 22 on Linux, 20, 22 and 25 on macOS):
+
+| Node | 0–1 s | 1–3 s | 7–8 s | 3–16 s, the most a second | 16–90 s, the most a second | a second instance: 0–1 s, then the most a second |
+|---|---|---|---|---|---|---|
+| 18 | 11.2–11.9 MB | 2.1 MB | 551 KB | 270 KB | 752 B | 1.2 MB, 54 KB |
+| 18, own flags | 22.7–34.7 MB | 2.4 MB | 7.9 MB | 248 KB | 248 B | 1.8–2.1 MB, 55 KB |
+| 20 | 11.6–12.7 MB | 1.5 MB | 655 KB | 45 KB | 872 B | 1.2–1.3 MB, 121 KB |
+| 20, own flags | 22.4–41.9 MB | 15.9 MB | 7.2 MB | 135 KB | 135 KB | 2.0–10.9 MB, 36 KB |
+| 22 | 22.2–24.6 MB | 4.0 MB | 1.2 MB | 67 KB | 2.0 KB | 701 KB to 2.3 MB, 9.3 KB |
+| 22, own flags | 34.6–47.0 MB | 13.8 MB | 11.9 MB | 43 KB | 1.3 KB | 3.1–4.3 MB, 8.4 KB |
+| 25 | 12.5–14.8 MB | 6.7 MB | 1.1 MB | 104 B | 1.7 KB | 505–508 KB, 120 B |
+| 25, own flags | 21.2–29.5 MB | 14.4 MB | 8.9 MB | 104 B | 912 B | 805–991 KB, 120 B |
+
+A processor that copies its input reads up to 1.7 KB a second through the same harness after 16 s. On Node 20 under its own flags the stream went on allocating, to its end, in 9 of 20 runs (`--runs=5`, noise and speech, Linux and macOS; 118 to 135 KB a second through 90 s, 1.27 MB in seconds 20 to 30): V8 11.3, compiling on the compiler's thread, can leave the noise tracker's update (noise-estimate's minimum statistics, or its guard of held partials) entering its on-stack-replacement code from the interpreter every frame, its own compiled code never taking over. With `--no-concurrent-recompilation`, as the validator runs, it did not in 10 runs on Linux (`--own --flags=--no-concurrent-recompilation --runs=5`), at most 1.2 KB in seconds 20 to 30. Node 18, 22 and 25 took at most 5.7 KB in seconds 20 to 30 in every run, the copying processor 1.0 KB. So a first stream allocates for its first 16 s, most of it in its first second, and a second instance in the same process up to 2.3 MB in its first second (10.9 MB under Node 20's own flags), then up to 121 KB.
+
 **Use when:** quick baseline; offline cleanup with a known noise-only preamble.<br>
 **Not for:** musical-noise-sensitive material — use `wiener` or `omlsa`.
 
@@ -455,6 +485,21 @@ wiener(data, { fs, noiseFrames: 6 })                           // noise from the
 | `profile` | tracked | Noise PSD (`Float64Array`, `frameSize/2+1` bins) |
 | `estimator` | | Minimum statistics options (@audio/noise-estimate `minStats`); `{ partials: false }`: held notes learned as noise, as before |
 | `noiseFrames` / `profileFrom` / `profileTo` | | A noise-only stretch to average for the profile |
+
+**Allocation in a process's first stream**: until V8 has compiled the code a stream runs each frame, that code runs interpreted and allocates as it goes, and a path the stream first takes later stops the compiled code once (the noise tracker's guard of held partials closing its first window, 7.5 s in; later ones the sound decides). The `audio.js` processor, stereo at 44.1 kHz in blocks of 128 frames at its defaults, on noise and on speech in noise, what V8's heap and the typed arrays' stores take each second of sound, under the flags of @audio/compile's validator (compilation on the main thread) and under Node's own ([how](#allocation-in-a-first-stream); `node scripts/firststream.js`; Node 18, 20 and 22 on Linux, 20, 22 and 25 on macOS):
+
+| Node | 0–1 s | 1–3 s | 7–8 s | 3–16 s, the most a second | 16–90 s, the most a second | a second instance: 0–1 s, then the most a second |
+|---|---|---|---|---|---|---|
+| 18 | 12.5–13.8 MB | 2.4 MB | 416 KB | 116 KB | 440 B | 1.2–1.3 MB, 76 KB |
+| 18, own flags | 24.1–39.4 MB | 2.3 MB | 5.7 MB | 14 KB | 248 B | 2.0–2.8 MB, 76 KB |
+| 20 | 13.6–14.8 MB | 1.8 MB | 586 KB | 68 KB | 608 B | 1.2 MB, 51 KB |
+| 20, own flags | 25.8–49.7 MB | 15.9 MB | 7.6 MB | 171 KB | 171 KB | 2.0–13.4 MB, 116 KB |
+| 22 | 26.6–29.1 MB | 4.0 MB | 1.2 MB | 70 KB | 1008 B | 545 KB to 2.3 MB, 171 KB |
+| 22, own flags | 39.0–54.1 MB | 12.8 MB | 8.2 MB | 84 KB | 1.6 KB | 3.1–6.8 MB, 19 KB |
+| 25 | 17.2–19.5 MB | 6.7 MB | 1.1 MB | 104 B | 2.6 KB | 506–509 KB, 336 B |
+| 25, own flags | 25.4–33.2 MB | 16.0 MB | 7.2 MB | 104 B | 2.7 KB | 1.6–1.9 MB, 104 B |
+
+A processor that copies its input reads up to 1.7 KB a second through the same harness after 16 s. On Node 20 under its own flags the stream went on allocating, to its end, in 12 of 20 runs (`--runs=5`, noise and speech, Linux and macOS; 118 to 171 KB a second through 90 s, 1.27 to 2.93 MB in seconds 20 to 30): V8 11.3, compiling on the compiler's thread, can leave the noise tracker's update (noise-estimate's minimum statistics, or its guard of held partials) entering its on-stack-replacement code from the interpreter every frame, its own compiled code never taking over. With `--no-concurrent-recompilation`, as the validator runs, it did not in 10 runs on Linux (`--own --flags=--no-concurrent-recompilation --runs=5`), at most 1.5 KB in seconds 20 to 30. Node 18, 22 and 25 took at most 5.7 KB in seconds 20 to 30 in every run, the copying processor 1.0 KB. So a first stream allocates for its first 16 s, most of it in its first second, and a second instance in the same process up to 2.3 MB in its first second (13.4 MB under Node 20's own flags), then up to 171 KB.
 
 **Use when:** transparent broadband denoise; the "safe default" for stationary noise.
 
@@ -492,6 +537,21 @@ omlsa(data, { fs, profileFrom: 0, profileTo: fs / 2, gMin: -12 })   // the noise
 | `noiseFrames` / `profileFrom` / `profileTo` | | A noise-only stretch to learn the profile from (batch) |
 
 Against iZotope RX 12's Voice De-noise and Spectral De-noise on the same speech, narrations and music: [Speech](#speech).
+
+**Allocation in a process's first stream**: until V8 has compiled the code a stream runs each frame, that code runs interpreted and allocates as it goes, and a path the stream first takes later stops the compiled code once (the noise tracker's guard of held partials closing its first window, 7.5 s in; later ones the sound decides). The `audio.js` processor, stereo at 44.1 kHz in blocks of 128 frames at its defaults, on noise and on speech in noise, what V8's heap and the typed arrays' stores take each second of sound, under the flags of @audio/compile's validator (compilation on the main thread) and under Node's own ([how](#allocation-in-a-first-stream); `node scripts/firststream.js`; Node 18, 20 and 22 on Linux, 20, 22 and 25 on macOS):
+
+| Node | 0–1 s | 1–3 s | 7–8 s | 3–16 s, the most a second | 16–90 s, the most a second | a second instance: 0–1 s, then the most a second |
+|---|---|---|---|---|---|---|
+| 18 | 21.5–21.6 MB | 798 KB | 416 KB | 108 KB | 1.2 KB | 1.2 MB, 177 KB |
+| 18, own flags | 84.3–92.8 MB | 6.1 MB | 6.0 MB | 216 B | 776 B | 1.1–5.1 MB, 108 KB |
+| 20 | 24.6–25.6 MB | 1.7 MB | 416 KB | 108 KB | 248 B | 1.2 MB, 202 KB |
+| 20, own flags | 86.8–94.4 MB | 5.6 MB | 10.4 MB | 108 KB | 392 B | 1.2–2.9 MB, 170 KB |
+| 22 | 43.0–46.2 MB | 3.6 MB | 1.2 MB | 89 KB | 1.5 KB | 584 KB to 2.3 MB, 11 KB |
+| 22, own flags | 82.9–121.0 MB | 11.2 MB | 5.2 MB | 98 KB | 1.3 KB | 2.9–7.0 MB, 8.8 KB |
+| 25 | 63.1–86.7 MB | 31.8 MB | 1.2 MB | 104 B | 2.1 KB | 510–511 KB, 120 B |
+| 25, own flags | 72.6–80.7 MB | 21.4 MB | 4.9 MB | 120 B | 1.3 KB | 966 KB to 2.5 MB, 272 B |
+
+A processor that copies its input reads up to 1.7 KB a second through the same harness after 16 s. On Node 20 under its own flags the stream went on allocating, to its end, in 1 of 20 runs (`--runs=5`, noise and speech, Linux and macOS; 379 KB in seconds 20 to 30): V8 11.3, compiling on the compiler's thread, can leave the noise tracker's update (noise-estimate's minimum statistics, or its guard of held partials) entering its on-stack-replacement code from the interpreter every frame, its own compiled code never taking over. With `--no-concurrent-recompilation`, as the validator runs, it did not in 10 runs on Linux (`--own --flags=--no-concurrent-recompilation --runs=5`), at most 1.2 KB in seconds 20 to 30. Node 18, 22 and 25 took at most 5.7 KB in seconds 20 to 30 in every run, the copying processor 1.0 KB. So a first stream allocates for its first 16 s, most of it in its first second, and a second instance in the same process up to 2.3 MB in its first second (7.0 MB under Node 22's own flags), then up to 202 KB.
 
 **Use when:** speech in non-stationary noise (street, café, car); generally the highest-quality choice for noisy speech. A steady noise with a stretch of it alone (hiss, hum, a fan, room tone): learn it, `profile`.
 
@@ -1164,6 +1224,19 @@ Reverberant speech (`vbreverb`): a quarter of the clean test utterances, 206, th
 
 On the training utterances (`vbreverb-train`, 126): PESQ 2.36 → 2.64 → 2.61 (input, 0.4, 0.5). The constants were chosen on `scripts/dereverb.py train`: VoiceBank training speakers in the even-numbered rooms, 1.8–4.5 s utterances and 25–41 s takes. Of the 206 reverberant test utterances 18 % (0.4) and 25 % (0.5) come out untouched: rooms with little tail, which the dry and diffuse checks pass; 0.6 passes one more, p257_291, whose speaker holds a vowel's pitch as a singer holds a note (the music check), PESQ 2.606 → 2.604, the other 205 bit for bit.
 
+
+### Allocation in a first stream
+
+`node scripts/firststream.js [seconds] [--own] [--flags=a,b] [--runs=N]` runs `specsub`, `wiener`, `omlsa` and `dewind`, each alone in a fresh Node, as a real-time host calls its `audio.js` processor: stereo at 44.1 kHz in blocks of 128 frames, at its defaults, its inputs and outputs made before any count, on the contract validator's noise (σ 0.15) and on speech (audio-lena, 12.3 s looped) 20 dB over pink noise. Each second of sound it reads what the young generation, the stores of typed arrays and the old generation take between two forced minor collections, the measure of test.js and of the validator; then 10 s of a second instance in the same process; and a processor that copies its input through the same harness, the measure's own floor. Under the validator's flags (synchronous compilation, no pretenuring, no concurrent sweeping of array buffers) or, with `--own`, Node's own, and with `--flags` more V8 flags; `--runs=N` repeats each in N fresh processes and reads seconds 20 on, since what V8 compiles on its own thread lands at a moment that differs from run to run. Each processor's section has its table. In short:
+
+| | 0–1 s, the validator's flags (Node's own) | 16–90 s, either | Node 20, its own flags, 20 runs |
+|---|---|---|---|
+| `specsub` | 11.2 to 24.6 MB (21.2 to 47.0) | at most 2.0 KB a second | went on allocating 118 to 135 KB a second in 9 of 20 runs |
+| `wiener` | 12.5 to 29.1 MB (24.1 to 54.1) | at most 2.7 KB a second | 118 to 171 KB a second in 12 of 20 |
+| `omlsa` | 21.5 to 86.7 MB (72.6 to 121.0) | at most 2.1 KB a second | 38 KB a second in 1 of 20 |
+| `dewind` | 28.6 to 90.4 MB (36.4 to 97.3) | at most 2.7 KB a second | at most 1.2 KB in seconds 20 to 30, in 20 of 20 |
+
+What allocates there is V8 at work: the code a stream runs each frame, interpreted until compiled, and each path first taken later (a tracker's window closing, others the sound decides), which stops the compiled code once. After 16 s at most 2.7 KB a second on any Node, beside the copying processor's 1.7 KB, as test.js holds them to the floor in steady state; the one steady allocation found is Node 20's under its own flags, where V8 11.3, compiling on the compiler's thread, can leave noise-estimate's update (its minimum statistics, or its guard of held partials) entering its on-stack-replacement code from the interpreter every frame, its own compiled code never taking over; with `--no-concurrent-recompilation` it did not in 40 runs of the four on Linux (`--own --flags=--no-concurrent-recompilation --runs=5`), at most 1.5 KB in seconds 20 to 30.
 
 ## Demo
 

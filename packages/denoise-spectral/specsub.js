@@ -89,7 +89,12 @@ function makeProcess(opts, live = opts) {
 
   return function (mag, phase) {
     res.mag = mag; res.phase = phase
-    if (silent(mag)) return res                              // digital silence: nothing to learn or attenuate
+    // digital silence: nothing to learn or attenuate. Read here, not in a function of its own: one that returns at its
+    // first bin runs a few bytecodes a call, so V8 compiles it only after thousands of calls, and a caller compiled
+    // before it has feedback calls it uninlined, interpreted, each call allocating the bin it reads (Node 18 and 20)
+    let i = 0
+    while (i < mag.length && !mag[i]) i++
+    if (i === mag.length) return res
     if (auto) { est.update(mag); profile = est.psd }
     let beta = live.beta ?? 0.05                             // spectral floor, a fraction of the noise estimate
 
@@ -111,10 +116,4 @@ function makeProcess(opts, live = opts) {
     }
     return res
   }
-}
-
-// no bin holds anything (mag.some(Boolean), as a loop: no callback a frame)
-function silent(mag) {
-  for (let k = 0; k < mag.length; k++) if (mag[k]) return false
-  return true
 }
