@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-detect",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "denoise — content-aware auto-selector: finds the defect a recording carries, if any, and routes to its method",
   "type": "module",
   "sideEffects": false,
