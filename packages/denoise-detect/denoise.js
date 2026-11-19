@@ -232,13 +232,19 @@ function windShare(s) {
 // The noise bed and the program's level over it, dB; the program: its frames within 40 dB of the loudest. Frames
 // within 80 dB of the loudest count: digital silence is no bed. Two kinds of evidence:
 //   pauses — runs of 0.15 s or more within 6 dB of the 10th percentile of the frame level that hold noise or hold
-//            the floor. Noise: flat (the bands' median flatness over 0.4; Gaussian noise reads e^−γ ≈ 0.56) and no
-//            lines but those it holds through the take (each band's median persistence there, less the persistence
-//            HOLD on between pause frames that far apart where that is a line too, 0.05 or more: their median under
-//            0.05, none over 0.5). A bed's own lines, in radio static, a carrier's, a fan's, hold their bins a second
-//            on as from frame to frame (an archival radio take's, lines at 345, 517 and 861 Hz: 0.51 and 0.53 in its
-//            500–707 Hz band), where a voice's or a passage's partials have moved (a dense rock mix: 0.16 and 0.01);
-//            a held note's pauses are its partials, not flat. The floor: a bed
+//            the floor, in a take that pauses: one whose loudest frame stands less than 6 dB over that percentile (the
+//            pause band's own 6 dB: every frame of it lies in the band) never pauses, and its quietest frames are its
+//            program (a tone, a chord held through, a sweep, a noise alone; the steady bands read a noise). Digital
+//            silence beside the program (a lead-in, gaps between phrases) is no pause of it, and counts for nothing.
+//            Noise: flat (the bands' median flatness over 0.4; Gaussian noise reads e^−γ ≈ 0.56) and no lines but
+//            those it holds through the take (each band's median persistence there, less the persistence HOLD on
+//            between pause frames that far apart where that is a line too, 0.05 or more, and the band draws the rest
+//            of its bins anew, under 0.95: their median under 0.05, none over 0.5). A bed's own lines, in radio
+//            static, a carrier's, a fan's, hold their bins a second on as from frame to frame (an archival radio
+//            take's, lines at 345, 517 and 861 Hz: 0.51 and 0.53 in its 500–707 Hz band), where a voice's or a
+//            passage's partials have moved (a dense rock mix: 0.16 and 0.01). A band held within 0.05 of 1, as noise
+//            is within 0.05 of 0, draws nothing anew: it holds a line alone and its leakage, no bed's (the bound set by
+//            that symmetry); a held note's pauses are its partials, not flat. The floor: a bed
 //            lies under the program all the time, so in every band the pauses sit where the band sinks to over the
 //            whole take (its 5th percentile) and no further over it than Gaussian noise's own spread puts them
 //            (1.645 · 4.34/√(n/1.5) dB) plus FLOOR_SLACK for the bed's slow wander (the bands' median), with no
@@ -263,11 +269,11 @@ function noiseBed({ T, B, nb, test, L, F, C, H, D, tot, valid, peak, act, hop, f
   }
   let at = (A, ts, b) => median(ts.map(t => A[t * B + b]).filter(v => v === v))
   let snrP = Infinity
-  if (pause.length) {
+  if (pause.length && 10 * Math.log10(peak) > q10 + 6) {
     let c = [], f = [], over = [], gone = [], ps = new Set(pause), far = pause.filter(t => ps.has(t - D))
     for (let b = 0; b < B; b++) if (test[b]) {
       let cb = at(C, pause, b), hb = at(H, far, b)
-      c.push(cb); f.push(at(F, pause, b)); gone.push(hb >= 0.05 ? Math.max(0, cb - hb) : cb)
+      c.push(cb); f.push(at(F, pause, b)); gone.push(hb >= 0.05 && cb < 0.95 ? Math.max(0, cb - hb) : cb)
       over.push(at(L, pause, b) - quantile(keep.map(t => L[t * B + b]), 0.05) - 1.645 * 4.343 / Math.sqrt(nb[b] / 1.5))
     }
     let noise = median(gone) < 0.05 && Math.max(...gone) < 0.5 && median(f) > 0.4, floor = median(over) <= FLOOR_SLACK && median(c) < 0.1

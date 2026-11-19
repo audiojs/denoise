@@ -7,6 +7,8 @@
 //   `node scripts/detect.js tune|test reduce` puts each noisy take (VoiceBank+DEMAND, DEMAND, wind, white and pink
 // noise) through wiener, omlsa and dewind as denoise() runs them, into ~/.cache/audiojs/data/detect/<set>/, and
 // `python scripts/detect.py score tune|test` scores them per noise (PESQ, STOI, DNSMOS): which reducer a bed should get.
+//   `node scripts/detect.js tune|test compare A.js B.js` reads every item with two builds' classify(): the items whose
+// method changes, and on the items either reads a bed in (snr under BED_SNR) those whose snr moves and the most it does.
 //
 // Material, from ~/.cache/audiojs/data (never committed); each set is skipped where missing:
 //   speech  VoiceBank+DEMAND (Valentini-Botinhao 2017, CC BY 4.0), every utterance: tune, the 28-speaker training
@@ -38,8 +40,8 @@ import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync } from 
 import { spawnSync } from 'child_process'
 import { homedir } from 'os'
 
-const set = process.argv[2] || 'tune', T = set === 'test', REDUCE = process.argv[3] === 'reduce'
-const { default: denoise, classify } = await import(process.argv[3] && !REDUCE ? new URL(process.argv[3], `file://${process.cwd()}/`) : '@audio/denoise-detect')
+const set = process.argv[2] || 'tune', T = set === 'test', REDUCE = process.argv[3] === 'reduce', COMPARE = process.argv[3] === 'compare'
+const { default: denoise, classify } = await import(process.argv[3] && !REDUCE && !COMPARE ? new URL(process.argv[3], `file://${process.cwd()}/`) : '@audio/denoise-detect')
 const H = `${homedir()}/.cache/audiojs/data`
 const lcg = seed => { let s = seed >>> 0; return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296 }
 const gauss = r => Math.sqrt(-2 * Math.log(r() || 1e-12)) * Math.cos(2 * Math.PI * r())
@@ -188,6 +190,22 @@ if (REDUCE) {
   }
   writeFileSync(`${dir}/meta.json`, JSON.stringify(meta))
   console.log(`${meta.length} takes in ${dir}; score them: python scripts/detect.py score ${set}`)
+  process.exit()
+}
+
+// ---- compare: two builds, item by item
+if (COMPARE) {
+  const [a, b] = await Promise.all(process.argv.slice(4, 6).map(p => import(new URL(p, `file://${process.cwd()}/`))))
+  const BED_SNR = a.BED_SNR ?? 25, f1 = v => v === Infinity ? '∞' : v.toFixed(1)
+  let n = 0, changed = [], moved = [], top = null
+  for (let it of material()) {
+    let p = a.classify(it.x, it.fs), q = b.classify(it.x, it.fs), s = p.scores.snr, t = q.scores.snr, line = `${it.cls}: ${it.name} ${p.method} ${f1(s)} → ${q.method} ${f1(t)}`
+    n++
+    if (p.method !== q.method) changed.push(line)
+    if (Math.min(s, t) < BED_SNR && s !== t) { moved.push(line); if (!top || Math.abs(t - s) > top.d) top = { d: Math.abs(t - s), line } }
+  }
+  console.log(`\n${set}: ${n} items; method changed in ${changed.length}${changed.map(l => '\n  ' + l).join('')}`)
+  console.log(`a bed read by either, its snr moved in ${moved.length}${top ? `, at most ${f1(top.d)} dB (${top.line})` : ''}${moved.map(l => '\n  ' + l).join('')}`)
   process.exit()
 }
 
