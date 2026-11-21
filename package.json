@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise",
-  "version": "0.12.2",
+  "version": "0.13.0",
   "type": "module",
   "description": "Noise reduction and restoration: gate, spectral subtraction, Wiener, OM-LSA, dehum, declick, decrackle, declip, dewind, deplosive, deesser, debreath, dereverb, debleed, dewow, desqueak",
   "sideEffects": false,
@@ -9,24 +9,23 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
-    "./package.json": "./package.json",
-    "./*": {
-      "types": "./members/*.d.ts",
-      "default": "./members/*.js"
-    }
+    "./audio": {
+      "types": "./audio.d.ts",
+      "default": "./audio.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "*.d.ts",
-    "members/"
+    "audio.js"
   ],
   "scripts": {
     "test": "node test.js",
     "test:all": "npm test --workspaces --if-present && npm test",
     "measure": "node scripts/measure.js",
     "publish:all": "node ../compile/tools/tested.js && npm publish --workspaces && npm publish",
-    "members": "node scripts/members.js",
-    "prepublishOnly": "node ../compile/tools/tested.js && node scripts/members.js --check"
+    "prepublishOnly": "node ../compile/tools/tested.js"
   },
   "repository": {
     "type": "git",

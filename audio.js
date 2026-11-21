@@ -1,0 +1,17 @@
+// @audio/denoise/audio: the family's manifests for the audio host, each member's own /audio entry under its names.
+// A member is a package of packages/ the umbrella depends on that has an audio.js (test.js holds this list to them).
+export * from '@audio/denoise-debleed/audio'
+export * from '@audio/denoise-debreath/audio'
+export * from '@audio/denoise-declick/audio'
+export * from '@audio/denoise-declip/audio'
+export * from '@audio/denoise-decrackle/audio'
+export * from '@audio/denoise-dehum/audio'
+export * from '@audio/denoise-deplosive/audio'
+export * from '@audio/denoise-dereverb/audio'
+export * from '@audio/denoise-desilence/audio'
+export * from '@audio/denoise-desqueak/audio'
+export * from '@audio/denoise-dewind/audio'
+export * from '@audio/denoise-dewow/audio'
+export * from '@audio/denoise-omlsa/audio'
+export * from '@audio/denoise-spectral/audio'
+export * from '@audio/denoise-wiener/audio'
