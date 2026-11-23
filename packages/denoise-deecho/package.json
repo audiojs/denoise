@@ -1,6 +1,6 @@
 {
   "name": "@audio/denoise-deecho",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "De-echo: a delayed copy of the sound (a slap-back, a delay left on a take, one strong reflection) found by its cepstral peak, its delay to a fraction of a sample, its gain and its repeats, and undone by its inverse filter; no echo, no change",
   "type": "module",
   "sideEffects": false,
